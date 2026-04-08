@@ -18,6 +18,7 @@ from controller.conversation_api import router as conversation_router
 from controller.workspace_api import router as workspace_router
 from core.logging import bind_ctx, get_ctx
 from singleton import get_logging_runtime, get_settings_service, get_user_service
+from middleware.auth import AuthMiddleware
 
 
 for stream_name in ('stdout', 'stderr'):
@@ -58,6 +59,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(AuthMiddleware)
 
 FRONTEND_LOG_ALLOWED_EVENTS = {
     "create_conversation",

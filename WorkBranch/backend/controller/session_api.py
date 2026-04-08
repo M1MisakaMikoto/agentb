@@ -1,10 +1,11 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from singleton import get_session_service
+from singleton import get_session_service, get_session_history
 from service.session_service.session import SessionService
+from service.user_service.session_history import SessionHistory
 from controller.VO.result import Result
 
 router = APIRouter(prefix="/session", tags=["session"])
@@ -25,25 +26,18 @@ class UpdateConversationPositionsBody(BaseModel):
     positions: list[ConversationPositionItem]
 
 
-@router.post("/sessions")
-def create_session(
-    title: str = "新会话",
-    service: SessionService = Depends(get_session_service),
-) -> Result:
-    session = service.create_session(title)
-    return Result.success(data={
-        "id": session.id,
-        "title": session.title,
-        "created_at": session.created_at,
-        "updated_at": session.updated_at,
-    })
+class CreateSessionBody(BaseModel):
+    title: str = "新会话"
 
 
 @router.get("/sessions")
-def list_sessions(
-    service: SessionService = Depends(get_session_service),
+async def list_sessions(
+    request: Request,
+    service: SessionHistory = None,
 ) -> Result:
-    sessions = service.list_sessions()
+    user = request.state.user
+    service = get_session_history()
+    sessions = await service.list_sessions_async(user["id"])
     return Result.success(data=[
         {
             "id": s.id,
@@ -55,12 +49,31 @@ def list_sessions(
     ])
 
 
-@router.get("/sessions/{session_id}")
-def get_session(
-    session_id: int,
-    service: SessionService = Depends(get_session_service),
+@router.post("/sessions")
+async def create_session(
+    request: Request,
+    body: CreateSessionBody = None,
 ) -> Result:
-    session = service.get_session(session_id)
+    user = request.state.user
+    service = get_session_history()
+    if body is None:
+        body = CreateSessionBody()
+    session = await service.create_session_async(user["id"], body.title)
+    return Result.success(data={
+        "id": session.id,
+        "title": session.title,
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
+    })
+
+
+@router.get("/sessions/{session_id}")
+async def get_session(
+    session_id: int,
+    service: SessionHistory = None,
+) -> Result:
+    service = get_session_history()
+    session = await service.get_session_async(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return Result.success(data={
@@ -72,12 +85,23 @@ def get_session(
     })
 
 
+@router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: int,
+    service: SessionHistory = None,
+) -> Result:
+    service = get_session_history()
+    await service.delete_session_async(session_id)
+    return Result.success()
+
+
 @router.get("/sessions/{session_id}/conversations")
 async def list_session_conversations(
     session_id: int,
-    service: SessionService = Depends(get_session_service),
+    service: SessionService = None,
 ) -> Result:
-    session = service.get_session(session_id)
+    service = get_session_service()
+    session = await service._dao.get_session_by_id(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return Result.success(data=await service.list_conversation_summaries(session_id))
@@ -87,9 +111,10 @@ async def list_session_conversations(
 async def update_conversation_positions(
     session_id: int,
     body: UpdateConversationPositionsBody,
-    service: SessionService = Depends(get_session_service),
+    service: SessionService = None,
 ) -> Result:
-    session = service.get_session(session_id)
+    service = get_session_service()
+    session = await service._dao.get_session_by_id(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -104,22 +129,14 @@ async def update_conversation_positions(
     return Result.success(data={"updated": len(body.positions)})
 
 
-@router.delete("/sessions/{session_id}")
-def delete_session(
-    session_id: int,
-    service: SessionService = Depends(get_session_service),
-) -> Result:
-    service.delete_session(session_id)
-    return Result.success()
-
-
 @router.post("/sessions/{session_id}/conversations")
 async def create_conversation(
     session_id: int,
     body: CreateConversationBody,
-    service: SessionService = Depends(get_session_service),
+    service: SessionService = None,
 ) -> Result:
-    session = service.get_session(session_id)
+    service = get_session_service()
+    session = await service._dao.get_session_by_id(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 

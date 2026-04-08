@@ -58,6 +58,12 @@ class UserService:
             return None
         return {"id": user.id, "name": user.name}
 
+    async def update_user_name_by_id(self, user_id: int, new_name: str) -> Dict[str, Any]:
+        """通过用户ID更新用户名"""
+        await self._dao.update_user_name(user_id, new_name)
+        user = await self._dao.get_user_by_id(user_id)
+        return {"id": user.id, "name": user.name}
+
     def get_current_user(self) -> User:
         """获取当前本地用户（兼容旧代码）"""
         return self._dao.get_or_create_default_user()

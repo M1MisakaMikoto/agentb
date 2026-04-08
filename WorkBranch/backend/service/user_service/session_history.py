@@ -45,3 +45,20 @@ class SessionHistory:
         根据ID获取会话详情。
         """
         return self._conv_dao.get_session_by_id(session_id)
+
+    async def list_sessions_async(self, user_id: int) -> List[Session]:
+        """异步获取用户的所有会话。"""
+        return await self._conv_dao.list_sessions_by_user(user_id)
+
+    async def create_session_async(self, user_id: int, title: str) -> Session:
+        """异步创建会话。"""
+        session_id = await self._conv_dao.create_session(user_id, title)
+        return await self._conv_dao.get_session_by_id(session_id)
+
+    async def delete_session_async(self, session_id: int) -> None:
+        """异步删除会话。"""
+        await self._conv_dao.delete_session(session_id)
+
+    async def get_session_async(self, session_id: int) -> Session:
+        """异步获取会话详情。"""
+        return await self._conv_dao.get_session_by_id(session_id)
