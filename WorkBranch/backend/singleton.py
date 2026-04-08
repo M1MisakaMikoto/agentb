@@ -3,7 +3,7 @@
 from functools import lru_cache
 
 from core.logging.runtime import LoggingRuntime
-from db.sqlite import Database
+from db.mysql import MySQLDatabase
 from data.file_storage_system import FileStorageSystem
 from service.agent_service.service import WorkspaceService, LLMService
 from service.settings_service.settings_service import SettingsService
@@ -14,9 +14,22 @@ from service.session_service.mq import MessageQueue
 def get_settings_service() -> SettingsService:
     return SettingsService()
 
-@lru_cache(maxsize=1)
-def get_database() -> Database:
-    return Database()
+_mysql_pool_instance = None
+
+async def get_mysql_database():
+    """获取 MySQL 数据库实例（异步单例）。"""
+    global _mysql_pool_instance
+    if _mysql_pool_instance is None:
+        from db.mysql import MySQLDatabase
+        settings = get_settings_service()
+        _mysql_pool_instance = MySQLDatabase(settings)
+        await _mysql_pool_instance.init_pool()
+    return _mysql_pool_instance
+
+def get_database():
+    """同步获取 MySQL 数据库实例（兼容旧代码，但推荐使用异步版本）。"""
+    from db.mysql import MySQLDatabase
+    return MySQLDatabase(get_settings_service())
 
 @lru_cache(maxsize=1)
 def get_conversation_buffer():
@@ -93,10 +106,25 @@ def get_logging_runtime() -> LoggingRuntime:
 
 def clear_all_singletons():
     """清除所有单例缓存（例如测试用例 teardown 时调用）"""
+    global _mysql_pool_instance
+    
     try:
         get_logging_runtime().shutdown()
     except Exception:
         pass
+
+    # 关闭 MySQL 连接池
+    if _mysql_pool_instance is not None:
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(_mysql_pool_instance.close_pool())
+            else:
+                loop.run_until_complete(_mysql_pool_instance.close_pool())
+        except Exception:
+            pass
+        _mysql_pool_instance = None
 
     get_settings_service.cache_clear()
     get_database.cache_clear()

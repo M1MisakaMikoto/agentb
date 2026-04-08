@@ -32,16 +32,20 @@ def _merge_missing_defaults(defaults, current):
 
 
 DEFAULT_SETTINGS = {
-    "ui": {
-        "theme_mode": "system",
-        "scale": 1.0,
-        "show_debug_overlay": False,
-        "show_workspace_hud": False,
-        "diagram_double_click_delay_ms": 300,
-        "message_send_shortcuts_reversed": False
+    "mysql": {
+        "host": "localhost",
+        "port": 3306,
+        "user": "root",
+        "password": "0502",
+        "database": "agentb",
+        "min_pool_size": 5,
+        "max_pool_size": 20,
+        "pool_recycle": 3600,
+        "echo": False
     },
-    "database": {
-        "path": "workbranch.db"
+    "session": {
+        "token_expire_hours": 168,
+        "max_sessions_per_user": 100
     },
     "llm": {
         "api_key": "",
@@ -59,14 +63,6 @@ DEFAULT_SETTINGS = {
     "agent": {
         "memory_mode": "accumulate",
         "memory_window_size": 3
-    },
-    "conversation": {
-        "single_message_per_node": True
-    },
-    "context": {
-        "max_tokens": 32000,
-        "warning_threshold": 0.5,
-        "include_parent_context_by_default": False
     },
     "logging": {
         "enabled": True,
