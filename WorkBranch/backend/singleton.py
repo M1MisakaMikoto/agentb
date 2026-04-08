@@ -32,11 +32,6 @@ def get_database():
     return MySQLDatabase(get_settings_service())
 
 @lru_cache(maxsize=1)
-def get_conversation_buffer():
-    from service.session_service.conversation_buffer import ConversationBuffer
-    return ConversationBuffer()
-
-@lru_cache(maxsize=1)
 def get_file_storage_system() -> FileStorageSystem:
     return FileStorageSystem()
 
@@ -130,7 +125,6 @@ def clear_all_singletons():
 
     get_settings_service.cache_clear()
     get_database.cache_clear()
-    get_conversation_buffer.cache_clear()
     get_file_storage_system.cache_clear()
     get_user_service.cache_clear()
     get_session_history.cache_clear()

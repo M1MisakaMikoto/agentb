@@ -317,27 +317,12 @@ class MessageQueue:
         MQ 只做通道层：
         - 保存到 JSON 文件（调试/转录）
         - 广播给订阅方
-        - 转发给 Buffer 消费
         """
         try:
             self._save_message_to_file(message)
             self._publish_to_subscribers(message)
-            
-            await self._forward_to_buffer(message)
-            
         except Exception as exc:
             raise
-
-    async def _forward_to_buffer(self, message: Message) -> None:
-        """将事件转发给 Buffer 消费"""
-        from singleton import get_conversation_buffer
-        
-        buffer = get_conversation_buffer()
-        
-        if not buffer.has_draft(message.message_id):
-            return
-        
-        await buffer.consume_message(message)
 
     @property
     def size(self) -> int:
