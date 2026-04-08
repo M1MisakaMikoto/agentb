@@ -85,12 +85,14 @@ def get_llm_service() -> LLMService:
 @lru_cache(maxsize=1)
 def get_user_info_dao():
     from data.user_info_dao import UserInfoDAO
-    return UserInfoDAO()
+    db = get_database()
+    return UserInfoDAO(db)
 
 @lru_cache(maxsize=1)
 def get_conversation_dao():
     from data.conversation_dao import ConversationDAO
-    return ConversationDAO()
+    db = get_database()
+    return ConversationDAO(db)
 
 @lru_cache(maxsize=1)
 def get_message_queue() -> MessageQueue:

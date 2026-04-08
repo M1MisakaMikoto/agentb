@@ -1,8 +1,6 @@
 from typing import List, Optional
 from dataclasses import dataclass
 
-from singleton import get_database
-from db.sqlite import Database
 from data.conversation_dao import Session
 
 
@@ -10,53 +8,69 @@ from data.conversation_dao import Session
 class User:
     id: int
     name: str
+    password_hash: str
+    session_token: Optional[str]
+    created_at: str
+    updated_at: str
 
 
 class UserInfoDAO:
     """用户信息数据访问对象。"""
 
-    def __init__(self):
-        self._db: Database = get_database()
+    def __init__(self, db):
+        self._db = db
 
-    def create_user(self, name: str) -> int:
+    async def create_user(self, name: str, password_hash: str = "") -> int:
         """创建新用户，返回用户ID。"""
-        sql = 'INSERT INTO users (name) VALUES (?)'
-        return self._db.execute(sql, (name,))
+        sql = 'INSERT INTO users (name, password_hash) VALUES (%s, %s)'
+        return await self._db.execute(sql, (name, password_hash))
 
-    def get_user_by_id(self, user_id: int) -> Optional[User]:
+    async def get_user_by_id(self, user_id: int) -> Optional[User]:
         """根据ID获取用户。"""
-        sql = 'SELECT id, name FROM users WHERE id = ?'
-        row = self._db.fetch_one(sql, (user_id,))
+        sql = 'SELECT id, name, password_hash, session_token, created_at, updated_at FROM users WHERE id = %s'
+        row = await self._db.fetch_one(sql, (user_id,))
         if row:
             return User(**dict(row))
         return None
 
-    def list_sessions(self, user_id: int) -> List[Session]:
+    async def get_user_by_name(self, name: str) -> Optional[User]:
+        """根据用户名获取用户。"""
+        sql = 'SELECT id, name, password_hash, session_token, created_at, updated_at FROM users WHERE name = %s'
+        row = await self._db.fetch_one(sql, (name,))
+        if row:
+            return User(**dict(row))
+        return None
+
+    async def get_user_by_token(self, token: str) -> Optional[User]:
+        """根据 session token 获取用户。"""
+        sql = 'SELECT id, name, password_hash, session_token, created_at, updated_at FROM users WHERE session_token = %s'
+        row = await self._db.fetch_one(sql, (token,))
+        if row:
+            return User(**dict(row))
+        return None
+
+    async def update_session_token(self, user_id: int, token: Optional[str]) -> None:
+        """更新用户的 session token。"""
+        sql = 'UPDATE users SET session_token = %s WHERE id = %s'
+        await self._db.execute(sql, (token, user_id))
+
+    async def update_user_name(self, user_id: int, new_name: str) -> None:
+        """更新用户名称。"""
+        sql = 'UPDATE users SET name = %s WHERE id = %s'
+        await self._db.execute(sql, (new_name, user_id))
+
+    async def delete_user(self, user_id: int) -> None:
+        """删除用户。"""
+        sql = 'DELETE FROM users WHERE id = %s'
+        await self._db.execute(sql, (user_id,))
+
+    async def list_sessions(self, user_id: int) -> List[Session]:
         """获取用户的所有会话，按更新时间倒序排列。"""
         sql = '''
             SELECT id, user_id, title, created_at, updated_at
             FROM sessions
-            WHERE user_id = ?
+            WHERE user_id = %s
             ORDER BY updated_at DESC
         '''
-        rows = self._db.fetch_all(sql, (user_id,))
+        rows = await self._db.fetch_all(sql, (user_id,))
         return [Session(**dict(row)) for row in rows]
-
-    def delete_user(self, user_id: int) -> None:
-        """删除用户。"""
-        sql = 'DELETE FROM users WHERE id = ?'
-        self._db.execute(sql, (user_id,))
-
-    def update_user_name(self, user_id: int, new_name: str) -> None:
-        """更新用户名称。"""
-        sql = 'UPDATE users SET name = ? WHERE id = ?'
-        self._db.execute(sql, (new_name, user_id))
-
-    def get_or_create_default_user(self) -> User:
-        """获取或创建默认本地用户（唯一用户）。"""
-        sql = 'SELECT id, name FROM users LIMIT 1'
-        row = self._db.fetch_one(sql)
-        if row:
-            return User(**dict(row))
-        user_id = self.create_user("Local User")
-        return User(id=user_id, name="Local User")
