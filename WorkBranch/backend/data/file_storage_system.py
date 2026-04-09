@@ -1,7 +1,7 @@
 import os
 import json
 
-# 以本文件为基准向上三级，定位到 WorkBranch 根目录（setting.json 所在处）
+# 以本文件为基准向上三级，定位到项目根目录（setting.json 所在处）
 _BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 SETTING_FILE_PATH = os.path.join(_BASE_DIR, "setting.json")
 
