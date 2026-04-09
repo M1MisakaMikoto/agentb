@@ -10,7 +10,7 @@ from core.logging import bind_ctx
 from singleton import get_agent_service, get_conversation_dao, get_logging_runtime, get_message_queue
 from service.agent_service.agent_service import AgentService
 from data.conversation_dao import ConversationDAO
-from service.session_service.canonical import ContentBlock, SegmentType
+from service.session_service.canonical import Message, SegmentType
 
 
 class ConversationState(Enum):
@@ -117,6 +117,50 @@ class ConversationService:
 
         return conversation_id
 
+    async def prepare_message(
+        self,
+        conversation_id: str,
+        user_message: str,
+    ) -> Dict[str, Any]:
+        """准备消息 - 更新用户消息内容但不执行 Agent
+        
+        Args:
+            conversation_id: 对话ID
+            user_message: 用户消息内容
+            
+        Returns:
+            包含 conversation_id 和 message_id 的字典
+        """
+        async with self._lock:
+            conv_info = self._conversations.get(conversation_id)
+            if not conv_info:
+                persisted = await self._dao.get_conversation_by_id(conversation_id)
+                if not persisted:
+                    raise ValueError(f"Conversation {conversation_id} not found")
+                conv_info = ConversationInfo(
+                    conversation_id=persisted.id,
+                    session_id=persisted.session_id,
+                    workspace_id=persisted.workspace_id or conversation_id,
+                    state=ConversationState(persisted.state),
+                )
+                self._conversations[conversation_id] = conv_info
+
+            if conv_info.state == ConversationState.RUNNING:
+                raise RuntimeError(f"Conversation {conversation_id} is already running")
+
+        await self._dao.update_conversation(
+            conversation_id,
+            user_content=user_message,
+        )
+
+        message_id = f"msg-{conversation_id}-{int(datetime.now().timestamp() * 1000)}"
+
+        return {
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "state": ConversationState.PENDING.value,
+        }
+
     async def send_message(
         self,
         conversation_id: str,
@@ -157,16 +201,15 @@ class ConversationService:
         await mq.start_consumer()
         subscriber = mq.subscribe(conv_info.workspace_id)
 
-        content_blocks: List[ContentBlock] = []
+        messages: List[Message] = []
         done_received = False
 
-        async def collect_and_forward(message):
+        async def collect_and_forward(message: Message):
             nonlocal done_received
             
-            for block in message.content_blocks:
-                content_blocks.append(block)
-                if block.type == SegmentType.DONE:
-                    done_received = True
+            messages.append(message)
+            if message.type == SegmentType.DONE:
+                done_received = True
             
             if on_chunk:
                 await on_chunk(message.to_dict())
@@ -199,13 +242,13 @@ class ConversationService:
                 except asyncio.TimeoutError:
                     task.cancel()
 
-            blocks_json = json.dumps([block.to_dict() for block in content_blocks])
+            messages_json = json.dumps([msg.to_dict() for msg in messages])
 
             async with self._lock:
                 conv_info.state = ConversationState.COMPLETED
                 await self._dao.update_conversation(
                     conversation_id,
-                    assistant_content=blocks_json,
+                    assistant_content=messages_json,
                     state=ConversationState.COMPLETED.value,
                 )
 

@@ -15,9 +15,8 @@ from .tools.executors import ToolExecutor
 from .tools import register_all_tools
 from service.session_service.canonical import (
     SegmentType,
-    ContentBlock,
     Message,
-    MessageFormatter,
+    MessageBuilder,
 )
 
 
@@ -397,39 +396,36 @@ class AgentService:
                 if metadata:
                     merged_metadata.update(metadata)
                 
-                blocks = []
-                
                 if block_type == SegmentType.TEXT_DELTA:
                     if not text_started:
-                        blocks.append(ContentBlock(
-                            type=SegmentType.TEXT_START,
-                            content="",
+                        msg = MessageBuilder.text_start(
+                            message_id=message_id,
+                            conversation_id=conversation_id,
+                            session_id=session_id,
+                            workspace_id=workspace_id,
                             metadata=merged_metadata,
-                        ))
+                        )
+                        mq.publish_sync(msg)
                         text_started = True
                     
-                    blocks.append(ContentBlock(
-                        type=block_type,
+                    msg = MessageBuilder.text_delta(
+                        message_id=message_id,
+                        conversation_id=conversation_id,
+                        session_id=session_id,
+                        workspace_id=workspace_id,
                         content=content,
-                        metadata=merged_metadata,
-                    ))
+                    )
                 else:
-                    blocks.append(ContentBlock(
-                        type=block_type,
+                    msg = MessageBuilder.build(
+                        role="assistant",
+                        message_id=message_id,
+                        conversation_id=conversation_id,
+                        session_id=session_id,
+                        workspace_id=workspace_id,
+                        msg_type=block_type,
                         content=content,
                         metadata=merged_metadata,
-                    ))
-                
-                msg = Message(
-                    role="assistant",
-                    message_id=message_id,
-                    conversation_id=conversation_id,
-                    session_id=session_id,
-                    workspace_id=workspace_id,
-                    content_blocks=blocks,
-                    content=content if block_type == SegmentType.TEXT_DELTA else "",
-                    metadata=merged_metadata,
-                )
+                    )
                 mq.publish_sync(msg)
 
             def cancel_check():
@@ -484,26 +480,21 @@ class AgentService:
                 )
                 raise
 
-            blocks = []
             if text_started:
-                blocks.append(ContentBlock(
-                    type=SegmentType.TEXT_END,
-                    content="",
+                msg = MessageBuilder.text_end(
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    session_id=session_id,
+                    workspace_id=workspace_id,
                     metadata={"message_id": message_id},
-                ))
+                )
+                mq.publish_sync(msg)
             
-            blocks.append(ContentBlock(
-                type=SegmentType.DONE,
-                content="",
-                metadata={"message_id": message_id},
-            ))
-            done_msg = Message(
-                role="assistant",
+            done_msg = MessageBuilder.done(
                 message_id=message_id,
                 conversation_id=conversation_id,
                 session_id=session_id,
                 workspace_id=workspace_id,
-                content_blocks=blocks,
                 metadata={"message_id": message_id},
             )
             mq.publish_sync(done_msg)

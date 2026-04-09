@@ -80,6 +80,7 @@ class ConversationDAO:
         self,
         conversation_id: str,
         *,
+        user_content: Optional[str] = None,
         assistant_content: Optional[str] = None,
         thinking_content: Optional[str] = None,
         state: Optional[str] = None,
@@ -88,6 +89,9 @@ class ConversationDAO:
         updates = []
         params = []
 
+        if user_content is not None:
+            updates.append('user_content = %s')
+            params.append(user_content)
         if assistant_content is not None:
             updates.append('assistant_content = %s')
             params.append(assistant_content)

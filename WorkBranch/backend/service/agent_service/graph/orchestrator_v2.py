@@ -4,7 +4,7 @@ from .decision.complexity_analyzer import ExecutionMode, analyze_task_complexity
 from ..state import AgentState
 from ..persistence import PersistenceService
 from .subgraphs import run_tool_execution
-from service.session_service.canonical import SegmentType, ContentBlock
+from service.session_service.canonical import SegmentType
 from core.logging import console
 
 
@@ -140,7 +140,7 @@ def create_analyze_node(llm_service=None):
             f"执行模式: {mode_decision['mode']}\n原因: {mode_decision['reason']}"
         )
         
-        return {
+        result = {
             "intent_analysis": intent_analysis,
             "execution_mode": mode_decision["mode"],
             "mode_reason": mode_decision["reason"],
@@ -149,6 +149,20 @@ def create_analyze_node(llm_service=None):
             "in_plan_mode": mode_decision["mode"] == ExecutionMode.PLAN,
             "active_subagent": mode_decision["mode"] == ExecutionMode.SUBAGENT
         }
+        
+        if mode_decision["mode"] == ExecutionMode.DIRECT:
+            suggested_tools = mode_decision.get("suggested_tools", [])
+            if suggested_tools:
+                result["pending_tools"] = [
+                    {"tool": tool, "args": {"description": user_message}}
+                    for tool in suggested_tools
+                ]
+            else:
+                result["pending_tools"] = [
+                    {"tool": "thinking", "args": {"description": user_message}}
+                ]
+        
+        return result
     
     return analyze_node
 

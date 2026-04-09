@@ -13,7 +13,7 @@ from langgraph.graph import StateGraph, END
 from ..state import AgentState, ToolCall
 from ..persistence import PersistenceService
 from .subgraphs import run_plan_flow, run_tool_execution, run_compaction
-from service.session_service.canonical import SegmentType, ContentBlock
+from service.session_service.canonical import SegmentType
 
 MAX_REPLAN_COUNT = 3
 MAX_MESSAGES = 10

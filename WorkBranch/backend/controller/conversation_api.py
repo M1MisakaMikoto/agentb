@@ -58,10 +58,28 @@ async def cascade_delete_conversation(conversation_id: str) -> Result:
 
 
 @router.post("/{conversation_id}/messages")
-async def send_conversation_message(
+async def prepare_conversation_message(
     conversation_id: str,
     body: SendConversationMessageBody,
+) -> Result:
+    """准备消息 - 更新用户消息内容，返回消息ID，不执行 Agent"""
+    service = get_conversation_service()
+    conversation = await service.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="对话不存在")
+
+    if conversation.get("state") == "running":
+        raise HTTPException(status_code=400, detail="对话正在运行中")
+
+    result = await service.prepare_message(conversation_id, body.message)
+    return Result.success(data=result)
+
+
+@router.post("/{conversation_id}/messages/stream")
+async def stream_conversation_message(
+    conversation_id: str,
 ) -> StreamingResponse:
+    """流式发送消息 - 执行 Agent 并返回 SSE 流"""
     service = get_conversation_service()
     conversation = await service.get_conversation(conversation_id)
     if not conversation:
@@ -92,8 +110,6 @@ async def send_conversation_message(
                 extra={"conversation_id": conversation_id},
             )
 
-            yield f"data: {json.dumps({'type': 'message_created', 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
-
             try:
                 await mq.start_consumer()
                 subscriber = mq.subscribe(conversation.get("workspace_id"))
@@ -122,10 +138,7 @@ async def send_conversation_message(
 
                         yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
 
-                        has_done_segment = any(
-                            seg.type == SegmentType.DONE for seg in message.content_blocks
-                        )
-                        if has_done_segment:
+                        if message.type == SegmentType.DONE:
                             done_received = True
                             logger.info(
                                 event="stream.completed",

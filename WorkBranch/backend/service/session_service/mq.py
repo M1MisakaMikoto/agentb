@@ -8,11 +8,7 @@ from pathlib import Path
 
 from service.settings_service.settings_service import SettingsService
 from core.logging import bind_ctx
-from service.session_service.canonical import (
-    Message,
-    ContentBlock,
-    MessageFormatter,
-)
+from service.session_service.canonical import Message
 
 
 class MessageQueue:
