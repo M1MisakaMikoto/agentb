@@ -15,6 +15,7 @@ def get_settings_service() -> SettingsService:
     return SettingsService()
 
 _mysql_pool_instance = None
+_mysql_sync_instance = None
 
 async def get_mysql_database():
     """获取 MySQL 数据库实例（异步单例）。"""
@@ -27,9 +28,12 @@ async def get_mysql_database():
     return _mysql_pool_instance
 
 def get_database():
-    """同步获取 MySQL 数据库实例（兼容旧代码，但推荐使用异步版本）。"""
-    from db.mysql import MySQLDatabase
-    return MySQLDatabase(get_settings_service())
+    """同步获取 MySQL 数据库实例（单例模式）。"""
+    global _mysql_sync_instance
+    if _mysql_sync_instance is None:
+        from db.mysql import MySQLDatabase
+        _mysql_sync_instance = MySQLDatabase(get_settings_service())
+    return _mysql_sync_instance
 
 @lru_cache(maxsize=1)
 def get_file_storage_system() -> FileStorageSystem:
@@ -123,8 +127,10 @@ def clear_all_singletons():
             pass
         _mysql_pool_instance = None
 
+    global _mysql_sync_instance
+    _mysql_sync_instance = None
+
     get_settings_service.cache_clear()
-    get_database.cache_clear()
     get_file_storage_system.cache_clear()
     get_user_service.cache_clear()
     get_session_history.cache_clear()

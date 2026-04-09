@@ -253,6 +253,41 @@ class AgentService:
         print(f"[Agent] 创建对话: {conv_id}, 会话: {session_id}, 工作区: {workspace_id}")
         return conv_id
 
+    async def register_conversation(
+        self,
+        conversation_id: str,
+        workspace_id: str,
+        session_id: str
+    ) -> None:
+        """
+        注册已存在的对话（由 ConversationService 创建）
+        
+        Args:
+            conversation_id: 对话ID
+            workspace_id: 工作区ID
+            session_id: 会话ID
+        """
+        self.ws.register(workspace_id, session_id)
+        
+        async with self._lock:
+            self._conversations[conversation_id] = Conversation(
+                id=conversation_id,
+                workspace_id=workspace_id,
+                session_id=session_id,
+                status=ConversationStatus.PENDING
+            )
+
+        self._log_agent_event(
+            "INFO",
+            "conversation.registered",
+            "conversation registered",
+            conversation_id=conversation_id,
+            workspace_id=workspace_id,
+            extra={"session_id": session_id},
+        )
+
+        print(f"[Agent] 注册对话: {conversation_id}, 会话: {session_id}, 工作区: {workspace_id}")
+
     async def send_message(
         self,
         conversation_id: str,

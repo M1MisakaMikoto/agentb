@@ -99,6 +99,12 @@ class ConversationService:
                 state=ConversationState.PENDING,
             )
 
+        await self._agent.register_conversation(
+            conversation_id=conversation_id,
+            workspace_id=resolved_workspace_id,
+            session_id=str(session_id),
+        )
+
         self._write_content_record(
             conversation_id,
             "system_event",
@@ -137,8 +143,9 @@ class ConversationService:
             conv_info.session_id, conversation_id
         )
 
-        user_message = context[-1]["content"] if context else ""
-        history_context = context[:-1] if context else []
+        persisted_conv = await self._dao.get_conversation_by_id(conversation_id)
+        user_message = persisted_conv.user_content if persisted_conv else ""
+        history_context = context if context else []
 
         message_id = f"msg-{conversation_id}-{int(datetime.now().timestamp() * 1000)}"
 
