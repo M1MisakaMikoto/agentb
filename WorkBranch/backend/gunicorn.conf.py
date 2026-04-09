@@ -41,7 +41,7 @@ capture_output = True
 
 forwarded_allow_ips = "*"
 
-proxy_allow_ips = "*
+proxy_allow_ips = "*"
 
 
 def on_starting(server):

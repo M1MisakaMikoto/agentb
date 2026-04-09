@@ -135,6 +135,11 @@ ALL_TOOLS = {
         "name": "todo_clear",
         "description": "清除TODO任务",
         "params": "completed_only(true/false)"
+    },
+    "rag_search": {
+        "name": "rag_search",
+        "description": "在知识库中进行语义检索，返回与查询最相关的文档片段",
+        "params": "query(必填), kb_ids(知识库ID列表，可选), top_k(返回条数，默认5), min_score(最低相关度，默认0.0)"
     }
 }
 
@@ -143,3 +148,4 @@ FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir"
 EXPLORE_TOOLS = {"explore_code", "explore_internet"}
 SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent"}
 TODO_TOOLS = {"todo_add", "todo_update", "todo_delete", "todo_list", "todo_clear"}
+RAG_TOOLS = {"rag_search"}
