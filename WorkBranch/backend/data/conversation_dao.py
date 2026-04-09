@@ -171,3 +171,23 @@ class ConversationDAO:
                 context.append({"role": "assistant", "content": row_dict["assistant_content"]})
         
         return context
+
+    async def delete_conversations_after(self, conversation_id: str) -> int:
+        """删除指定对话之后的所有对话（按创建时间）
+        
+        Args:
+            conversation_id: 对话ID
+        
+        Returns:
+            删除的对话数量
+        """
+        conv = await self.get_conversation_by_id(conversation_id)
+        if not conv:
+            return 0
+        
+        sql = '''
+            DELETE FROM conversations
+            WHERE session_id = %s
+            AND created_at > %s
+        '''
+        return await self._db.execute(sql, (conv.session_id, conv.created_at))

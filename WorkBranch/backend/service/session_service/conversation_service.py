@@ -289,3 +289,32 @@ class ConversationService:
 
         await self._dao.delete_conversation(conversation_id)
         self._agent.delete_conversation(conversation_id)
+
+    async def delete_conversations_after(self, conversation_id: str) -> int:
+        """删除指定对话之后的所有对话
+        
+        Args:
+            conversation_id: 对话ID
+        
+        Returns:
+            删除的对话数量
+        """
+        conv = await self._dao.get_conversation_by_id(conversation_id)
+        if not conv:
+            return 0
+
+        async with self._lock:
+            to_delete = []
+            for cid, info in self._conversations.items():
+                if info.session_id == conv.session_id and info.created_at > conv.created_at:
+                    if info.task and not info.task.done():
+                        info.task.cancel()
+                    to_delete.append(cid)
+            
+            for cid in to_delete:
+                if cid in self._conversations:
+                    del self._conversations[cid]
+        
+        deleted_count = await self._dao.delete_conversations_after(conversation_id)
+        self._agent.delete_conversation(conversation_id)
+        return deleted_count

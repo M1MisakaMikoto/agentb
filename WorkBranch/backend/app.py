@@ -11,7 +11,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from controller.VO.result import Result
-from controller.settings_api import router as settings_router
 from controller.user_api import router as user_router
 from controller.session_api import router as session_router
 from controller.conversation_api import router as conversation_router
@@ -334,7 +333,6 @@ def health_check():
     return {"status": "ok"}
 
 
-app.include_router(settings_router)
 app.include_router(user_router)
 app.include_router(session_router)
 app.include_router(conversation_router)
