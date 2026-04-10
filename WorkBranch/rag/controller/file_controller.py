@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import mimetypes
 from pathlib import Path
@@ -54,6 +55,19 @@ INGEST_JOB_ASSEMBLER = IngestJobAssembler()
 KNOWLEDGE_BASE_ASSEMBLER = KnowledgeBaseAssembler()
 LOGGER = get_logger(__name__)
 
+# --- IngestionService 模块级单例（模型只加载一次，避免每次请求重建）---
+_INGESTION_SERVICE: Optional[IngestionService] = None
+
+
+def _get_ingestion_service() -> IngestionService:
+    global _INGESTION_SERVICE
+    if _INGESTION_SERVICE is None:
+        _INGESTION_SERVICE = IngestionService()
+    return _INGESTION_SERVICE
+
+
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+
 router = APIRouter(prefix="/rag", tags=["rag"])
 
 
@@ -88,7 +102,8 @@ def ui() -> FileResponse:
 
 
 # ------------------------
-# Knowledge Bases（知识库 CRUD�?# ------------------------
+# Knowledge Bases（知识库 CRUD）
+# ------------------------
 @router.get("/api/knowledge-bases")
 def list_knowledge_bases() -> dict:
     items = KNOWLEDGE_BASE_DAO.list_all()
@@ -184,7 +199,9 @@ async def upload_document(
     category_id: Optional[int] = Form(default=None),
     kb_id: Optional[int] = Form(default=None),
 ) -> dict:
-    content = await file.read()
+    content = await file.read(MAX_UPLOAD_SIZE + 1)
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 100 MB)")
     mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
     size = len(content)
     hash_sha = _sha256_bytes(content)
@@ -235,21 +252,20 @@ async def upload_document(
         )
         raise HTTPException(status_code=500, detail=f"Failed to persist uploaded file: {exc}")
 
-    ingestion_service = IngestionService()
-    try:
-        # collection_name �?IngestionService 根据 doc ctx 中的 kb_id 自动推导，无需外传
-        ingest_result = ingestion_service.ingest_document(document_id=doc_id)
-        LOGGER.info(
-            "upload_ingest_result document_id=%s storage_key=%s ingest_ok=%s ingest_job_id=%s chunk_count=%s error=%s",
-            doc_id,
-            storage_key,
-            ingest_result.get("ok"),
-            ingest_result.get("job_id"),
-            ingest_result.get("chunk_count"),
-            ingest_result.get("error"),
-        )
-    finally:
-        ingestion_service.close()
+    # collection_name 由 IngestionService 根据 doc ctx 中的 kb_id 自动推导，无需外传
+    # 同步 CPU 密集型推理放入线程池，避免阻塞 asyncio event loop
+    ingest_result = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _get_ingestion_service().ingest_document(document_id=doc_id)
+    )
+    LOGGER.info(
+        "upload_ingest_result document_id=%s storage_key=%s ingest_ok=%s ingest_job_id=%s chunk_count=%s error=%s",
+        doc_id,
+        storage_key,
+        ingest_result.get("ok"),
+        ingest_result.get("job_id"),
+        ingest_result.get("chunk_count"),
+        ingest_result.get("error"),
+    )
     return DocumentUploadVO(
         ok=True,
         id=doc_id,

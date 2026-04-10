@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -121,7 +122,7 @@ class FileMetaDAO:
                 )
                 """
             )
-        # 知识库隔离：幂等迁移（knowledge_bases �?+ documents.kb_id 列）
+        # 知识库隔离：幂等迁移（knowledge_bases �?+ documents.kb_id 列）
         from rag.DAO.knowledge_base_dao import KnowledgeBaseDAO
         KnowledgeBaseDAO(self.db_path).ensure_schema()
 
@@ -240,7 +241,11 @@ class FileMetaDAO:
                 (display_name, display_name, mime, size, hash_sha, now, now, kb_id),
             )
             doc_id = int(cur.lastrowid)
-            storage_key = f"{doc_id}_{display_name}"
+            # 净化文件名，防止路径穿越攻击（如 ../../../etc/passwd）
+            safe_name = os.path.basename(display_name.replace("\\", "/"))
+            if not safe_name:
+                safe_name = "unnamed"
+            storage_key = f"{doc_id}_{safe_name}"
             conn.execute("UPDATE documents SET storage_key = ?, updated_at = ? WHERE id = ?", (storage_key, now, doc_id))
 
             if category_id is not None:
