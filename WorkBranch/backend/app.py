@@ -3,9 +3,15 @@ import json
 import sys
 import time
 import traceback
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
+
+# 将 WorkBranch/ 加入 sys.path，使 rag 包可被导入
+_WORKBRANCH_ROOT = Path(__file__).resolve().parent.parent
+if str(_WORKBRANCH_ROOT) not in sys.path:
+    sys.path.insert(0, str(_WORKBRANCH_ROOT))
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -18,6 +24,7 @@ from controller.workspace_api import router as workspace_router
 from core.logging import bind_ctx, get_ctx
 from singleton import get_logging_runtime, get_settings_service, get_user_service
 from middleware.auth import AuthMiddleware
+from rag.controller.file_controller import router as rag_router, on_rag_startup
 
 
 for stream_name in ('stdout', 'stderr'):
@@ -29,6 +36,7 @@ for stream_name in ('stdout', 'stderr'):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    on_rag_startup()
     runtime = get_logging_runtime()
     app_logger = runtime.get_logger("app")
     runtime.start()
@@ -337,3 +345,4 @@ app.include_router(user_router)
 app.include_router(session_router)
 app.include_router(conversation_router)
 app.include_router(workspace_router)
+app.include_router(rag_router)
