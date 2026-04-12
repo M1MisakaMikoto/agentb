@@ -5,9 +5,10 @@ import os
 import shutil
 
 from ...state import ToolExecutionState, ToolCall
-from ...tools import ALL_TOOLS, FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS
+from ...tools import ALL_TOOLS, FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS
 from service.session_service.canonical import SegmentType
 from core.logging import console
+import fnmatch
 
 
 FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir"}
@@ -105,11 +106,11 @@ def get_allowed_tools(agent_type: str, settings_service=None) -> List[str]:
         pass
     
     default_permissions = {
-        "build_agent": ["read_file", "write_file", "list_dir", "create_dir", "explore_code", "thinking", "call_explore_agent", "call_review_agent"],
+        "build_agent": ["read_file", "write_file", "list_dir", "create_dir", "explore_code", "thinking", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files"],
         "plan_agent": ["read_file", "list_dir", "explore_code", "thinking", "call_explore_agent", "call_review_agent"],
         "review_agent": ["read_file", "list_dir", "explore_code", "thinking"],
-        "explore_agent": ["read_file", "list_dir", "thinking", "explore_internet"],
-        "admin_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "call_explore_agent", "call_review_agent"]
+        "explore_agent": ["read_file", "list_dir", "thinking", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files"],
+        "admin_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files"]
     }
     return default_permissions.get(agent_type, default_permissions["build_agent"])
 
@@ -336,6 +337,8 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
         tool_result = _execute_call_explore_agent(tool_args, llm_service, token_callback, message_context)
     elif tool_name == "call_review_agent":
         tool_result = _execute_call_review_agent(tool_args, llm_service, token_callback, message_context)
+    elif tool_name in WORKSPACE_TOOLS:
+        tool_result = _execute_workspace_tool(tool_name, tool_args, workspace_id, workspace_service)
     else:
         tool_result = {"result": f"工具 {tool_name} 执行成功", "error": None}
         console.success(f"结果: {tool_result['result']}")
@@ -921,6 +924,147 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
     except Exception as e:
         print(f"[ToolExec] call_review_agent 失败: {e}")
         return {"result": None, "error": f"子代理执行失败: {str(e)}"}
+
+
+def _execute_workspace_tool(tool_name: str, tool_args: dict, workspace_id: str, workspace_service=None) -> dict:
+    """执行 workspace 相关工具"""
+    console.section(f"Workspace 工具: {tool_name}")
+    
+    if workspace_service is None:
+        from ...service import WorkspaceService
+        workspace_service = WorkspaceService()
+    
+    if tool_name == "list_workspace_files":
+        return _execute_list_workspace_files(workspace_id, workspace_service)
+    elif tool_name == "get_workspace_info":
+        return _execute_get_workspace_info(workspace_id, workspace_service)
+    elif tool_name == "search_files":
+        return _execute_search_files(tool_args, workspace_id, workspace_service)
+    else:
+        return {"result": None, "error": f"未知的 workspace 工具: {tool_name}"}
+
+
+def _execute_list_workspace_files(workspace_id: str, workspace_service) -> dict:
+    """列出工作区文件"""
+    console.info(f"列出工作区文件: {workspace_id}")
+    
+    success, files, error_msg = workspace_service.list_files(workspace_id)
+    
+    if not success:
+        console.error(f"列出文件失败: {error_msg}")
+        return {"result": None, "error": error_msg}
+    
+    if not files:
+        console.success("工作区为空")
+        return {"result": "工作区为空，暂无文件", "error": None}
+    
+    result_lines = ["工作区文件列表：\n"]
+    for f in files:
+        icon = "📁" if f["is_dir"] else "📄"
+        size_str = "" if f["is_dir"] else f" ({_format_file_size(f['size'])})"
+        result_lines.append(f"  {icon} {f['path']}{size_str}")
+    
+    result = "\n".join(result_lines)
+    console.success(f"找到 {len(files)} 个文件/目录")
+    return {"result": result, "error": None}
+
+
+def _execute_get_workspace_info(workspace_id: str, workspace_service) -> dict:
+    """获取工作区信息"""
+    console.info(f"获取工作区信息: {workspace_id}")
+    
+    info = workspace_service.get_workspace_info(workspace_id)
+    if not info:
+        console.error(f"工作区不存在: {workspace_id}")
+        return {"result": None, "error": f"工作区不存在: {workspace_id}"}
+    
+    workspace_dir = workspace_service.get_workspace_dir(workspace_id)
+    
+    result_lines = [
+        "工作区信息：",
+        f"  ID: {info.get('id')}",
+        f"  会话ID: {info.get('session_id')}",
+        f"  状态: {info.get('status')}",
+        f"  路径: {workspace_dir}",
+    ]
+    
+    if workspace_dir and os.path.exists(workspace_dir):
+        total_size = 0
+        file_count = 0
+        dir_count = 0
+        for root, dirs, files in os.walk(workspace_dir):
+            dir_count += len(dirs)
+            for f in files:
+                file_count += 1
+                total_size += os.path.getsize(os.path.join(root, f))
+        result_lines.extend([
+            f"  文件数: {file_count}",
+            f"  目录数: {dir_count}",
+            f"  总大小: {_format_file_size(total_size)}",
+        ])
+    
+    result = "\n".join(result_lines)
+    console.success("获取工作区信息成功")
+    return {"result": result, "error": None}
+
+
+def _execute_search_files(tool_args: dict, workspace_id: str, workspace_service) -> dict:
+    """在工作区内搜索文件"""
+    pattern = tool_args.get("pattern", "*")
+    console.info(f"搜索文件: pattern={pattern}, workspace={workspace_id}")
+    
+    workspace_dir = workspace_service.get_workspace_dir(workspace_id)
+    if not workspace_dir:
+        console.error(f"工作区不存在: {workspace_id}")
+        return {"result": None, "error": f"工作区不存在: {workspace_id}"}
+    
+    if not os.path.exists(workspace_dir):
+        console.success("工作区目录不存在，无文件")
+        return {"result": "工作区为空", "error": None}
+    
+    matches = []
+    for root, dirs, files in os.walk(workspace_dir):
+        for filename in files:
+            if fnmatch.fnmatch(filename.lower(), pattern.lower()):
+                full_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(full_path, workspace_dir)
+                matches.append({
+                    "name": filename,
+                    "path": rel_path.replace("\\", "/"),
+                    "size": os.path.getsize(full_path),
+                })
+        for dirname in dirs:
+            if fnmatch.fnmatch(dirname.lower(), pattern.lower()):
+                full_path = os.path.join(root, dirname)
+                rel_path = os.path.relpath(full_path, workspace_dir)
+                matches.append({
+                    "name": dirname,
+                    "path": rel_path.replace("\\", "/"),
+                    "is_dir": True,
+                })
+    
+    if not matches:
+        console.success(f"未找到匹配 '{pattern}' 的文件")
+        return {"result": f"未找到匹配 '{pattern}' 的文件", "error": None}
+    
+    result_lines = [f"找到 {len(matches)} 个匹配 '{pattern}' 的结果：\n"]
+    for m in matches:
+        icon = "📁" if m.get("is_dir") else "📄"
+        size_str = "" if m.get("is_dir") else f" ({_format_file_size(m['size'])})"
+        result_lines.append(f"  {icon} {m['path']}{size_str}")
+    
+    result = "\n".join(result_lines)
+    console.success(f"找到 {len(matches)} 个匹配项")
+    return {"result": result, "error": None}
+
+
+def _format_file_size(size: int) -> str:
+    """格式化文件大小"""
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
 
 
 def check_doom_loop(state: ToolExecutionState) -> dict:

@@ -140,6 +140,21 @@ ALL_TOOLS = {
         "name": "rag_search",
         "description": "在知识库中进行语义检索，返回与查询最相关的文档片段",
         "params": "query(必填), kb_ids(知识库ID列表，可选), top_k(返回条数，默认5), min_score(最低相关度，默认0.0)"
+    },
+    "list_workspace_files": {
+        "name": "list_workspace_files",
+        "description": "列出当前工作区内所有文件和目录（递归）",
+        "params": ""
+    },
+    "get_workspace_info": {
+        "name": "get_workspace_info",
+        "description": "获取当前工作区信息（路径、状态等）",
+        "params": ""
+    },
+    "search_files": {
+        "name": "search_files",
+        "description": "在工作区内搜索文件（支持文件名模式匹配）",
+        "params": "pattern(文件名模式，支持通配符*)"
     }
 }
 
@@ -149,3 +164,4 @@ EXPLORE_TOOLS = {"explore_code", "explore_internet"}
 SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent"}
 TODO_TOOLS = {"todo_add", "todo_update", "todo_delete", "todo_list", "todo_clear"}
 RAG_TOOLS = {"rag_search"}
+WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}
