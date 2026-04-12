@@ -8,6 +8,7 @@ import {
   fetchConversationDetail,
   fetchConversationMessages,
   fetchSessionConversations,
+  fetchSessionDetail,
   fetchWorkspaceDetail,
   get as httpGet,
   getErrorMessage,
@@ -69,8 +70,11 @@ async function loadConversationDetailBundle(conversationId: string): Promise<{
 }> {
   const detail = await fetchConversationDetail(conversationId)
 
-  const workspacePromise = detail.workspaceId
-    ? fetchWorkspaceDetail(detail.workspaceId).catch((caughtError) => {
+  const session = await fetchSessionDetail(detail.sessionId)
+  const workspaceId = session.workspaceId
+
+  const workspacePromise = workspaceId
+    ? fetchWorkspaceDetail(workspaceId).catch((caughtError) => {
         if (isApiError(caughtError) && caughtError.status === 404) {
           return null
         }

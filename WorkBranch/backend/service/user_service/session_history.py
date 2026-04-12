@@ -1,5 +1,6 @@
 from typing import List
-from singleton import get_user_info_dao, get_conversation_dao
+import uuid
+from singleton import get_user_info_dao, get_conversation_dao, get_workspace_service
 from data.user_info_dao import UserInfoDAO
 from data.conversation_dao import ConversationDAO, Session
 
@@ -30,7 +31,12 @@ class SessionHistory:
         返回创建的会话对象。
         """
         user_id = self._get_current_user_id()
-        session_id = self._conv_dao.create_session(user_id, title)
+        workspace_id = str(uuid.uuid4())[:8]
+        session_id = self._conv_dao.create_session(user_id, title, workspace_id)
+        
+        workspace_service = get_workspace_service()
+        workspace_service.register(workspace_id=workspace_id, session_id=str(session_id))
+        
         return self._conv_dao.get_session_by_id(session_id)
 
     def delete_session(self, session_id: int) -> None:
@@ -52,7 +58,12 @@ class SessionHistory:
 
     async def create_session_async(self, user_id: int, title: str) -> Session:
         """异步创建会话。"""
-        session_id = await self._conv_dao.create_session(user_id, title)
+        workspace_id = str(uuid.uuid4())[:8]
+        session_id = await self._conv_dao.create_session(user_id, title, workspace_id)
+        
+        workspace_service = get_workspace_service()
+        workspace_service.register(workspace_id=workspace_id, session_id=str(session_id))
+        
         return await self._conv_dao.get_session_by_id(session_id)
 
     async def delete_session_async(self, session_id: int) -> None:

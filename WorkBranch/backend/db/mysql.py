@@ -118,6 +118,7 @@ class MySQLDatabase:
                         id INTEGER PRIMARY KEY AUTO_INCREMENT,
                         user_id INTEGER NOT NULL,
                         title VARCHAR(255) DEFAULT '新会话',
+                        workspace_id VARCHAR(36),
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -128,7 +129,6 @@ class MySQLDatabase:
                     CREATE TABLE IF NOT EXISTS conversations (
                         id VARCHAR(36) PRIMARY KEY,
                         session_id INTEGER NOT NULL,
-                        workspace_id VARCHAR(36),
                         user_content TEXT NOT NULL,
                         assistant_content LONGTEXT,
                         thinking_content LONGTEXT,

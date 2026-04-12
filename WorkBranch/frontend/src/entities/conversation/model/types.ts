@@ -19,7 +19,6 @@ export interface ConversationNode {
 export interface ConversationDetail {
   conversationId: ConversationId
   sessionId: number
-  workspaceId: string | null
   parentConversationId: string | null
   title: string | null
   state: string

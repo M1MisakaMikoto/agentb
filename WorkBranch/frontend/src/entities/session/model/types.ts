@@ -5,6 +5,7 @@ export type SessionId = string | number
 export interface SessionSummary {
   id: SessionId
   title: string
+  workspaceId?: string
   status?: string
   updatedAt?: string
   createdAt?: string

@@ -47,7 +47,6 @@ class SessionService:
         self,
         session_id: int,
         user_content: Optional[str] = None,
-        workspace_id: Optional[str] = None,
         parent_conversation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """创建对话
@@ -55,7 +54,6 @@ class SessionService:
         Args:
             session_id: 会话ID
             user_content: 用户消息内容（可选，用于新的线性对话模型）
-            workspace_id: 工作区ID（可选）
             parent_conversation_id: 父对话ID（已废弃，保留用于向后兼容）
         
         Returns:
@@ -68,7 +66,6 @@ class SessionService:
         conversation_id = await self._conversation_service.create_conversation(
             session_id=session_id,
             user_content=user_content or "",
-            workspace_id=workspace_id,
         )
 
         return {

@@ -28,7 +28,6 @@ export type ConversationDetail = {
   sessionId: string
   sessionTitle: string
   title: string
-  workspaceId: string
   status: string
   createdAt: string
   updatedAt: string
@@ -41,7 +40,6 @@ export const currentConversationDetail: ConversationDetail = {
   sessionId: 'session-001',
   sessionTitle: '阶段四：全屏图界面静态重构',
   title: '阶段四：全屏图界面静态重构 / 当前对话',
-  workspaceId: 'workspace-demo-001',
   status: '静态预览中',
   createdAt: '2026-03-26 09:10',
   updatedAt: '2026-03-26 10:48',

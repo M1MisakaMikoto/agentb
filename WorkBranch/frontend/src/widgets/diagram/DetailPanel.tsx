@@ -79,7 +79,7 @@ export function DetailPanel({ nodeId, nodes, conversationDetail, sessionDetail, 
                 <Typography.Text strong>对话信息</Typography.Text>
                 <Descriptions column={1} size="small" bordered>
                   <Descriptions.Item label="conversation_id">{conversationDetail.conversationId}</Descriptions.Item>
-                  <Descriptions.Item label="workspace_id">{conversationDetail.workspaceId ?? 'N/A'}</Descriptions.Item>
+                  <Descriptions.Item label="workspace_id">{sessionDetail.workspaceId ?? 'N/A'}</Descriptions.Item>
                   <Descriptions.Item label="状态">{conversationDetail.state}</Descriptions.Item>
                   <Descriptions.Item label="消息数">{conversationDetail.messageCount}</Descriptions.Item>
                   <Descriptions.Item label="创建时间">{conversationDetail.createdAt}</Descriptions.Item>

@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from singleton import get_conversation_dao, get_conversation_service
+from singleton import get_conversation_dao, get_conversation_service, get_session_history
 from controller.VO.result import Result
 
 router = APIRouter(prefix="/session", tags=["session"])
@@ -15,7 +15,6 @@ class CreateSessionBody(BaseModel):
 
 class CreateConversationBody(BaseModel):
     user_content: str
-    workspace_id: Optional[str] = None
 
 
 @router.get("/sessions")
@@ -27,6 +26,7 @@ async def list_sessions(request: Request) -> Result:
         {
             "id": s.id,
             "title": s.title,
+            "workspace_id": s.workspace_id,
             "created_at": s.created_at,
             "updated_at": s.updated_at,
         }
@@ -37,13 +37,14 @@ async def list_sessions(request: Request) -> Result:
 @router.post("/sessions")
 async def create_session(request: Request, body: CreateSessionBody = None) -> Result:
     user = request.state.user
-    dao = get_conversation_dao()
+    session_history = get_session_history()
     if body is None:
         body = CreateSessionBody()
-    session_id = await dao.create_session(user["id"], body.title)
+    session = await session_history.create_session_async(user["id"], body.title)
     return Result.success(data={
-        "id": session_id,
-        "title": body.title,
+        "id": session.id,
+        "title": session.title,
+        "workspace_id": session.workspace_id,
     })
 
 
@@ -57,6 +58,7 @@ async def get_session(session_id: int) -> Result:
         "id": session.id,
         "user_id": session.user_id,
         "title": session.title,
+        "workspace_id": session.workspace_id,
         "created_at": session.created_at,
         "updated_at": session.updated_at,
     })
@@ -87,7 +89,6 @@ async def create_conversation(session_id: int, body: CreateConversationBody) -> 
     conversation_id = await service.create_conversation(
         session_id=session_id,
         user_content=body.user_content,
-        workspace_id=body.workspace_id,
     )
     return Result.success(data={
         "conversation_id": conversation_id,

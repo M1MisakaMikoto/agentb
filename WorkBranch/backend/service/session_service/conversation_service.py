@@ -79,29 +79,32 @@ class ConversationService:
         self,
         session_id: int,
         user_content: str,
-        workspace_id: Optional[str] = None,
     ) -> str:
         conversation_id = str(uuid.uuid4())
-        resolved_workspace_id = workspace_id or conversation_id
+        
+        session = await self._dao.get_session_by_id(session_id)
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+        
+        workspace_id = session.workspace_id
 
         await self._dao.create_conversation(
             conversation_id=conversation_id,
             session_id=session_id,
             user_content=user_content,
-            workspace_id=resolved_workspace_id,
         )
 
         async with self._lock:
             self._conversations[conversation_id] = ConversationInfo(
                 conversation_id=conversation_id,
                 session_id=session_id,
-                workspace_id=resolved_workspace_id,
+                workspace_id=workspace_id,
                 state=ConversationState.PENDING,
             )
 
         await self._agent.register_conversation(
             conversation_id=conversation_id,
-            workspace_id=resolved_workspace_id,
+            workspace_id=workspace_id,
             session_id=str(session_id),
         )
 
@@ -111,7 +114,7 @@ class ConversationService:
             {
                 "event": "conversation.created",
                 "session_id": session_id,
-                "workspace_id": resolved_workspace_id,
+                "workspace_id": workspace_id,
             },
         )
 
@@ -137,10 +140,15 @@ class ConversationService:
                 persisted = await self._dao.get_conversation_by_id(conversation_id)
                 if not persisted:
                     raise ValueError(f"Conversation {conversation_id} not found")
+                
+                session = await self._dao.get_session_by_id(persisted.session_id)
+                if not session:
+                    raise ValueError(f"Session {persisted.session_id} not found")
+                
                 conv_info = ConversationInfo(
                     conversation_id=persisted.id,
                     session_id=persisted.session_id,
-                    workspace_id=persisted.workspace_id or conversation_id,
+                    workspace_id=session.workspace_id,
                     state=ConversationState(persisted.state),
                 )
                 self._conversations[conversation_id] = conv_info
@@ -172,10 +180,15 @@ class ConversationService:
                 persisted = await self._dao.get_conversation_by_id(conversation_id)
                 if not persisted:
                     raise ValueError(f"Conversation {conversation_id} not found")
+                
+                session = await self._dao.get_session_by_id(persisted.session_id)
+                if not session:
+                    raise ValueError(f"Session {persisted.session_id} not found")
+                
                 conv_info = ConversationInfo(
                     conversation_id=persisted.id,
                     session_id=persisted.session_id,
-                    workspace_id=persisted.workspace_id or conversation_id,
+                    workspace_id=session.workspace_id,
                     state=ConversationState(persisted.state),
                 )
                 self._conversations[conversation_id] = conv_info
@@ -300,7 +313,6 @@ class ConversationService:
         return {
             "id": conv.id,
             "session_id": conv.session_id,
-            "workspace_id": conv.workspace_id,
             "user_content": conv.user_content,
             "assistant_content": conv.assistant_content,
             "thinking_content": conv.thinking_content,
@@ -316,7 +328,6 @@ class ConversationService:
             {
                 "id": conv.id,
                 "session_id": conv.session_id,
-                "workspace_id": conv.workspace_id,
                 "user_content": conv.user_content,
                 "assistant_content": conv.assistant_content,
                 "thinking_content": conv.thinking_content,

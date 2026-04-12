@@ -14,6 +14,7 @@ function toSessionSummary(payload: Record<string, unknown>): SessionSummary {
   return {
     id: Number(payload.id ?? 0),
     title: String(payload.title ?? ''),
+    workspaceId: payload.workspace_id ? String(payload.workspace_id) : undefined,
     createdAt: payload.created_at ? String(payload.created_at) : undefined,
     updatedAt: payload.updated_at ? String(payload.updated_at) : undefined,
   }
@@ -46,7 +47,6 @@ function toConversationDetail(payload: Record<string, unknown>): ConversationDet
   return {
     conversationId: String(payload.conversation_id ?? ''),
     sessionId: Number(payload.session_id ?? 0),
-    workspaceId: payload.workspace_id ? String(payload.workspace_id) : null,
     parentConversationId:
       payload.parent_conversation_id === null || payload.parent_conversation_id === undefined
         ? null
@@ -113,11 +113,9 @@ export async function fetchSessionDetail(sessionId: string | number) {
 
 export async function createConversation(
   sessionId: string | number,
-  workspaceId?: string | null,
   parentConversationId?: string | null,
 ) {
-  const data = await post<Record<string, unknown>, { workspace_id?: string | null; parent_conversation_id?: string | null }>(`/api/session/sessions/${sessionId}/conversations`, {
-    workspace_id: workspaceId,
+  const data = await post<Record<string, unknown>, { parent_conversation_id?: string | null }>(`/api/session/sessions/${sessionId}/conversations`, {
     parent_conversation_id: parentConversationId,
   })
 

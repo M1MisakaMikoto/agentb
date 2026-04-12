@@ -1,8 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from typing import Optional, List
 
-from singleton import get_conversation_dao, get_workspace_service
-from data.conversation_dao import ConversationDAO
+from singleton import get_workspace_service
 from service.agent_service.service import WorkspaceService
 from controller.VO.result import Result
 
@@ -32,15 +31,8 @@ def list_workspaces(
 def get_workspace(
     workspace_id: str,
     service: WorkspaceService = Depends(get_workspace_service),
-    dao: ConversationDAO = Depends(get_conversation_dao),
 ) -> Result:
     info = service.get_workspace_info(workspace_id)
-    if not info:
-        conversation = dao.get_conversation_by_id(workspace_id)
-        if conversation:
-            service.register(workspace_id=workspace_id, session_id=str(conversation.session_id))
-            info = service.get_workspace_info(workspace_id)
-
     if not info:
         raise HTTPException(status_code=404, detail="Workspace not found")
 

@@ -7,6 +7,7 @@ class Session:
     id: int
     user_id: int
     title: str
+    workspace_id: str
     created_at: str
     updated_at: str
 
@@ -15,7 +16,6 @@ class Session:
 class Conversation:
     id: str
     session_id: int
-    workspace_id: Optional[str]
     user_content: str
     assistant_content: Optional[str]
     thinking_content: Optional[str]
@@ -31,12 +31,12 @@ class ConversationDAO:
     def __init__(self, db):
         self._db = db
 
-    async def create_session(self, user_id: int, title: str = "新会话") -> int:
+    async def create_session(self, user_id: int, title: str = "新会话", workspace_id: str = None) -> int:
         sql = '''
-            INSERT INTO sessions (user_id, title)
-            VALUES (%s, %s)
+            INSERT INTO sessions (user_id, title, workspace_id)
+            VALUES (%s, %s, %s)
         '''
-        return await self._db.execute(sql, (user_id, title))
+        return await self._db.execute(sql, (user_id, title, workspace_id))
 
     async def delete_session(self, session_id: int) -> None:
         sql = 'DELETE FROM sessions WHERE id = %s'
@@ -44,7 +44,7 @@ class ConversationDAO:
 
     async def get_session_by_id(self, session_id: int) -> Optional[Session]:
         sql = '''
-            SELECT id, user_id, title, created_at, updated_at
+            SELECT id, user_id, title, workspace_id, created_at, updated_at
             FROM sessions
             WHERE id = %s
         '''
@@ -55,7 +55,7 @@ class ConversationDAO:
 
     async def list_sessions_by_user(self, user_id: int) -> List[Session]:
         sql = '''
-            SELECT id, user_id, title, created_at, updated_at
+            SELECT id, user_id, title, workspace_id, created_at, updated_at
             FROM sessions
             WHERE user_id = %s
             ORDER BY updated_at DESC
@@ -68,13 +68,12 @@ class ConversationDAO:
         conversation_id: str,
         session_id: int,
         user_content: str,
-        workspace_id: Optional[str] = None,
     ) -> None:
         sql = '''
-            INSERT INTO conversations (id, session_id, workspace_id, user_content, state)
-            VALUES (%s, %s, %s, %s, 'pending')
+            INSERT INTO conversations (id, session_id, user_content, state)
+            VALUES (%s, %s, %s, 'pending')
         '''
-        await self._db.execute(sql, (conversation_id, session_id, workspace_id, user_content))
+        await self._db.execute(sql, (conversation_id, session_id, user_content))
 
     async def update_conversation(
         self,
@@ -114,7 +113,7 @@ class ConversationDAO:
 
     async def get_conversation_by_id(self, conversation_id: str) -> Optional[Conversation]:
         sql = '''
-            SELECT id, session_id, workspace_id, user_content, assistant_content,
+            SELECT id, session_id, user_content, assistant_content,
                    thinking_content, state, error, created_at, updated_at
             FROM conversations
             WHERE id = %s
@@ -126,7 +125,7 @@ class ConversationDAO:
 
     async def list_conversations_by_session(self, session_id: int) -> List[Conversation]:
         sql = '''
-            SELECT id, session_id, workspace_id, user_content, assistant_content,
+            SELECT id, session_id, user_content, assistant_content,
                    thinking_content, state, error, created_at, updated_at
             FROM conversations
             WHERE session_id = %s
