@@ -7,8 +7,6 @@ from controller.VO.result import Result
 
 
 PUBLIC_PATHS = {
-    "/user/register",
-    "/user/login",
     "/health",
     "/docs",
     "/openapi.json",
@@ -23,22 +21,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path.startswith("/docs") or request.url.path.startswith("/openapi"):
             return await call_next(request)
         
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
+        user_id_header = request.headers.get("X-User-ID")
+        if not user_id_header:
             return JSONResponse(
                 status_code=401,
-                content=Result.error(message="未提供认证令牌", code=401).model_dump(),
+                content=Result.error(message="未提供用户标识 (X-User-ID)", code=401).model_dump(),
             )
         
-        token = auth_header[7:]
+        try:
+            user_id = int(user_id_header)
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content=Result.error(message="用户标识格式错误，必须为整数", code=400).model_dump(),
+            )
+        
         user_service = get_user_service()
-        user = await user_service.validate_token(token)
-        
-        if not user:
-            return JSONResponse(
-                status_code=401,
-                content=Result.error(message="无效的认证令牌", code=401).model_dump(),
-            )
+        user = await user_service.get_or_create_user(user_id)
         
         request.state.user = user
         return await call_next(request)

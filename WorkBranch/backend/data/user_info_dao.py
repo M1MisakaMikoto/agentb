@@ -8,8 +8,6 @@ from data.conversation_dao import Session
 class User:
     id: int
     name: str
-    password_hash: str
-    session_token: Optional[str]
     created_at: str
     updated_at: str
 
@@ -20,39 +18,27 @@ class UserInfoDAO:
     def __init__(self, db):
         self._db = db
 
-    async def create_user(self, name: str, password_hash: str = "") -> int:
-        """创建新用户，返回用户ID。"""
-        sql = 'INSERT INTO users (name, password_hash) VALUES (%s, %s)'
-        return await self._db.execute(sql, (name, password_hash))
+    async def get_or_create_user_by_id(self, user_id: int) -> User:
+        """根据ID获取用户，不存在则自动创建。"""
+        user = await self.get_user_by_id(user_id)
+        if user:
+            return user
+        return await self.create_user(user_id)
+
+    async def create_user(self, user_id: int) -> User:
+        """创建新用户，返回用户对象。"""
+        sql = 'INSERT INTO users (id, name) VALUES (%s, %s)'
+        name = f"user_{user_id}"
+        await self._db.execute(sql, (user_id, name))
+        return await self.get_user_by_id(user_id)
 
     async def get_user_by_id(self, user_id: int) -> Optional[User]:
         """根据ID获取用户。"""
-        sql = 'SELECT id, name, password_hash, session_token, created_at, updated_at FROM users WHERE id = %s'
+        sql = 'SELECT id, name, created_at, updated_at FROM users WHERE id = %s'
         row = await self._db.fetch_one(sql, (user_id,))
         if row:
             return User(**dict(row))
         return None
-
-    async def get_user_by_name(self, name: str) -> Optional[User]:
-        """根据用户名获取用户。"""
-        sql = 'SELECT id, name, password_hash, session_token, created_at, updated_at FROM users WHERE name = %s'
-        row = await self._db.fetch_one(sql, (name,))
-        if row:
-            return User(**dict(row))
-        return None
-
-    async def get_user_by_token(self, token: str) -> Optional[User]:
-        """根据 session token 获取用户。"""
-        sql = 'SELECT id, name, password_hash, session_token, created_at, updated_at FROM users WHERE session_token = %s'
-        row = await self._db.fetch_one(sql, (token,))
-        if row:
-            return User(**dict(row))
-        return None
-
-    async def update_session_token(self, user_id: int, token: Optional[str]) -> None:
-        """更新用户的 session token。"""
-        sql = 'UPDATE users SET session_token = %s WHERE id = %s'
-        await self._db.execute(sql, (token, user_id))
 
     async def update_user_name(self, user_id: int, new_name: str) -> None:
         """更新用户名称。"""

@@ -107,9 +107,7 @@ class MySQLDatabase:
                 await cursor.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         id INTEGER PRIMARY KEY AUTO_INCREMENT,
-                        name VARCHAR(255) NOT NULL UNIQUE,
-                        password_hash VARCHAR(255) NOT NULL,
-                        session_token VARCHAR(255) UNIQUE,
+                        name VARCHAR(255) NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -142,13 +140,6 @@ class MySQLDatabase:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 ''')
 
-                try:
-                    await cursor.execute('''
-                        CREATE INDEX idx_users_session_token ON users(session_token)
-                    ''')
-                except Exception:
-                    pass
-                    
                 try:
                     await cursor.execute('''
                         CREATE INDEX idx_sessions_user_id ON sessions(user_id)
