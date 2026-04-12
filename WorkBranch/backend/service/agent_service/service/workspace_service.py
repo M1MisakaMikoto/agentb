@@ -227,6 +227,56 @@ class WorkspaceService:
         
         return new_filename
 
+    def list_files(self, workspace_id: str) -> Tuple[bool, List[Dict], str]:
+        """
+        递归列出工作区内的所有文件和目录
+        
+        Args:
+            workspace_id: 工作区ID
+            
+        Returns:
+            (是否成功, 文件列表, 错误信息)
+            文件列表格式: [{"name", "path", "is_dir", "size", "modified_at"}, ...]
+        """
+        workspace_dir = self.get_workspace_dir(workspace_id)
+        if not workspace_dir:
+            return False, [], f"工作区不存在: {workspace_id}"
+
+        if not os.path.exists(workspace_dir):
+            return True, [], ""
+
+        files = []
+        try:
+            for root, dirs, filenames in os.walk(workspace_dir):
+                for dirname in dirs:
+                    full_path = os.path.join(root, dirname)
+                    rel_path = os.path.relpath(full_path, workspace_dir)
+                    stat_info = os.stat(full_path)
+                    files.append({
+                        "name": dirname,
+                        "path": rel_path.replace("\\", "/"),
+                        "is_dir": True,
+                        "size": 0,
+                        "modified_at": stat_info.st_mtime,
+                    })
+                
+                for filename in filenames:
+                    full_path = os.path.join(root, filename)
+                    rel_path = os.path.relpath(full_path, workspace_dir)
+                    stat_info = os.stat(full_path)
+                    files.append({
+                        "name": filename,
+                        "path": rel_path.replace("\\", "/"),
+                        "is_dir": False,
+                        "size": stat_info.st_size,
+                        "modified_at": stat_info.st_mtime,
+                    })
+            
+            files.sort(key=lambda x: (not x["is_dir"], x["path"].lower()))
+            return True, files, ""
+        except Exception as e:
+            return False, [], f"列出文件失败: {str(e)}"
+
     async def save_uploaded_files(
         self,
         workspace_id: str,

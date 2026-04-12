@@ -42,6 +42,22 @@ def get_workspace(
     })
 
 
+@router.get("/{workspace_id}/files")
+def list_workspace_files(
+    workspace_id: str,
+    service: WorkspaceService = Depends(get_workspace_service),
+) -> Result:
+    info = service.get_workspace_info(workspace_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    success, files, error_msg = service.list_files(workspace_id)
+    if not success:
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    return Result.success(data=files)
+
+
 @router.post("/{workspace_id}/files")
 async def upload_files(
     workspace_id: str,
