@@ -24,6 +24,7 @@ async def get_mysql_database():
         settings = get_settings_service()
         _mysql_pool_instance = MySQLDatabase(settings)
         await _mysql_pool_instance.init_pool()
+        await _mysql_pool_instance.init_tables()
     return _mysql_pool_instance
 
 def get_database():
