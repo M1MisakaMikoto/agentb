@@ -229,7 +229,7 @@ class ConversationService:
 
         try:
             task = await self._agent.send_message(
-                conversation_id=conv_info.workspace_id,
+                conversation_id=conv_info.conversation_id,
                 message=user_message,
                 message_id=message_id,
                 stream_callback=None,

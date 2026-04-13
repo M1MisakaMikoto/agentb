@@ -1,0 +1,57 @@
+INFO:     Started server process [7456]
+INFO:     Waiting for application startup.
+ERROR:    Traceback (most recent call last):
+  File "E:\PythonProject\agentb\.venv\Lib\site-packages\starlette\routing.py", line 638, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "X:\Python312\Lib\contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PythonProject\agentb\.venv\Lib\site-packages\fastapi\routing.py", line 216, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "X:\Python312\Lib\contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PythonProject\agentb\.venv\Lib\site-packages\fastapi\routing.py", line 216, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "X:\Python312\Lib\contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PythonProject\agentb\.venv\Lib\site-packages\fastapi\routing.py", line 216, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "X:\Python312\Lib\contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PythonProject\agentb\.venv\Lib\site-packages\fastapi\routing.py", line 216, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "X:\Python312\Lib\contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PythonProject\agentb\.venv\Lib\site-packages\fastapi\routing.py", line 216, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "X:\Python312\Lib\contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "E:\PythonProject\agentb\WorkBranch\backend\app.py", line 39, in lifespan
+    on_rag_startup()
+  File "E:\PythonProject\agentb\WorkBranch\rag\controller\file_controller.py", line 94, in on_rag_startup
+    _ensure_schema()
+  File "E:\PythonProject\agentb\WorkBranch\rag\controller\file_controller.py", line 89, in _ensure_schema
+    FILE_META_DAO.ensure_schema()
+  File "E:\PythonProject\agentb\WorkBranch\rag\DAO\file_meta_dao.py", line 45, in ensure_schema
+    with self._conn() as conn:
+         ^^^^^^^^^^^^
+  File "X:\Python312\Lib\contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "E:\PythonProject\agentb\WorkBranch\rag\DAO\file_meta_dao.py", line 28, in _conn
+    conn = sqlite3.connect(self.db_path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: unable to open database file
+
+ERROR:    Application startup failed. Exiting.

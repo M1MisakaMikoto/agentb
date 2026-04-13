@@ -5,7 +5,6 @@ from functools import lru_cache
 from core.logging.runtime import LoggingRuntime
 from db.mysql import MySQLDatabase
 from data.file_storage_system import FileStorageSystem
-from service.agent_service.service import WorkspaceService, LLMService
 from service.settings_service.settings_service import SettingsService
 from service.session_service.mq import MessageQueue
 
@@ -33,7 +32,16 @@ def get_database():
     if _mysql_sync_instance is None:
         from db.mysql import MySQLDatabase
         _mysql_sync_instance = MySQLDatabase(get_settings_service())
+        import asyncio
+        asyncio.run(_mysql_sync_instance.init_pool())
     return _mysql_sync_instance
+
+def get_mysql_database_sync():
+    """获取已初始化的 MySQL 数据库实例（用于 DAO）。"""
+    global _mysql_pool_instance
+    if _mysql_pool_instance is None:
+        raise RuntimeError("MySQL pool not initialized. Call get_mysql_database() first.")
+    return _mysql_pool_instance
 
 @lru_cache(maxsize=1)
 def get_file_storage_system() -> FileStorageSystem:
@@ -68,7 +76,8 @@ def get_agent_service():
     return AgentService(ws, llm, mq)
 
 @lru_cache(maxsize=1)
-def get_workspace_service() -> WorkspaceService:
+def get_workspace_service():
+    from service.agent_service.service import WorkspaceService
     settings = get_settings_service()
     try:
         base_dir = settings.get("workspace:base_dir")
@@ -77,20 +86,21 @@ def get_workspace_service() -> WorkspaceService:
     return WorkspaceService(base_dir)
 
 @lru_cache(maxsize=1)
-def get_llm_service() -> LLMService:
+def get_llm_service():
+    from service.agent_service.service import LLMService
     settings = get_settings_service()
     return LLMService(settings)
 
 @lru_cache(maxsize=1)
 def get_user_info_dao():
     from data.user_info_dao import UserInfoDAO
-    db = get_database()
+    db = get_mysql_database_sync()
     return UserInfoDAO(db)
 
 @lru_cache(maxsize=1)
 def get_conversation_dao():
     from data.conversation_dao import ConversationDAO
-    db = get_database()
+    db = get_mysql_database_sync()
     return ConversationDAO(db)
 
 @lru_cache(maxsize=1)

@@ -37,6 +37,11 @@ for stream_name in ('stdout', 'stderr'):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     on_rag_startup()
+    
+    from singleton import get_mysql_database
+    db = await get_mysql_database()
+    await db.init_tables()
+    
     runtime = get_logging_runtime()
     app_logger = runtime.get_logger("app")
     runtime.start()
