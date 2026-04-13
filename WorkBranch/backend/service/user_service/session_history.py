@@ -58,6 +58,11 @@ class SessionHistory:
 
     async def create_session_async(self, user_id: int, title: str) -> Session:
         """异步创建会话。"""
+        # 确保用户存在
+        from singleton import get_user_info_dao
+        user_dao = get_user_info_dao()
+        await user_dao.get_or_create_user_by_id(user_id)
+        
         workspace_id = str(uuid.uuid4())[:8]
         session_id = await self._conv_dao.create_session(user_id, title, workspace_id)
         

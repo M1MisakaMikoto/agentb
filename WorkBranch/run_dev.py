@@ -18,17 +18,11 @@ def print_line(message: str, *, stream: str = "stdout") -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Start frontend and backend dev servers.")
+    parser = argparse.ArgumentParser(description="Start backend dev server.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--backend-port", type=int, default=8000)
-    parser.add_argument("--frontend-port", type=int, default=5173)
-    parser.add_argument("--backend-only", action="store_true")
-    parser.add_argument("--frontend-only", action="store_true")
     parser.add_argument("--no-reload", action="store_true")
     args = parser.parse_args()
-
-    if args.backend_only and args.frontend_only:
-        parser.error("--backend-only and --frontend-only cannot be used together.")
 
     return args
 
@@ -47,15 +41,7 @@ def resolve_python(workspace_root: Path) -> str:
     raise RuntimeError("Python executable not found.")
 
 
-def resolve_npm() -> str:
-    commands = ["npm.cmd", "npm"] if os.name == "nt" else ["npm"]
 
-    for command in commands:
-        resolved = shutil.which(command)
-        if resolved:
-            return resolved
-
-    raise RuntimeError("npm command not found in PATH.")
 
 
 def stream_output(name: str, process: subprocess.Popen[str]) -> None:
@@ -147,63 +133,40 @@ def main() -> int:
     root_dir = Path(__file__).resolve().parent
     workspace_root = root_dir.parent
     backend_dir = root_dir / "backend"
-    frontend_dir = root_dir / "frontend"
 
-    if not args.frontend_only and not backend_dir.is_dir():
+    if not backend_dir.is_dir():
         raise RuntimeError(f"Backend directory not found: {backend_dir}")
-
-    if not args.backend_only and not frontend_dir.is_dir():
-        raise RuntimeError(f"Frontend directory not found: {frontend_dir}")
 
     processes: list[tuple[str, subprocess.Popen[str], threading.Thread]] = []
     backend_process: subprocess.Popen[str] | None = None
 
     try:
-        if not args.frontend_only:
-            python_executable = resolve_python(workspace_root)
-            ensure_backend_runtime(python_executable)
-            backend_command = [
-                python_executable,
-                "-m",
-                "uvicorn",
-                "app:app",
-                "--host",
-                args.host,
-                "--port",
-                str(args.backend_port),
-            ]
-            if not args.no_reload:
-                backend_command.append("--reload")
+        python_executable = resolve_python(workspace_root)
+        ensure_backend_runtime(python_executable)
+        backend_command = [
+            python_executable,
+            "-m",
+            "uvicorn",
+            "app:app",
+            "--host",
+            args.host,
+            "--port",
+            str(args.backend_port),
+        ]
+        if not args.no_reload:
+            backend_command.append("--reload")
 
-            print_line(f"[launcher] starting backend in {backend_dir}")
-            backend_process, backend_thread = start_process("backend", backend_command, backend_dir)
-            processes.append(("backend", backend_process, backend_thread))
-
-        if not args.backend_only:
-            npm_command = resolve_npm()
-            frontend_command = [
-                npm_command,
-                "run",
-                "dev",
-                "--",
-                "--host",
-                args.host,
-                "--port",
-                str(args.frontend_port),
-            ]
-            print_line(f"[launcher] starting frontend in {frontend_dir}")
-            processes.append(("frontend", *start_process("frontend", frontend_command, frontend_dir)))
+        print_line(f"[launcher] starting backend in {backend_dir}")
+        backend_process, backend_thread = start_process("backend", backend_command, backend_dir)
+        processes.append(("backend", backend_process, backend_thread))
 
         if not processes:
             print_line("[launcher] nothing to start")
             return 0
 
-        if not args.frontend_only:
-            print_line(f"[launcher] backend expected at http://{args.host}:{args.backend_port}")
-        if not args.backend_only:
-            print_line(f"[launcher] frontend expected at http://{args.host}:{args.frontend_port}")
+        print_line(f"[launcher] backend expected at http://{args.host}:{args.backend_port}")
 
-        if backend_process is not None and not args.backend_only:
+        if backend_process is not None:
             health_host = get_health_check_host(args.host)
             print_line(f"[launcher] checking backend health at http://{health_host}:{args.backend_port}/health")
             if wait_for_backend_health(args.host, args.backend_port, backend_process):

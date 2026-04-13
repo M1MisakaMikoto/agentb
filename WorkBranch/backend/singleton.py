@@ -25,6 +25,7 @@ async def get_mysql_database():
         settings = get_settings_service()
         _mysql_pool_instance = MySQLDatabase(settings)
         await _mysql_pool_instance.init_pool()
+        await _mysql_pool_instance.init_tables()
     return _mysql_pool_instance
 
 def get_database():
@@ -33,6 +34,18 @@ def get_database():
     if _mysql_sync_instance is None:
         from db.mysql import MySQLDatabase
         _mysql_sync_instance = MySQLDatabase(get_settings_service())
+        # 初始化表结构
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(_mysql_sync_instance.init_pool())
+                asyncio.create_task(_mysql_sync_instance.init_tables())
+            else:
+                loop.run_until_complete(_mysql_sync_instance.init_pool())
+                loop.run_until_complete(_mysql_sync_instance.init_tables())
+        except Exception:
+            pass
     return _mysql_sync_instance
 
 @lru_cache(maxsize=1)
