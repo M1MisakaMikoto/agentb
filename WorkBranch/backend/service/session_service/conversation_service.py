@@ -212,7 +212,7 @@ class ConversationService:
 
         mq = self._get_mq()
         await mq.start_consumer()
-        subscriber = mq.subscribe(conv_info.workspace_id)
+        subscriber = mq.subscribe(conv_info.conversation_id)
 
         messages: List[Message] = []
         done_received = False
@@ -296,7 +296,7 @@ class ConversationService:
             raise
 
         finally:
-            mq.unsubscribe(conv_info.workspace_id, subscriber)
+            mq.unsubscribe(conv_info.conversation_id, subscriber)
 
     async def cancel_conversation(self, conversation_id: str) -> None:
         async with self._lock:
