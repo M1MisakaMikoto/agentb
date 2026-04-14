@@ -271,21 +271,25 @@ class ConversationService:
             }
 
         except asyncio.CancelledError:
+            messages_json = json.dumps([msg.to_dict() for msg in messages])
             async with self._lock:
                 conv_info.state = ConversationState.CANCELLED
                 await self._dao.update_conversation(
                     conversation_id,
+                    assistant_content=messages_json,
                     state=ConversationState.CANCELLED.value,
                 )
             raise
 
         except Exception as e:
             error_msg = str(e)
+            messages_json = json.dumps([msg.to_dict() for msg in messages])
             async with self._lock:
                 conv_info.state = ConversationState.FAILED
                 conv_info.error = error_msg
                 await self._dao.update_conversation(
                     conversation_id,
+                    assistant_content=messages_json,
                     state=ConversationState.FAILED.value,
                     error=error_msg,
                 )
