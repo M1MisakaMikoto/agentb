@@ -27,10 +27,9 @@ class UserInfoDAO:
 
     async def create_user(self, user_id: int) -> User:
         """创建新用户，返回用户对象。"""
-        sql = 'INSERT INTO users (id, name, password_hash) VALUES (%s, %s, %s)'
+        sql = 'INSERT INTO users (id, name) VALUES (%s, %s)'
         name = f"user_{user_id}"
-        password_hash = ""
-        await self._db.execute(sql, (user_id, name, password_hash))
+        await self._db.execute(sql, (user_id, name))
         return await self.get_user_by_id(user_id)
 
     async def get_user_by_id(self, user_id: int) -> Optional[User]:
