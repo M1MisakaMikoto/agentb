@@ -25,3 +25,4 @@ chroma_db/
 logs/
 .env
 WorkBranch/models--BAAI--bge-m3/
+workspaces/

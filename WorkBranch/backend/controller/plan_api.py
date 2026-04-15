@@ -1,7 +1,7 @@
 """
-Plan API - 计划审批接口
+Plan API - 计划查询接口
 
-提供计划查看、审批、编辑等 API
+提供计划查看等 API
 """
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -14,12 +14,6 @@ from controller.VO.result import Result
 
 
 router = APIRouter(prefix="/plan", tags=["plan"])
-
-
-class ApprovePlanRequest(BaseModel):
-    workspace_id: str
-    approved: bool
-    feedback: Optional[str] = None
 
 
 class UpdatePlanRequest(BaseModel):
@@ -57,39 +51,6 @@ def get_plan(
         "steps": plan_data.get("meta", {}).get("steps", []),
         "created_at": plan_data.get("meta", {}).get("created_at"),
         "approved_at": plan_data.get("meta", {}).get("approved_at")
-    })
-
-
-@router.post("/approve")
-def approve_plan(
-    request: ApprovePlanRequest,
-    service: WorkspaceService = Depends(get_workspace_service),
-) -> Result:
-    """
-    审批计划
-    
-    - approved: true - 批准计划，开始执行
-    - approved: false - 拒绝计划，任务终止
-    """
-    info = service.get_workspace_info(request.workspace_id)
-    if not info:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    
-    session_id = info.get("session_id", "default")
-    
-    result = plan_file_service.approve_plan(
-        session_id=session_id,
-        workspace_id=request.workspace_id,
-        approved=request.approved,
-        feedback=request.feedback
-    )
-    
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error"))
-    
-    return Result.success(data={
-        "status": result.get("status"),
-        "message": result.get("message")
     })
 
 

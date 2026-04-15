@@ -3,8 +3,8 @@ Orchestrator V3 - 块类型驱动循环 + Plan/Execute 分离
 
 参考 Claude Code 架构：
 1. 循环判断：使用块类型（tool_use/chat）驱动，而非状态机
-2. Plan 模式：生成计划写入文件，等待用户审批
-3. Execute 模式：读取计划文件，按步骤执行
+2. Plan 模式：生成计划写入文件，输出给用户，graph 结束
+3. Execute 模式：按步骤执行
 4. 最终回复：chat 工具输出，打破循环
 """
 from typing import Literal, Optional, Dict, Any, List
@@ -26,7 +26,7 @@ persistence = PersistenceService()
 workspace_service = WorkspaceService()
 
 
-def check_state_v3(state: AgentState) -> Literal["analyze", "execute", "plan", "plan_wait", "subagent", "done"]:
+def check_state_v3(state: AgentState) -> Literal["analyze", "execute", "plan", "subagent", "done"]:
     """
     V3 状态检查 - 块类型驱动
     """
@@ -36,21 +36,8 @@ def check_state_v3(state: AgentState) -> Literal["analyze", "execute", "plan", "
     if state.get("execution_mode") is None:
         return "done"
     
-    if state.get("in_plan_mode"):
-        plan_status = state.get("plan_status", "pending")
-        
-        if plan_status == "pending":
-            return "plan"
-        elif plan_status == "waiting_approval":
-            return "plan_wait"
-        elif plan_status == "approved":
-            if state.get("current_step", 0) < len(state.get("plan", [])):
-                return "execute"
-            return "done"
-        elif plan_status == "rejected":
-            return "done"
-        
-        return "done"
+    if state.get("execution_mode") == ExecutionMode.PLAN:
+        return "plan"
     
     if state.get("active_subagent"):
         return "subagent"
@@ -67,7 +54,7 @@ def check_state_v3(state: AgentState) -> Literal["analyze", "execute", "plan", "
     return "done"
 
 
-def create_analyze_node(llm_service=None):
+def create_analyze_node(llm_service=None, message_context=None):
     """分析节点 - 决定执行模式"""
     def analyze_node(state: AgentState) -> dict:
         user_message = state["messages"][-1] if state["messages"] else ""
@@ -169,9 +156,7 @@ def create_analyze_node(llm_service=None):
             "mode_reason": mode_decision["reason"],
             "suggested_tools": mode_decision["suggested_tools"],
             "suggested_subagent": mode_decision["suggested_agent"],
-            "in_plan_mode": mode_decision["mode"] == ExecutionMode.PLAN,
             "active_subagent": mode_decision["mode"] == ExecutionMode.SUBAGENT,
-            "plan_status": "pending" if mode_decision["mode"] == ExecutionMode.PLAN else None,
             "has_tool_use": False,
             "final_reply": None
         }
@@ -188,13 +173,30 @@ def create_analyze_node(llm_service=None):
                     {"tool": "thinking", "args": {"description": user_message}}
                 ]
         
+        if message_context:
+            send_message = message_context.get("send_message")
+            if send_message:
+                from service.session_service.canonical import MessageBuilder
+                state_metadata = {
+                    "execution_mode": mode_decision["mode"].name,
+                    "active_subagent": result.get("active_subagent")
+                }
+                state_msg = MessageBuilder.state_change(
+                    message_id=message_context.get("message_id", ""),
+                    conversation_id=message_context.get("conversation_id", ""),
+                    session_id=message_context.get("session_id", ""),
+                    workspace_id=message_context.get("workspace_id", ""),
+                    metadata=state_metadata
+                )
+                send_message("", SegmentType.STATE_CHANGE, state_metadata)
+        
         return result
     
     return analyze_node
 
 
 def create_plan_node(llm_service=None, token_callback=None, settings_service=None, message_context=None):
-    """规划节点 - 生成计划并写入文件"""
+    """规划节点 - 生成计划并输出给用户"""
     def plan_node(state: AgentState) -> dict:
         user_message = state["messages"][-1] if state["messages"] else ""
         workspace_id = state["workspace_id"]
@@ -254,57 +256,29 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
         
         console.box("计划文件已创建", create_result.get("plan_file"))
         
-        console.decision_box("plan_wait", "等待用户审批")
+        if message_context:
+            send_message = message_context.get("send_message")
+            if send_message:
+                from service.session_service.canonical import MessageBuilder
+                
+                state_metadata = {
+                    "execution_mode": "PLAN",
+                    "plan_steps": len(plan),
+                    "plan_file": create_result.get("plan_file")
+                }
+                send_message("", SegmentType.STATE_CHANGE, state_metadata)
+                
+                send_message(plan_content, SegmentType.TEXT)
+        
+        console.decision_box("done", "计划已生成，等待用户确认执行")
         
         return {
             "plan": plan,
-            "current_step": 0,
-            "pending_tools": [],
-            "plan_status": "waiting_approval",
-            "plan_file": create_result.get("plan_file")
+            "plan_file": create_result.get("plan_file"),
+            "final_reply": plan_content
         }
     
     return plan_node
-
-
-def create_plan_wait_node():
-    """等待审批节点 - 检查审批状态"""
-    def plan_wait_node(state: AgentState) -> dict:
-        workspace_id = state["workspace_id"]
-        
-        workspace_info = workspace_service.get_workspace_info(workspace_id)
-        session_id = workspace_info.get("session_id", "default") if workspace_info else "default"
-        
-        plan_status = plan_file_service.get_plan_status(session_id, workspace_id)
-        
-        console.step("等待审批节点", "规划节点", f"状态: {plan_status.get('status')}")
-        
-        if plan_status.get("status") == "approved":
-            plan_data = plan_file_service.read_plan(session_id, workspace_id)
-            plan_steps = plan_data.get("meta", {}).get("steps", state.get("plan", []))
-            
-            console.decision_box("execute", "计划已批准，开始执行")
-            
-            return {
-                "plan_status": "approved",
-                "plan": plan_steps,
-                "current_step": 0
-            }
-        elif plan_status.get("status") == "rejected":
-            console.decision_box("done", "计划被拒绝")
-            
-            return {
-                "plan_status": "rejected",
-                "final_reply": "计划被用户拒绝，任务终止。"
-            }
-        
-        console.decision_box("plan_wait", "继续等待审批")
-        
-        return {
-            "plan_status": "waiting_approval"
-        }
-    
-    return plan_wait_node
 
 
 def create_execute_node(llm_service=None, token_callback=None, settings_service=None, message_context=None):
@@ -525,17 +499,15 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
     """
     graph = StateGraph(AgentState)
     
-    graph.add_node("analyze", create_analyze_node(llm_service))
+    graph.add_node("analyze", create_analyze_node(llm_service, message_context))
     graph.add_node("execute", create_execute_node(llm_service, token_callback, settings_service, message_context))
     graph.add_node("plan", create_plan_node(llm_service, token_callback, settings_service, message_context))
-    graph.add_node("plan_wait", create_plan_wait_node())
     graph.add_node("subagent", create_subagent_node(llm_service, token_callback, settings_service, message_context))
     
     graph.set_conditional_entry_point(check_state_v3, {
         "analyze": "analyze",
         "execute": "execute",
         "plan": "plan",
-        "plan_wait": "plan_wait",
         "subagent": "subagent",
         "done": END
     })
@@ -546,22 +518,12 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         "subagent": "subagent",
     })
     
-    graph.add_edge("plan", "plan_wait")
-    
-    graph.add_conditional_edges("plan_wait", check_state_v3, {
-        "analyze": "analyze",
-        "execute": "execute",
-        "plan": "plan",
-        "plan_wait": "plan_wait",
-        "subagent": "subagent",
-        "done": END
-    })
+    graph.add_edge("plan", END)
     
     graph.add_conditional_edges("execute", check_state_v3, {
         "analyze": "analyze",
         "execute": "execute",
         "plan": "plan",
-        "plan_wait": "plan_wait",
         "subagent": "subagent",
         "done": END
     })
@@ -570,7 +532,6 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         "analyze": "analyze",
         "execute": "execute",
         "plan": "plan",
-        "plan_wait": "plan_wait",
         "subagent": "subagent",
         "done": END
     })
@@ -620,7 +581,6 @@ def run_graph_v3(
             "current_conversation_messages": current_conversation_messages or [],
             "has_tool_use": False,
             "final_reply": None,
-            "plan_status": None,
             "plan_file": None
         }
     

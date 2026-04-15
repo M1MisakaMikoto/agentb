@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-Simple E2E Test - Single Conversation with Raw Stream Output
+Simple E2E Test - Multi-Mode Agent Testing with Raw Stream Output
+
+Tests different execution modes:
+- DIRECT: Simple tasks (e.g., "你好")
+- PLAN: Complex development tasks (e.g., "帮我实现一个用户登录功能")
+- SUBAGENT: Exploration tasks (e.g., "探索这个项目的代码结构")
 
 Usage:
-    python simple_e2e_stream.py [--no-server] -q "你的问题"
+    python simple_e2e_stream.py [--no-server] [--mode direct|plan|subagent|all]
 """
 
 import argparse
@@ -17,7 +22,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -36,10 +41,33 @@ class Colors:
     ENDC = "\033[0m"
     BOLD = "\033[1m"
     DIM = "\033[2m"
+    MAGENTA = "\033[35m"
 
 
 def get_timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+TEST_CASES: Dict[str, Dict[str, any]] = {
+    "direct": {
+        "question": "你好，请简单介绍一下你自己",
+        "description": "DIRECT 模式 - 简单对话任务",
+        "expected_mode": "DIRECT",
+        "expected_tools": ["thinking", "chat"],
+    },
+    "plan": {
+        "question": "帮我设计并实现一个简单的用户登录功能，包括前端表单和后端验证",
+        "description": "PLAN 模式 - 复杂开发任务",
+        "expected_mode": "PLAN",
+        "expected_tools": ["thinking", "read_file", "write_file", "chat"],
+    },
+    "subagent": {
+        "question": "探索这个项目的代码结构，找出主要的模块和它们之间的关系",
+        "description": "SUBAGENT 模式 - 代码探索任务",
+        "expected_mode": "SUBAGENT",
+        "expected_tools": ["spawn_agent"],
+    },
+}
 
 
 class APIClient:
@@ -80,6 +108,15 @@ class APIClient:
             "POST", f"/session/sessions/{session_id}/conversations", json={"user_content": user_content}
         )
 
+    async def get_plan_status(self, workspace_id: str) -> dict:
+        return await self._request("GET", f"/plan/{workspace_id}/status")
+
+    async def approve_plan(self, workspace_id: str, approved: bool = True) -> dict:
+        return await self._request(
+            "POST", "/plan/approve",
+            json={"workspace_id": workspace_id, "approved": approved}
+        )
+
     async def stream_message(self, conversation_id: str):
         url = f"{self.base_url}/session/conversations/{conversation_id}/messages/stream"
         headers = self._headers()
@@ -98,29 +135,73 @@ class APIClient:
                     yield {"raw_line": line}
 
 
-async def run_test(question: str, user_id: int, output_file: str):
-    print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
-    print(f"{Colors.HEADER}  E2E Stream Test - {get_timestamp()}{Colors.ENDC}")
-    print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
+class TestResult:
+    def __init__(self, mode: str, test_case: Dict):
+        self.mode = mode
+        self.test_case = test_case
+        self.event_count = 0
+        self.thinking_content = ""
+        self.chat_content = ""
+        self.text_content = ""
+        self.tool_calls: List[str] = []
+        self.errors: List[str] = []
+        self.plan_status: Optional[str] = None
+        self.workspace_id: Optional[str] = None
+        self.conversation_id: Optional[str] = None
+        self.detected_mode: Optional[str] = None
+        self.raw_lines: List[str] = []
 
-    api = APIClient(BASE_URL, user_id)
+    def to_dict(self) -> dict:
+        return {
+            "mode": self.mode,
+            "description": self.test_case.get("description"),
+            "question": self.test_case.get("question"),
+            "expected_mode": self.test_case.get("expected_mode"),
+            "detected_mode": self.detected_mode,
+            "event_count": self.event_count,
+            "thinking_length": len(self.thinking_content),
+            "chat_length": len(self.chat_content),
+            "text_length": len(self.text_content),
+            "tool_calls": self.tool_calls,
+            "errors": self.errors,
+            "plan_status": self.plan_status,
+            "workspace_id": self.workspace_id,
+            "conversation_id": self.conversation_id,
+        }
+
+
+async def run_single_test(
+    api: APIClient,
+    mode: str,
+    test_case: Dict,
+    output_file: str,
+    auto_approve_plan: bool = True,
+) -> TestResult:
+    result = TestResult(mode, test_case)
+    question = test_case["question"]
 
     raw_output_lines = []
 
     def log_raw(line: str):
         raw_output_lines.append(line)
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(raw_output_lines))
+        result.raw_lines.append(line)
 
-    log_raw(f"# E2E Stream Test - {get_timestamp()}")
+    print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
+    print(f"{Colors.HEADER}  {test_case.get('description')}{Colors.ENDC}")
+    print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
+
+    log_raw(f"# {test_case.get('description')}")
+    log_raw(f"# Timestamp: {get_timestamp()}")
     log_raw(f"# Question: {question}")
     log_raw("")
 
     print(f"{Colors.CYAN}[1] Creating session...{Colors.ENDC}")
-    session_result = await api.create_session("Stream Test")
+    session_result = await api.create_session(f"Test {mode.upper()}")
     if session_result.get("code") != 200:
-        print(f"{Colors.RED}Failed: {session_result.get('message')}{Colors.ENDC}")
-        return False
+        error_msg = session_result.get("message", "Unknown error")
+        print(f"{Colors.RED}Failed: {error_msg}{Colors.ENDC}")
+        result.errors.append(f"Session creation failed: {error_msg}")
+        return result
 
     session_id = session_result["data"]["id"]
     print(f"{Colors.GREEN}    Session ID: {session_id}{Colors.ENDC}")
@@ -130,26 +211,26 @@ async def run_test(question: str, user_id: int, output_file: str):
     print(f"{Colors.DIM}    Question: {question}{Colors.ENDC}")
     conv_result = await api.create_conversation(session_id, question)
     if conv_result.get("code") != 200:
-        print(f"{Colors.RED}Failed: {conv_result.get('message')}{Colors.ENDC}")
-        return False
+        error_msg = conv_result.get("message", "Unknown error")
+        print(f"{Colors.RED}Failed: {error_msg}{Colors.ENDC}")
+        result.errors.append(f"Conversation creation failed: {error_msg}")
+        return result
 
     conversation_id = conv_result["data"]["conversation_id"]
+    result.conversation_id = conversation_id
     print(f"{Colors.GREEN}    Conversation ID: {conversation_id}{Colors.ENDC}")
     log_raw(f"## Conversation ID: {conversation_id}")
+
+    workspace_id = conv_result["data"].get("workspace_id")
+    if workspace_id:
+        result.workspace_id = workspace_id
+        log_raw(f"## Workspace ID: {workspace_id}")
+
     log_raw("")
-
-    print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
-    print(f"{Colors.HEADER}  Raw Stream Data{Colors.ENDC}")
-    print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
-
     log_raw("## Raw Stream Data")
     log_raw("```")
 
-    print(f"{Colors.CYAN}[3] Receiving stream...{Colors.ENDC}\n")
-
-    event_count = 0
-    text_content = ""
-    thinking_content = ""
+    print(f"\n{Colors.CYAN}[3] Receiving stream...{Colors.ENDC}\n")
 
     async for item in api.stream_message(conversation_id):
         raw_line = item.get("raw_line", "")
@@ -164,68 +245,173 @@ async def run_test(question: str, user_id: int, output_file: str):
             continue
 
         if raw_line.startswith("data: "):
-            event_count += 1
+            result.event_count += 1
             json_str = raw_line[6:]
             
             try:
                 data = json.loads(json_str)
                 event_type = data.get("type", "unknown")
                 
-                print(f"\n{Colors.BLUE}--- Event #{event_count} ---{Colors.ENDC}")
-                print(f"{Colors.YELLOW}Type: {event_type}{Colors.ENDC}")
-                
                 if event_type == "thinking_delta":
                     content = data.get("content", "")
-                    thinking_content += content
-                    print(f"{Colors.DIM}Content: {content}{Colors.ENDC}")
+                    result.thinking_content += content
+                    print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
+                
+                elif event_type == "chat_delta":
+                    content = data.get("content", "")
+                    result.chat_content += content
+                    print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
+                
                 elif event_type == "text_delta":
                     content = data.get("content", "")
-                    text_content += content
-                    print(f"{Colors.GREEN}Content: {content}{Colors.ENDC}")
+                    result.text_content += content
+                    print(f"{Colors.CYAN}[text] {content}{Colors.ENDC}")
+                
+                elif event_type == "tool_call":
+                    tool_name = data.get("tool_name", "unknown")
+                    result.tool_calls.append(tool_name)
+                    print(f"{Colors.MAGENTA}[tool_call] {tool_name}{Colors.ENDC}")
+                
+                elif event_type == "state_change":
+                    metadata = data.get("metadata", {})
+                    execution_mode = metadata.get("execution_mode")
+                    if execution_mode:
+                        result.detected_mode = execution_mode
+                        print(f"{Colors.YELLOW}[state] execution_mode: {execution_mode}{Colors.ENDC}")
+                    plan_status = metadata.get("plan_status")
+                    if plan_status:
+                        result.plan_status = plan_status
+                        print(f"{Colors.YELLOW}[state] plan_status: {plan_status}{Colors.ENDC}")
+                
+                elif event_type == "plan_start":
+                    print(f"{Colors.YELLOW}[plan_start] Plan generation started{Colors.ENDC}")
+                
+                elif event_type == "plan_delta":
+                    content = data.get("content", "")
+                    print(f"{Colors.YELLOW}[plan] {content[:50]}...{Colors.ENDC}")
+                
+                elif event_type == "plan_end":
+                    print(f"{Colors.YELLOW}[plan_end] Plan generation completed{Colors.ENDC}")
+                
                 elif event_type == "done":
-                    print(f"{Colors.GREEN}Stream completed{Colors.ENDC}")
+                    print(f"{Colors.GREEN}[done] Stream completed{Colors.ENDC}")
+                
                 elif event_type == "error":
-                    print(f"{Colors.RED}Error: {data.get('content')}{Colors.ENDC}")
+                    error_content = data.get("content", "Unknown error")
+                    result.errors.append(error_content)
+                    print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
+                
                 else:
-                    print(f"{Colors.CYAN}Raw data:{Colors.ENDC}")
-                    print(f"  {json.dumps(data, ensure_ascii=False, indent=2)}")
+                    print(f"{Colors.BLUE}[{event_type}] {json.dumps(data, ensure_ascii=False)[:100]}...{Colors.ENDC}")
                     
             except json.JSONDecodeError as e:
                 print(f"{Colors.RED}JSON parse error: {e}{Colors.ENDC}")
-                print(f"{Colors.DIM}Raw: {json_str[:200]}...{Colors.ENDC}")
-        else:
-            print(f"{Colors.DIM}Other: {raw_line[:100]}...{Colors.ENDC}")
 
     log_raw("```")
     log_raw("")
-    log_raw("## Summary")
-    log_raw(f"- Total events: {event_count}")
-    log_raw(f"- Thinking content length: {len(thinking_content)} chars")
-    log_raw(f"- Text content length: {len(text_content)} chars")
-    if thinking_content:
-        log_raw(f"- Thinking content: {thinking_content[:500]}")
-    if text_content:
-        log_raw(f"- Text content: {text_content[:500]}")
 
+    if result.plan_status == "waiting_approval" and auto_approve_plan and workspace_id:
+        print(f"\n{Colors.CYAN}[4] Plan waiting for approval, auto-approving...{Colors.ENDC}")
+        
+        plan_data = await api.get_plan_status(workspace_id)
+        print(f"{Colors.DIM}    Plan status: {plan_data}{Colors.ENDC}")
+        
+        approve_result = await api.approve_plan(workspace_id, approved=True)
+        print(f"{Colors.GREEN}    Plan approved: {approve_result}{Colors.ENDC}")
+        
+        log_raw("## Plan Auto-Approved")
+        log_raw(f"```json\n{json.dumps(approve_result, ensure_ascii=False, indent=2)}\n```")
+        
+        print(f"\n{Colors.CYAN}[5] Continuing execution after approval...{Colors.ENDC}\n")
+        
+        async for item in api.stream_message(conversation_id):
+            raw_line = item.get("raw_line", "")
+            
+            if not raw_line.strip():
+                continue
+
+            log_raw(raw_line)
+
+            if raw_line.startswith(": heartbeat"):
+                continue
+
+            if raw_line.startswith("data: "):
+                result.event_count += 1
+                json_str = raw_line[6:]
+                
+                try:
+                    data = json.loads(json_str)
+                    event_type = data.get("type", "unknown")
+                    
+                    if event_type == "chat_delta":
+                        content = data.get("content", "")
+                        result.chat_content += content
+                        print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
+                    
+                    elif event_type == "thinking_delta":
+                        content = data.get("content", "")
+                        result.thinking_content += content
+                        print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
+                    
+                    elif event_type == "tool_call":
+                        tool_name = data.get("tool_name", "unknown")
+                        result.tool_calls.append(tool_name)
+                        print(f"{Colors.MAGENTA}[tool_call] {tool_name}{Colors.ENDC}")
+                    
+                    elif event_type == "done":
+                        print(f"{Colors.GREEN}[done] Execution completed{Colors.ENDC}")
+                    
+                    elif event_type == "error":
+                        error_content = data.get("content", "Unknown error")
+                        result.errors.append(error_content)
+                        print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
+                        
+                except json.JSONDecodeError:
+                    pass
+
+    log_raw("## Test Result Summary")
+    summary = result.to_dict()
+    for key, value in summary.items():
+        log_raw(f"- {key}: {value}")
+
+    with open(output_file, "a", encoding="utf-8") as f:
+        f.write("\n".join(raw_output_lines) + "\n\n")
+
+    return result
+
+
+def print_summary(results: List[TestResult]):
     print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
-    print(f"{Colors.HEADER}  Test Results{Colors.ENDC}")
+    print(f"{Colors.HEADER}  Test Summary{Colors.ENDC}")
     print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
 
-    print(f"Total events: {event_count}")
-    print(f"Thinking content length: {len(thinking_content)} chars")
-    print(f"Text content length: {len(text_content)} chars")
-    
-    if thinking_content:
-        print(f"\n{Colors.DIM}Thinking:{Colors.ENDC}")
-        print(thinking_content[:500] + ("..." if len(thinking_content) > 500 else ""))
-    
-    if text_content:
-        print(f"\n{Colors.GREEN}Response:{Colors.ENDC}")
-        print(text_content[:500] + ("..." if len(text_content) > 500 else ""))
+    print(f"| {'Mode':<10} | {'Expected':<10} | {'Detected':<10} | {'Events':<8} | {'Tools':<30} | {'Status':<10} |")
+    print(f"|{'-'*12}|{'-'*12}|{'-'*12}|{'-'*10}|{'-'*32}|{'-'*12}|")
 
-    print(f"\n{Colors.CYAN}Raw output saved to: {output_file}{Colors.ENDC}")
+    all_passed = True
+    for r in results:
+        mode_match = r.detected_mode == r.test_case.get("expected_mode") if r.detected_mode else False
+        status = f"{Colors.GREEN}PASS{Colors.ENDC}" if mode_match and not r.errors else f"{Colors.RED}FAIL{Colors.ENDC}"
+        if not (mode_match and not r.errors):
+            all_passed = False
+        
+        tools_str = ", ".join(r.tool_calls[:3]) + ("..." if len(r.tool_calls) > 3 else "")
+        detected = r.detected_mode or "N/A"
+        
+        print(f"| {r.mode:<10} | {r.test_case.get('expected_mode'):<10} | {detected:<10} | {r.event_count:<8} | {tools_str:<30} | {status} |")
+        
+        if r.errors:
+            print(f"  {Colors.RED}Errors: {r.errors}{Colors.ENDC}")
+        if r.chat_content:
+            print(f"  {Colors.GREEN}Chat: {r.chat_content[:100]}...{Colors.ENDC}")
 
-    return event_count > 0
+    print()
+    if all_passed:
+        print(f"{Colors.GREEN}All tests passed!{Colors.ENDC}")
+    else:
+        print(f"{Colors.RED}Some tests failed.{Colors.ENDC}")
+    
+    return all_passed
 
 
 def wait_for_backend(host: str = "127.0.0.1", port: int = 8000, timeout: float = 30.0) -> bool:
@@ -317,15 +503,23 @@ def stop_backend(process: subprocess.Popen):
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="E2E Stream Test")
+    parser = argparse.ArgumentParser(description="E2E Stream Test - Multi-Mode Agent Testing")
     parser.add_argument("--no-server", action="store_true", help="Do not start backend server")
-    parser.add_argument("--question", "-q", default="你好", help="Question to ask")
+    parser.add_argument("--mode", "-m", choices=["direct", "plan", "subagent", "all"], default="all",
+                        help="Test mode to run (default: all)")
+    parser.add_argument("--question", "-q", default=None, help="Custom question (overrides mode)")
     parser.add_argument("--user-id", "-u", type=int, default=99999, help="User ID")
     parser.add_argument("--output", "-o", default=None, help="Output file path")
+    parser.add_argument("--auto-approve", action="store_true", default=True,
+                        help="Auto-approve plans in PLAN mode")
     args = parser.parse_args()
 
     timestamp = get_timestamp()
-    output_file = args.output or str(Path(__file__).parent / f"stream_output_{timestamp}.md")
+    output_file = args.output or str(Path(__file__).parent / f"multi_mode_test_{timestamp}.md")
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(f"# Multi-Mode E2E Test Report\n")
+        f.write(f"# Generated: {timestamp}\n\n")
 
     backend_process = None
     started_backend = False
@@ -353,14 +547,35 @@ async def main():
                     print(f"{Colors.RED}Cannot start backend{Colors.ENDC}")
                     return 1
 
-        success = await run_test(args.question, args.user_id, output_file)
+        api = APIClient(BASE_URL, args.user_id)
+        results: List[TestResult] = []
 
-        if success:
-            print(f"\n{Colors.GREEN}Test passed!{Colors.ENDC}")
-            return 0
+        if args.question:
+            custom_case = {
+                "question": args.question,
+                "description": "Custom question test",
+                "expected_mode": "DIRECT",
+                "expected_tools": ["thinking", "chat"],
+            }
+            result = await run_single_test(api, "custom", custom_case, output_file, args.auto_approve)
+            results.append(result)
         else:
-            print(f"\n{Colors.RED}Test failed{Colors.ENDC}")
-            return 1
+            modes_to_test = ["direct", "plan", "subagent"] if args.mode == "all" else [args.mode]
+            
+            for mode in modes_to_test:
+                if mode in TEST_CASES:
+                    result = await run_single_test(
+                        api, mode, TEST_CASES[mode], output_file, args.auto_approve
+                    )
+                    results.append(result)
+                    
+                    await asyncio.sleep(1)
+
+        all_passed = print_summary(results)
+
+        print(f"\n{Colors.CYAN}Detailed output saved to: {output_file}{Colors.ENDC}")
+
+        return 0 if all_passed else 1
 
     except KeyboardInterrupt:
         print(f"\n{Colors.YELLOW}Test interrupted{Colors.ENDC}")
