@@ -21,14 +21,13 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from urllib.error import URLError
 from urllib.request import urlopen
 
 import httpx
-from jose import jwt
 
 BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 LOG_DIR = Path(__file__).parent / "logs" / "parallel_test"
@@ -80,19 +79,10 @@ class APIClient:
         self.user_id = user_id
         self.logger = logger
 
-    def _generate_token(self) -> str:
-        payload = {
-            "id": self.user_id,
-            "name": f"user_{self.user_id}",
-            "iat": int(datetime.now(timezone.utc).timestamp()),
-            "exp": int(datetime.now(timezone.utc).timestamp()) + 3600,
-        }
-        return jwt.encode(payload, "none", algorithm="HS256")
-
     def _headers(self) -> dict:
         return {
             "Content-Type": "application/json",
-            "Authorization": self._generate_token(),
+            "X-User-ID": str(self.user_id),
         }
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
@@ -167,11 +157,11 @@ TEST_CASES = [
         "keywords": ["单例", "Python", "实例", "__new__", "装饰器"],
     },
     {
-        "process_id": "literature_user",
+        "process_id": "greeting_user",
         "user_id": 10003,
-        "theme": "文学",
-        "question": "请介绍《红楼梦》的主要人物有哪些？",
-        "keywords": ["红楼梦", "贾宝玉", "林黛玉", "薛宝钗"],
+        "theme": "问候",
+        "question": "你好",
+        "keywords": ["你好", "您好", "帮助", "助手"],
     },
 ]
 

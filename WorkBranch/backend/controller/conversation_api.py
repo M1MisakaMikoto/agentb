@@ -112,7 +112,7 @@ async def stream_conversation_message(
 
             try:
                 await mq.start_consumer()
-                subscriber = mq.subscribe(conversation.get("workspace_id"))
+                subscriber = mq.subscribe(conversation_id)
 
                 asyncio.create_task(service.send_message(conversation_id))
 
