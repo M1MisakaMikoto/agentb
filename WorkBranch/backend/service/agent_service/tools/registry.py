@@ -101,6 +101,11 @@ ALL_TOOLS = {
         "description": "思考工具（用于分析、设计等需要思考的任务）",
         "params": ""
     },
+    "chat": {
+        "name": "chat",
+        "description": "与用户对话工具（用于向用户输出回复内容）",
+        "params": ""
+    },
     "call_explore_agent": {
         "name": "call_explore_agent",
         "description": "调用探索子代理执行代码探索和互联网搜索任务",

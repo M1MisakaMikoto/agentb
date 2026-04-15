@@ -10,6 +10,10 @@ class SegmentType(Enum):
     THINKING_END = "thinking_end"
     THINKING = "thinking"
     
+    CHAT_START = "chat_start"
+    CHAT_DELTA = "chat_delta"
+    CHAT_END = "chat_end"
+    
     TEXT_START = "text_start"
     TEXT_DELTA = "text_delta"
     TEXT_END = "text_end"
@@ -149,6 +153,62 @@ class MessageBuilder:
             session_id=session_id,
             workspace_id=workspace_id,
             msg_type=SegmentType.THINKING_END,
+            content="",
+            metadata=metadata,
+        )
+    
+    @staticmethod
+    def chat_start(
+        message_id: str,
+        conversation_id: str,
+        session_id: str,
+        workspace_id: str,
+        metadata: dict = None
+    ) -> Message:
+        return MessageBuilder.build(
+            role="assistant",
+            message_id=message_id,
+            conversation_id=conversation_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            msg_type=SegmentType.CHAT_START,
+            content="",
+            metadata=metadata,
+        )
+    
+    @staticmethod
+    def chat_delta(
+        message_id: str,
+        conversation_id: str,
+        session_id: str,
+        workspace_id: str,
+        content: str
+    ) -> Message:
+        return MessageBuilder.build(
+            role="assistant",
+            message_id=message_id,
+            conversation_id=conversation_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            msg_type=SegmentType.CHAT_DELTA,
+            content=content,
+        )
+    
+    @staticmethod
+    def chat_end(
+        message_id: str,
+        conversation_id: str,
+        session_id: str,
+        workspace_id: str,
+        metadata: dict = None
+    ) -> Message:
+        return MessageBuilder.build(
+            role="assistant",
+            message_id=message_id,
+            conversation_id=conversation_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            msg_type=SegmentType.CHAT_END,
             content="",
             metadata=metadata,
         )
