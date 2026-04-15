@@ -29,7 +29,7 @@ class MySQLDatabase:
                 host=config.get("host", "localhost"),
                 port=config.get("port", 3306),
                 user=config.get("user", "root"),
-                password=config.get("password", ""),
+                password=config.get("password", "123456"),
                 charset="utf8mb4",
                 autocommit=True,
             )
@@ -44,7 +44,7 @@ class MySQLDatabase:
                 host=config.get("host", "localhost"),
                 port=config.get("port", 3306),
                 user=config.get("user", "root"),
-                password=config.get("password", ""),
+                password=config.get("password", "123456"),
                 db=database,
                 minsize=config.get("min_pool_size", 5),
                 maxsize=config.get("max_pool_size", 20),
@@ -106,7 +106,7 @@ class MySQLDatabase:
             async with conn.cursor() as cursor:
                 await cursor.execute('''
                     CREATE TABLE IF NOT EXISTS users (
-                        id INTEGER PRIMARY KEY AUTO_INCREMENT,
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
                         name VARCHAR(255) NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -116,7 +116,7 @@ class MySQLDatabase:
                 await cursor.execute('''
                     CREATE TABLE IF NOT EXISTS sessions (
                         id INTEGER PRIMARY KEY AUTO_INCREMENT,
-                        user_id INTEGER NOT NULL,
+                        user_id BIGINT NOT NULL,
                         title VARCHAR(255) DEFAULT '新会话',
                         workspace_id VARCHAR(36),
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
