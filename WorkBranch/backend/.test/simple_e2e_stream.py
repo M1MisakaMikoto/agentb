@@ -136,7 +136,8 @@ class APIClient:
         url = f"{self.base_url}/session/conversations/{conversation_id}/messages/stream"
         headers = self._headers()
 
-        async with httpx.AsyncClient(timeout=300.0) as client:
+        timeout = httpx.Timeout(connect=30.0, read=None, write=300.0, pool=300.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", url, headers=headers) as response:
                 if response.status_code != 200:
                     try:

@@ -79,6 +79,7 @@ class AgentState(TypedDict):
     tool_history: List[ToolCall]
     replan_count: int
     agent_type: Optional[str]
+    is_root_graph: Optional[bool]
     intent_analysis: Optional[IntentAnalysis]
     parent_chain_messages: Optional[List[dict]]
     current_conversation_messages: Optional[List[dict]]
