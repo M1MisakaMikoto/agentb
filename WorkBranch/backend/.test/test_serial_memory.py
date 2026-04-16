@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""
+Serial Memory Test - 短期记忆与多次对话测试
+
+测试目的:
+1. 测试短期记忆: 第二次对话能否回忆起第一次对话的内容
+2. 测试多次对话(同 session 下): 验证第二次对话是否会返回空数据
+
+测试流程:
+- 第一次对话: "你好"
+- 第二次对话: "我刚刚说了什么"
+- 验证第二次响应是否包含"你好"相关内容
+
+Usage:
+    python test_serial_memory.py [--no-server]
+"""
+
+import argparse
+import asyncio
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, List
+
+import httpx
+
+BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
+
+
+class Colors:
+    HEADER = "\033[95m"
+    BLUE = "\033[94m"
+    CYAN = "\033[96m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    MAGENTA = "\033[35m"
+
+
+def get_timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+class APIClient:
+    def __init__(self, base_url: str, user_id: int):
+        self.base_url = base_url.rstrip("/")
+        self.user_id = user_id
+
+    def _headers(self) -> dict:
+        return {
+            "Content-Type": "application/json",
+            "X-User-ID": str(self.user_id),
+        }
+
+    async def _request(self, method: str, path: str, **kwargs) -> dict:
+        url = f"{self.base_url}{path}"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.request(method, url, headers=self._headers(), **kwargs)
+                try:
+                    data = response.json()
+                    if response.status_code >= 400:
+                        return {
+                            "code": response.status_code,
+                            "message": data.get("detail", str(data)),
+                            "data": None,
+                        }
+                    return data
+                except Exception:
+                    return {"code": response.status_code, "message": response.text, "data": None}
+            except Exception as e:
+                return {"code": -1, "message": str(e), "data": None}
+
+    async def create_session(self, title: str = "Test Session") -> dict:
+        return await self._request("POST", "/session/sessions", json={"title": title})
+
+    async def create_conversation(self, session_id: int, user_content: str) -> dict:
+        return await self._request(
+            "POST", f"/session/sessions/{session_id}/conversations", json={"user_content": user_content}
+        )
+
+    async def get_conversation(self, conversation_id: str) -> dict:
+        return await self._request("GET", f"/session/conversations/{conversation_id}")
+
+    async def stream_message(self, conversation_id: str):
+        url = f"{self.base_url}/session/conversations/{conversation_id}/messages/stream"
+        headers = self._headers()
+
+        timeout = httpx.Timeout(connect=30.0, read=None, write=300.0, pool=300.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", url, headers=headers) as response:
+                if response.status_code != 200:
+                    try:
+                        error = await response.aread()
+                        yield {"type": "error", "raw": error.decode(), "status_code": response.status_code}
+                    except Exception as e:
+                        yield {"type": "error", "raw": str(e), "status_code": response.status_code}
+                    return
+
+                async for line in response.aiter_lines():
+                    yield {"raw_line": line}
+
+
+class ConversationResult:
+    def __init__(self, conversation_id: str):
+        self.conversation_id = conversation_id
+        self.event_count = 0
+        self.thinking_content = ""
+        self.chat_content = ""
+        self.text_content = ""
+        self.tool_calls: List[str] = []
+        self.errors: List[str] = []
+        self.raw_lines: List[str] = []
+        self.done = False
+        self.response_text = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "conversation_id": self.conversation_id,
+            "event_count": self.event_count,
+            "thinking_length": len(self.thinking_content),
+            "chat_length": len(self.chat_content),
+            "text_length": len(self.text_content),
+            "tool_calls": self.tool_calls,
+            "errors": self.errors,
+            "done": self.done,
+            "response_text": self.response_text,
+        }
+
+
+async def wait_for_conversation_state(
+    api: APIClient, conversation_id: str, expected_state: str, timeout: float = 60.0
+) -> dict:
+    deadline = time.time() + timeout
+    last_result = None
+    while time.time() < deadline:
+        conversation_result = await api.get_conversation(conversation_id)
+        last_result = conversation_result
+        data = conversation_result.get("data") or {}
+        if data.get("state") == expected_state:
+            return conversation_result
+        await asyncio.sleep(0.2)
+    return last_result
+
+
+def extract_response_text(conversation_result: dict) -> str:
+    data = conversation_result.get("data") or {}
+    assistant_content = data.get("assistant_content")
+    if not assistant_content:
+        return ""
+    try:
+        events = json.loads(assistant_content)
+    except Exception:
+        return str(assistant_content)
+
+    parts: List[str] = []
+    for event in events:
+        event_type = event.get("type")
+        if event_type in {"text_delta", "chat_delta", "thinking_delta"}:
+            parts.append(event.get("content", ""))
+        elif event_type == "thinking_end":
+            metadata = event.get("metadata") or {}
+            if metadata.get("result"):
+                parts.append(metadata["result"])
+    return "".join(parts)
+
+
+async def run_conversation(
+    api: APIClient,
+    session_id: int,
+    user_content: str,
+    conversation_label: str,
+    output_lines: List[str],
+) -> ConversationResult:
+    print(f"{Colors.CYAN}[{conversation_label}] Creating conversation...{Colors.ENDC}")
+    print(f"{Colors.DIM}    User: {user_content}{Colors.ENDC}")
+
+    conv_result = await api.create_conversation(session_id, user_content)
+    if conv_result.get("code") != 200:
+        error_msg = conv_result.get("message", "Unknown error")
+        print(f"{Colors.RED}Failed: {error_msg}{Colors.ENDC}")
+        result = ConversationResult("")
+        result.errors.append(f"Conversation creation failed: {error_msg}")
+        return result
+
+    conversation_id = conv_result["data"]["conversation_id"]
+    result = ConversationResult(conversation_id)
+    print(f"{Colors.GREEN}    Conversation ID: {conversation_id}{Colors.ENDC}")
+
+    output_lines.append(f"## {conversation_label}")
+    output_lines.append(f"- conversation_id: {conversation_id}")
+    output_lines.append(f"- user_content: {user_content}")
+    output_lines.append("")
+
+    print(f"{Colors.CYAN}[{conversation_label}] Receiving stream...{Colors.ENDC}\n")
+
+    async for item in api.stream_message(conversation_id):
+        raw_line = item.get("raw_line", "")
+
+        if not raw_line.strip():
+            continue
+
+        result.raw_lines.append(raw_line)
+
+        if raw_line.startswith(": heartbeat"):
+            print(f"{Colors.DIM}[heartbeat]{Colors.ENDC}")
+            continue
+
+        if raw_line.startswith("data: "):
+            result.event_count += 1
+            json_str = raw_line[6:]
+
+            try:
+                data = json.loads(json_str)
+                event_type = data.get("type", "unknown")
+
+                if event_type == "thinking_delta":
+                    content = data.get("content", "")
+                    result.thinking_content += content
+                    print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
+
+                elif event_type == "chat_delta":
+                    content = data.get("content", "")
+                    result.chat_content += content
+                    print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
+
+                elif event_type == "text_delta":
+                    content = data.get("content", "")
+                    result.text_content += content
+                    print(f"{Colors.CYAN}[text] {content}{Colors.ENDC}")
+
+                elif event_type == "tool_call":
+                    metadata = data.get("metadata", {})
+                    tool_name = metadata.get("tool_name", "unknown")
+                    result.tool_calls.append(tool_name)
+                    print(f"{Colors.MAGENTA}[tool_call] {tool_name}{Colors.ENDC}")
+
+                elif event_type == "done":
+                    result.done = True
+                    print(f"{Colors.GREEN}[done] Stream completed{Colors.ENDC}")
+
+                elif event_type == "error":
+                    error_content = data.get("content", "Unknown error")
+                    result.errors.append(error_content)
+                    print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
+
+                else:
+                    print(f"{Colors.BLUE}[{event_type}] {json.dumps(data, ensure_ascii=False)[:100]}...{Colors.ENDC}")
+
+            except json.JSONDecodeError as e:
+                print(f"{Colors.RED}JSON parse error: {e}{Colors.ENDC}")
+
+    print(f"\n{Colors.CYAN}[{conversation_label}] Waiting for completed state...{Colors.ENDC}")
+    final_state = await wait_for_conversation_state(api, conversation_id, "completed")
+    result.response_text = extract_response_text(final_state)
+
+    output_lines.append(f"- event_count: {result.event_count}")
+    output_lines.append(f"- done: {result.done}")
+    output_lines.append(f"- errors: {result.errors}")
+    output_lines.append(f"- response_text: {result.response_text}")
+    output_lines.append("")
+
+    print(f"{Colors.GREEN}    Response: {result.response_text[:200]}{'...' if len(result.response_text) > 200 else ''}{Colors.ENDC}")
+
+    return result
+
+
+async def run_serial_memory_test(api: APIClient, output_file: str) -> Dict:
+    output_lines: List[str] = []
+    output_lines.append(f"# Serial Memory Test - {get_timestamp()}")
+    output_lines.append("")
+
+    print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
+    print(f"{Colors.HEADER}  Serial Memory Test - 短期记忆与多次对话测试{Colors.ENDC}")
+    print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
+
+    print(f"{Colors.CYAN}[Step 1] Creating session...{Colors.ENDC}")
+    session_result = await api.create_session("Serial Memory Test")
+    if session_result.get("code") != 200:
+        error_msg = session_result.get("message", "Unknown error")
+        print(f"{Colors.RED}Failed: {error_msg}{Colors.ENDC}")
+        return {"success": False, "error": f"Session creation failed: {error_msg}"}
+
+    session_id = session_result["data"]["id"]
+    print(f"{Colors.GREEN}    Session ID: {session_id}{Colors.ENDC}")
+    output_lines.append(f"- session_id: {session_id}")
+    output_lines.append("")
+
+    first_result = await run_conversation(
+        api, session_id, "你好", "第一次对话", output_lines
+    )
+    if first_result.errors and not first_result.conversation_id:
+        return {"success": False, "error": "First conversation failed", "details": first_result.to_dict()}
+
+    print(f"\n{Colors.CYAN}[Step 3] Starting second conversation...{Colors.ENDC}\n")
+
+    second_result = await run_conversation(
+        api, session_id, "我刚刚说了什么", "第二次对话", output_lines
+    )
+    if second_result.errors and not second_result.conversation_id:
+        return {"success": False, "error": "Second conversation failed", "details": second_result.to_dict()}
+
+    print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
+    print(f"{Colors.HEADER}  验证结果{Colors.ENDC}")
+    print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
+
+    test_passed = True
+    errors: List[str] = []
+
+    if not first_result.response_text:
+        test_passed = False
+        errors.append("第一次对话返回空响应")
+        print(f"{Colors.RED}[FAIL] 第一次对话返回空响应{Colors.ENDC}")
+    else:
+        print(f"{Colors.GREEN}[PASS] 第一次对话有响应{Colors.ENDC}")
+
+    if not second_result.response_text:
+        test_passed = False
+        errors.append("第二次对话返回空响应 (测试人员反馈的问题)")
+        print(f"{Colors.RED}[FAIL] 第二次对话返回空响应 (测试人员反馈的问题){Colors.ENDC}")
+    else:
+        print(f"{Colors.GREEN}[PASS] 第二次对话有响应{Colors.ENDC}")
+
+    if second_result.response_text and "你好" not in second_result.response_text:
+        test_passed = False
+        errors.append("第二次对话未能回忆起第一次对话内容")
+        print(f"{Colors.RED}[FAIL] 第二次对话未能回忆起第一次对话内容{Colors.ENDC}")
+        print(f"{Colors.DIM}        第二次响应: {second_result.response_text}{Colors.ENDC}")
+    elif second_result.response_text:
+        print(f"{Colors.GREEN}[PASS] 第二次对话成功回忆起第一次对话内容{Colors.ENDC}")
+
+    output_lines.append("## 测试结果")
+    output_lines.append(f"- test_passed: {test_passed}")
+    output_lines.append(f"- errors: {errors}")
+    output_lines.append("")
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(output_lines))
+
+    print(f"\n{Colors.CYAN}Output saved to: {output_file}{Colors.ENDC}")
+
+    if test_passed:
+        print(f"\n{Colors.GREEN}{Colors.BOLD}测试通过!{Colors.ENDC}")
+    else:
+        print(f"\n{Colors.RED}{Colors.BOLD}测试失败!{Colors.ENDC}")
+        for err in errors:
+            print(f"{Colors.RED}  - {err}{Colors.ENDC}")
+
+    return {
+        "success": test_passed,
+        "errors": errors,
+        "session_id": session_id,
+        "first_conversation": first_result.to_dict(),
+        "second_conversation": second_result.to_dict(),
+    }
+
+
+def check_server_health(base_url: str) -> bool:
+    import urllib.request
+    from urllib.error import URLError
+
+    try:
+        response = urllib.request.urlopen(f"{base_url}/health", timeout=5)
+        return response.status == 200
+    except URLError:
+        return False
+    except Exception:
+        return False
+
+
+async def main():
+    parser = argparse.ArgumentParser(description="Serial Memory Test")
+    parser.add_argument("--no-server", action="store_true", help="Do not start server automatically")
+    parser.add_argument("--user-id", type=int, default=1, help="User ID for API requests")
+    args = parser.parse_args()
+
+    server_process = None
+
+    if not args.no_server:
+        print(f"{Colors.CYAN}Checking server health...{Colors.ENDC}")
+        if check_server_health(BASE_URL):
+            print(f"{Colors.GREEN}Server is running at {BASE_URL}{Colors.ENDC}")
+        else:
+            print(f"{Colors.YELLOW}Server not running, starting...{Colors.ENDC}")
+            backend_dir = Path(__file__).parent.parent
+            server_process = subprocess.Popen(
+                [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
+                cwd=str(backend_dir),
+            )
+            print(f"{Colors.GREEN}Server started (PID: {server_process.pid}){Colors.ENDC}")
+
+            for _ in range(30):
+                if check_server_health(BASE_URL):
+                    print(f"{Colors.GREEN}Server is ready{Colors.ENDC}")
+                    break
+                await asyncio.sleep(1)
+            else:
+                print(f"{Colors.RED}Server failed to start{Colors.ENDC}")
+                if server_process:
+                    server_process.terminate()
+                sys.exit(1)
+
+    try:
+        api = APIClient(BASE_URL, user_id=args.user_id)
+        timestamp = get_timestamp()
+        output_file = Path(__file__).parent / f"serial_memory_test_output_{timestamp}.md"
+
+        result = await run_serial_memory_test(api, str(output_file))
+
+        if not result.get("success"):
+            sys.exit(1)
+
+    finally:
+        if server_process:
+            print(f"\n{Colors.CYAN}Stopping server...{Colors.ENDC}")
+            server_process.terminate()
+            server_process.wait()
+            print(f"{Colors.GREEN}Server stopped{Colors.ENDC}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
