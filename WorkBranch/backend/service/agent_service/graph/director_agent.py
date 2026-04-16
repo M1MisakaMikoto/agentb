@@ -20,7 +20,7 @@ from .decision.complexity_analyzer import ExecutionMode, analyze_task_complexity
 from ..state import AgentState
 from .subgraphs.tool_registry import (
     FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS,
-    generate_tool_prompt, is_tool_allowed, get_allowed_tools, _write_tool_event
+    is_tool_allowed, get_allowed_tools, _write_tool_event
 )
 from service.session_service.canonical import SegmentType
 from service.agent_service.service.plan_file_service import plan_file_service
@@ -157,14 +157,9 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
         current_agent_type = state.get("agent_type") or "director_agent"
 
         console.step("分析节点", "入口", user_message)
-
-        tool_prompt = generate_tool_prompt(current_agent_type, settings_service)
-        print(f"[Analyze Node] tool_prompt: {tool_prompt[:200]}...")
         
         if llm_service:
-            system_prompt = f"""你是一个任务分析专家。请分析用户任务的复杂度，并决定执行模式。
-
-{tool_prompt}
+            system_prompt = """你是一个任务分析专家。请分析用户任务的复杂度，并决定执行模式。
 
 执行模式选项：
 1. DIRECT - 直接执行：适用于简单任务，如读取文件、查询信息等
@@ -172,14 +167,13 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
 3. SUBAGENT - 子Agent模式：适用于特定类型任务，如探索、审查等（仅 director_agent 可用）
 
 请以JSON格式返回分析结果：
-{{
+{
     "complexity": "simple/medium/complex",
     "intent_type": "develop/explore/review/question/debug/refactor/other",
     "execution_mode": "DIRECT/PLAN/SUBAGENT",
     "reason": "选择该模式的原因",
-    "suggested_tools": ["工具名称列表，必须使用上面列出的工具名称"],
     "suggested_agent": "explore/review/None"
-}}
+}
 
 只返回JSON，不要其他内容。"""
             
@@ -216,21 +210,18 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
                 mode_decision = {
                     "mode": execution_mode,
                     "reason": analysis_result.get("reason", ""),
-                    "suggested_tools": analysis_result.get("suggested_tools", []),
                     "suggested_agent": analysis_result.get("suggested_agent")
                 }
 
                 if current_agent_type != "director_agent":
                     mode_decision["mode"] = ExecutionMode.DIRECT
                     mode_decision["suggested_agent"] = None
-                    mode_decision["suggested_tools"] = []
                     mode_decision["reason"] = f"{current_agent_type} 使用专属 graph，固定走 DIRECT 执行"
 
                 intent_analysis = {
                     "intent_type": analysis_result.get("intent_type", "other"),
                     "summary": user_message[:100],
                     "key_points": [user_message],
-                    "suggested_tools": analysis_result.get("suggested_tools", []),
                     "complexity": analysis_result.get("complexity", "medium"),
                     "confidence": 0.9
                 }
@@ -242,7 +233,6 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
                     "intent_type": "other",
                     "summary": user_message[:100],
                     "key_points": [user_message],
-                    "suggested_tools": [],
                     "complexity": complexity,
                     "confidence": 0.7
                 }
@@ -253,7 +243,6 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
                 "intent_type": "other",
                 "summary": user_message[:100],
                 "key_points": [user_message],
-                "suggested_tools": [],
                 "complexity": complexity,
                 "confidence": 0.7
             }
