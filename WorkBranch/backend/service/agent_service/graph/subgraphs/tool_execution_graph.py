@@ -243,10 +243,32 @@ def ask_user(state: ToolExecutionState) -> dict:
     return {"permission": "allow"}
 
 
-def deny_execution(state: ToolExecutionState) -> dict:
+def deny_execution(state: ToolExecutionState, message_context: dict = None) -> dict:
     """拒绝执行"""
     console.error("执行被拒绝")
     error = state.get("error", "Permission denied")
+    tool_name = state["tool_name"]
+    tool_args = state["tool_args"]
+    task_description = state.get("task_description", "")
+    
+    if message_context:
+        send_message = message_context.get("send_message")
+        if send_message and tool_name not in SPECIAL_TOOLS:
+            send_message("", SegmentType.TOOL_CALL, {
+                "tool_name": tool_name,
+                "tool_args": tool_args,
+                "task_description": task_description
+            })
+        
+        if send_message:
+            send_message("", SegmentType.TOOL_RES, {
+                "tool_name": tool_name,
+                "result": None,
+                "error": error,
+                "success": False,
+                "denied": True
+            })
+    
     return {"error": error, "result": None}
 
 
@@ -1184,6 +1206,9 @@ def create_tool_execution_subgraph(workspace_service=None, llm_service=None, tok
     def execute_tool_node(state: ToolExecutionState) -> dict:
         return execute_tool(state, workspace_service, llm_service, token_callback, message_context)
     
+    def deny_execution_node(state: ToolExecutionState) -> dict:
+        return deny_execution(state, message_context)
+    
     def doom_loop_check_node(state: ToolExecutionState) -> dict:
         result = check_doom_loop(state)
         if result.get("doom_loop_detected"):
@@ -1195,7 +1220,7 @@ def create_tool_execution_subgraph(workspace_service=None, llm_service=None, tok
     
     graph.add_node("check_permission", check_permission_node)
     graph.add_node("ask_user", ask_user)
-    graph.add_node("deny", deny_execution)
+    graph.add_node("deny", deny_execution_node)
     graph.add_node("execute", execute_tool_node)
     graph.add_node("doom_loop_check", doom_loop_check_node)
     
