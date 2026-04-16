@@ -1,7 +1,9 @@
 from .compaction_graph import run_compaction, create_compaction_subgraph
-from .tool_execution_graph import (
+from .tool_executor import (
     run_tool_execution, 
-    create_tool_execution_subgraph,
+    create_tool_execution_subgraph
+)
+from .tool_registry import (
     get_allowed_tools,
     filter_tools_by_agent_type,
     generate_tool_prompt,

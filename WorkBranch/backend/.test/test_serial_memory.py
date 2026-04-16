@@ -19,12 +19,16 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, List
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import httpx
 
@@ -46,6 +50,94 @@ class Colors:
 
 def get_timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def wait_for_backend(host: str = "127.0.0.1", port: int = 8000, timeout: float = 30.0) -> bool:
+    url = f"http://{host}:{port}/health"
+    deadline = time.time() + timeout
+
+    print(f"{Colors.CYAN}Waiting for backend...{Colors.ENDC}")
+
+    while time.time() < deadline:
+        try:
+            with urlopen(url, timeout=1) as response:
+                if response.status == 200:
+                    print(f"{Colors.GREEN}Backend ready{Colors.ENDC}")
+                    return True
+        except URLError:
+            pass
+        time.sleep(0.5)
+
+    print(f"{Colors.RED}Backend timeout{Colors.ENDC}")
+    return False
+
+
+def start_backend() -> Optional[subprocess.Popen]:
+    backend_dir = Path(__file__).parent.parent
+    python_executable = sys.executable
+
+    command = [
+        python_executable,
+        "-m",
+        "uvicorn",
+        "app:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+    ]
+
+    print(f"{Colors.CYAN}Starting backend...{Colors.ENDC}")
+
+    kwargs = {
+        "cwd": str(backend_dir),
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+    }
+
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+
+    process = subprocess.Popen(command, **kwargs)
+
+    def stream_output():
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(f"{Colors.DIM}[backend] {line.rstrip()}{Colors.ENDC}")
+
+    thread = threading.Thread(target=stream_output, daemon=True)
+    thread.start()
+
+    return process
+
+
+def stop_backend(process: subprocess.Popen):
+    if process.poll() is not None:
+        return
+
+    print(f"{Colors.CYAN}Stopping backend...{Colors.ENDC}")
+
+    try:
+        if os.name == "nt":
+            try:
+                process.send_signal(signal.CTRL_BREAK_EVENT)
+            except OSError:
+                process.terminate()
+        else:
+            process.terminate()
+
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        print(f"{Colors.YELLOW}Force killing backend{Colors.ENDC}")
+        process.kill()
+        process.wait(timeout=5)
+
+    print(f"{Colors.GREEN}Backend stopped{Colors.ENDC}")
 
 
 class APIClient:
@@ -362,52 +454,38 @@ async def run_serial_memory_test(api: APIClient, output_file: str) -> Dict:
     }
 
 
-def check_server_health(base_url: str) -> bool:
-    import urllib.request
-    from urllib.error import URLError
-
-    try:
-        response = urllib.request.urlopen(f"{base_url}/health", timeout=5)
-        return response.status == 200
-    except URLError:
-        return False
-    except Exception:
-        return False
-
-
 async def main():
     parser = argparse.ArgumentParser(description="Serial Memory Test")
     parser.add_argument("--no-server", action="store_true", help="Do not start server automatically")
     parser.add_argument("--user-id", type=int, default=1, help="User ID for API requests")
     args = parser.parse_args()
 
-    server_process = None
-
-    if not args.no_server:
-        print(f"{Colors.CYAN}Checking server health...{Colors.ENDC}")
-        if check_server_health(BASE_URL):
-            print(f"{Colors.GREEN}Server is running at {BASE_URL}{Colors.ENDC}")
-        else:
-            print(f"{Colors.YELLOW}Server not running, starting...{Colors.ENDC}")
-            backend_dir = Path(__file__).parent.parent
-            server_process = subprocess.Popen(
-                [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
-                cwd=str(backend_dir),
-            )
-            print(f"{Colors.GREEN}Server started (PID: {server_process.pid}){Colors.ENDC}")
-
-            for _ in range(30):
-                if check_server_health(BASE_URL):
-                    print(f"{Colors.GREEN}Server is ready{Colors.ENDC}")
-                    break
-                await asyncio.sleep(1)
-            else:
-                print(f"{Colors.RED}Server failed to start{Colors.ENDC}")
-                if server_process:
-                    server_process.terminate()
-                sys.exit(1)
+    backend_process = None
+    started_backend = False
 
     try:
+        if args.no_server:
+            if not wait_for_backend(timeout=2):
+                print(f"{Colors.RED}Backend not running, please start or remove --no-server{Colors.ENDC}")
+                return 1
+        else:
+            if not wait_for_backend(timeout=2):
+                print(f"{Colors.CYAN}Initializing database...{Colors.ENDC}")
+                backend_dir = Path(__file__).parent.parent
+                if str(backend_dir) not in sys.path:
+                    sys.path.insert(0, str(backend_dir))
+                from singleton import get_mysql_database
+                db = await get_mysql_database()
+                await db.init_tables()
+                print(f"{Colors.GREEN}Database initialized{Colors.ENDC}")
+
+                backend_process = start_backend()
+                started_backend = True
+
+                if not wait_for_backend(timeout=120):
+                    print(f"{Colors.RED}Cannot start backend{Colors.ENDC}")
+                    return 1
+
         api = APIClient(BASE_URL, user_id=args.user_id)
         timestamp = get_timestamp()
         output_file = Path(__file__).parent / f"serial_memory_test_output_{timestamp}.md"
@@ -415,15 +493,18 @@ async def main():
         result = await run_serial_memory_test(api, str(output_file))
 
         if not result.get("success"):
-            sys.exit(1)
+            return 1
 
+        return 0
+
+    except KeyboardInterrupt:
+        print(f"\n{Colors.YELLOW}Test interrupted{Colors.ENDC}")
+        return 130
     finally:
-        if server_process:
-            print(f"\n{Colors.CYAN}Stopping server...{Colors.ENDC}")
-            server_process.terminate()
-            server_process.wait()
-            print(f"{Colors.GREEN}Server stopped{Colors.ENDC}")
+        if started_backend and backend_process is not None:
+            stop_backend(backend_process)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    exit_code = asyncio.run(main())
+    sys.exit(exit_code)

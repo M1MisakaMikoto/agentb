@@ -187,17 +187,7 @@ class ConsoleFormatter:
         print(cls.BOX_CHARS["top_left"] + "─" + f" {title} " + "─" * (width - len(title) - 5) + cls.BOX_CHARS["top_right"])
         print(cls.BOX_CHARS["vertical"])
         
-        role_colors = {
-            "SYSTEM": "magenta",
-            "HUMAN": "cyan",
-            "AI": "green",
-        }
-        
-        for i, msg in enumerate(messages):
-            role_name = msg.__class__.__name__.replace("Message", "").upper()
-            color = role_colors.get(role_name, "white")
-            
-            print(cls.BOX_CHARS["vertical"] + cls._colorize(f"  [{i+1}] {role_name}", color))
+        for msg in messages:
             lines = msg.content.split("\n")
             for line in lines:
                 print(cls.BOX_CHARS["vertical"] + "  " + line)

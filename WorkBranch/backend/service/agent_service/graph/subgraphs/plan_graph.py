@@ -5,7 +5,7 @@ import json
 import re
 
 from ...state import AgentState, Task, IntentAnalysis
-from .tool_execution_graph import generate_tool_prompt
+from .tool_registry import generate_tool_prompt
 from service.session_service.canonical import SegmentType
 
 
@@ -131,7 +131,7 @@ PLAN_SYSTEM_PROMPT_BASE = """你是一个专业的软件工程师助手。你的
 7. 每个阶段可以有多个任务，但必须保持阶段顺序"""
 
 
-def get_plan_system_prompt(agent_type: str = "build_agent", settings_service=None) -> str:
+def get_plan_system_prompt(agent_type: str = "director_agent", settings_service=None) -> str:
     """
     获取包含工具列表的系统 prompt
     
@@ -265,7 +265,7 @@ def phase1_understand(state: AgentState, llm_service=None, token_callback: Optio
     user_message = state["messages"][-1] if state["messages"] else ""
     parent_chain_messages = state.get("parent_chain_messages", [])
     current_conversation_messages = state.get("current_conversation_messages", [])
-    agent_type = state.get("agent_type", "build_agent")
+    agent_type = state.get("agent_type", "director_agent")
     
     if parent_chain_messages:
         _log(send_message, f"**历史对话记录**: {len(parent_chain_messages)} 条消息")
@@ -349,7 +349,7 @@ def phase2_design(state: AgentState, llm_service=None, token_callback: Optional[
     _log(send_message, "## Phase 2: 生成计划")
     
     user_message = state["messages"][-1] if state["messages"] else ""
-    agent_type = state.get("agent_type", "build_agent")
+    agent_type = state.get("agent_type", "director_agent")
     intent_analysis = state.get("intent_analysis")
     parent_chain_messages = state.get("parent_chain_messages", [])
     current_conversation_messages = state.get("current_conversation_messages", [])

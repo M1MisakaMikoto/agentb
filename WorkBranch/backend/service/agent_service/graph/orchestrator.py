@@ -3,7 +3,7 @@ Orchestrator Graph - 主编排图
 
 架构说明:
     - Plan 节点使用 plan_agent 类型
-    - Build 节点使用 build_agent 类型
+    - Build 节点使用 director_agent 类型
     - SubAgent (explore_agent, review_agent) 通过工具调用
 """
 
@@ -103,7 +103,7 @@ def create_build_flow(llm_service=None, token_callback: Optional[Callable[[str],
         
         step = state["current_step"]
         plan = state["plan"]
-        agent_type = "build_agent"
+        agent_type = "director_agent"
         
         if message_context:
             send_message = message_context.get("send_message")

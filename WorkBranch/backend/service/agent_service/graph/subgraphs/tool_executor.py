@@ -1,170 +1,26 @@
-from typing import TypedDict, List, Optional, Literal, Callable
-from datetime import datetime, timezone
+"""
+Tool Executor - 工具执行器
+
+包含：
+- 工具执行函数
+- 图构建函数
+"""
+from typing import List, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from langgraph.graph import StateGraph, END
 import os
 import shutil
-
-from ...state import ToolExecutionState, ToolCall
-from ...tools import ALL_TOOLS, FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS
-from service.session_service.canonical import SegmentType
-from core.logging import console
 import fnmatch
 
+from ...state import ToolExecutionState, ToolCall
+from ...tools import ALL_TOOLS
+from .tool_registry import (
+    FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS,
+    generate_tool_prompt, is_tool_allowed, get_allowed_tools, _write_tool_event
+)
+from service.session_service.canonical import SegmentType
+from core.logging import console
 
-FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir"}
-EXPLORE_TOOLS = {"explore_code", "explore_internet"}
-SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent"}
-
-# 配置哪些工具使用特殊处理（不发送tool_call/tool_res，而是使用专门的段类型）
-SPECIAL_TOOLS = {
-    "thinking": {
-        "start_type": SegmentType.THINKING_START,
-        "delta_type": SegmentType.THINKING_DELTA,
-        "end_type": SegmentType.THINKING_END,
-        "content_field": "thinking_content"
-    },
-    "chat": {
-        "start_type": SegmentType.CHAT_START,
-        "delta_type": SegmentType.CHAT_DELTA,
-        "end_type": SegmentType.CHAT_END,
-        "content_field": "chat_content"
-    }
-}
-
-
-def _summarize_text(value: str, limit: int = 160) -> str:
-    compact = " ".join((value or "").split())
-    if len(compact) <= limit:
-        return compact
-    return compact[: limit - 3] + "..."
-
-
-
-def _write_tool_event(
-    conversation_id: Optional[str],
-    tool_name: str,
-    status: Literal["started", "completed", "failed"],
-    *,
-    task_description: str = "",
-    result: Optional[str] = None,
-    error: Optional[str] = None,
-) -> None:
-    if not conversation_id:
-        return
-
-    payload = {
-        "tool_name": tool_name,
-        "status": status,
-    }
-    summary = ""
-    if status == "started":
-        summary = _summarize_text(task_description or f"started {tool_name}")
-    elif status == "completed":
-        summary = _summarize_text(result or f"completed {tool_name}")
-    elif status == "failed":
-        summary = _summarize_text(error or f"failed {tool_name}")
-
-    if summary:
-        payload["summary"] = summary
-    if error:
-        payload["error"] = _summarize_text(error)
-
-    from singleton import get_logging_runtime
-
-    get_logging_runtime().write_conversation_content(
-        {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "conversation_id": conversation_id,
-            "type": "tool_event",
-            "payload": payload,
-        }
-    )
-
-
-
-def get_allowed_tools(agent_type: str, settings_service=None) -> List[str]:
-    """
-    根据 agent 类型获取允许使用的工具列表
-    
-    Args:
-        agent_type: Agent 类型 (coder, reviewer, explorer, admin)
-        settings_service: 设置服务实例
-        
-    Returns:
-        允许使用的工具名称列表
-    """
-    if settings_service is None:
-        from service.settings_service.settings_service import SettingsService
-        settings_service = SettingsService()
-    
-    try:
-        permissions = settings_service.get("tool_permissions")
-        if agent_type in permissions:
-            return permissions[agent_type].get("allowed", [])
-    except KeyError:
-        pass
-    
-    default_permissions = {
-        "build_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files"],
-        "plan_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat", "call_explore_agent", "call_review_agent"],
-        "review_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat"],
-        "explore_agent": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files"],
-        "admin_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files"]
-    }
-    return default_permissions.get(agent_type, default_permissions["build_agent"])
-
-
-def filter_tools_by_agent_type(agent_type: str, settings_service=None) -> List[dict]:
-    """
-    根据 agent 类型过滤工具列表
-    
-    Args:
-        agent_type: Agent 类型
-        settings_service: 设置服务实例
-        
-    Returns:
-        过滤后的工具定义列表
-    """
-    allowed_tools = get_allowed_tools(agent_type, settings_service)
-    return [ALL_TOOLS[name] for name in allowed_tools if name in ALL_TOOLS]
-
-
-def generate_tool_prompt(agent_type: str, settings_service=None) -> str:
-    """
-    根据 agent 类型生成工具说明 prompt
-    
-    Args:
-        agent_type: Agent 类型
-        settings_service: 设置服务实例
-        
-    Returns:
-        工具说明文本
-    """
-    tools = filter_tools_by_agent_type(agent_type, settings_service)
-    lines = ["可用的工具包括："]
-    for tool in tools:
-        params_str = f", 参数: {tool['params']}" if tool['params'] else ""
-        lines.append(f"- {tool['name']}: {tool['description']}{params_str}")
-    result = "\n".join(lines)
-    print(f"[Tool Prompt] agent_type={agent_type}, tools={[t['name'] for t in tools]}")
-    return result
-
-
-def is_tool_allowed(tool_name: str, agent_type: str, settings_service=None) -> bool:
-    """
-    检查指定工具是否对当前 agent 类型可用
-    
-    Args:
-        tool_name: 工具名称
-        agent_type: Agent 类型
-        settings_service: 设置服务实例
-        
-    Returns:
-        是否允许使用
-    """
-    allowed_tools = get_allowed_tools(agent_type, settings_service)
-    return tool_name in allowed_tools
 
 THINK_SYSTEM_PROMPT = """你是一个专业的软件工程师助手。当前正在执行一个任务计划中的某个步骤。
 
@@ -199,7 +55,7 @@ def check_permission(state: ToolExecutionState, workspace_service=None, settings
     tool_name = state["tool_name"]
     workspace_id = state["workspace_id"]
     tool_args = state["tool_args"]
-    agent_type = state.get("agent_type", "build_agent")
+    agent_type = state.get("agent_type", "director_agent")
     
     console.info(f"工具: {tool_name}")
     console.info(f"工作区: {workspace_id}")
@@ -448,6 +304,11 @@ def _execute_thinking_tool(
 ) -> dict:
     """处理thinking工具的特殊逻辑"""
     previous_results = tool_args.get("previous_results", [])
+    parent_chain_messages = message_context.get("parent_chain_messages", []) if message_context else []
+    
+    print(f"[Thinking] parent_chain_messages count: {len(parent_chain_messages)}")
+    if parent_chain_messages:
+        print(f"[Thinking] First message: {parent_chain_messages[0] if parent_chain_messages else 'None'}")
     
     if not llm_service:
         result = f"思考任务: {task_description} (LLM 服务未配置)"
@@ -475,7 +336,8 @@ def _execute_thinking_tool(
 
         context_parts.append("请思考并执行当前任务。")
         prompt = "\n".join(context_parts)
-        messages = [{"role": "user", "content": prompt}]
+        messages = list(parent_chain_messages)
+        messages.append({"role": "user", "content": prompt})
 
         def thinking_token_callback(token: str):
             if send_message:
@@ -520,6 +382,7 @@ def _execute_chat_tool(
 ) -> dict:
     """处理chat工具的特殊逻辑"""
     previous_results = tool_args.get("previous_results", [])
+    parent_chain_messages = message_context.get("parent_chain_messages", []) if message_context else []
     
     if not llm_service:
         result = f"回复任务: {task_description} (LLM 服务未配置)"
@@ -547,7 +410,8 @@ def _execute_chat_tool(
 
         context_parts.append("请向用户输出回复。")
         prompt = "\n".join(context_parts)
-        messages = [{"role": "user", "content": prompt}]
+        messages = list(parent_chain_messages)
+        messages.append({"role": "user", "content": prompt})
 
         def chat_token_callback(token: str):
             if send_message:
@@ -579,7 +443,7 @@ def _execute_chat_tool(
                 "is_end": True,
                 "error": str(e)
             })
-        return {"result": f"对话回复失败: {e}", "error": str(e)}
+        return {"result": f"回复失败: {e}", "error": str(e)}
 
 
 def _execute_read_file(tool_args: dict) -> dict:
@@ -1321,7 +1185,7 @@ def run_tool_execution(
     token_callback: Optional[Callable[[str], None]] = None,
     task_description: str = "",
     previous_results: List[str] = None,
-    agent_type: str = "build_agent",
+    agent_type: str = "director_agent",
     settings_service=None,
     message_context: dict = None
 ) -> dict:

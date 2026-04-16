@@ -2,7 +2,7 @@ from typing import List, Dict, Optional, Any
 
 from langgraph.graph import StateGraph, END
 
-from .orchestrator_v2 import build_initial_state, create_orchestrator_graph_v3
+from .director_agent import build_initial_state, create_orchestrator_graph_v3
 from .decision.complexity_analyzer import ExecutionMode
 from .subgraphs import run_tool_execution
 from ..persistence import PersistenceService
@@ -66,7 +66,7 @@ def _build_default_tools(agent_type: str, user_message: str) -> list[dict]:
 
 
 AGENT_GRAPH_CONFIG = {
-    "build_agent": {
+    "director_agent": {
         "execution_mode": None,
         "allowed_subagents": True,
     },
@@ -213,7 +213,7 @@ def run_agent_graph(
     from service.settings_service.settings_service import SettingsService
     from service.agent_service.service.llm_service import get_llm_service
 
-    config = AGENT_GRAPH_CONFIG.get(agent_type, AGENT_GRAPH_CONFIG["build_agent"])
+    config = AGENT_GRAPH_CONFIG.get(agent_type, AGENT_GRAPH_CONFIG["director_agent"])
 
     if settings_service is None:
         settings_service = SettingsService()
