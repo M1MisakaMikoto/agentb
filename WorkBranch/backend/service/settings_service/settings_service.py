@@ -85,8 +85,8 @@ DEFAULT_SETTINGS = {
     },
     "tool_permissions": {
         "build_agent": {
-            "allowed": ["read_file", "write_file", "list_dir", "create_dir", "explore_code", "thinking", "call_explore_agent", "call_review_agent"],
-            "forbidden": ["delete_file", "explore_internet"]
+            "allowed": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "call_explore_agent", "call_review_agent"],
+            "forbidden": []
         },
         "plan_agent": {
             "allowed": ["read_file", "list_dir", "explore_code", "thinking", "call_explore_agent", "call_review_agent"],

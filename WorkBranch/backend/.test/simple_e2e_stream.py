@@ -67,6 +67,12 @@ TEST_CASES: Dict[str, Dict[str, any]] = {
         "expected_mode": "SUBAGENT",
         "expected_tools": ["spawn_agent"],
     },
+    "search": {
+        "question": "请使用网络搜索工具查询市政设施管理规定的相关法规，然后查看工作区文件了解项目背景",
+        "description": "SEARCH 模式 - 网络搜索与文件查看",
+        "expected_mode": "DIRECT",
+        "expected_tools": ["explore_internet", "read_file"],
+    },
 }
 
 
@@ -268,7 +274,8 @@ async def run_single_test(
                     print(f"{Colors.CYAN}[text] {content}{Colors.ENDC}")
                 
                 elif event_type == "tool_call":
-                    tool_name = data.get("tool_name", "unknown")
+                    metadata = data.get("metadata", {})
+                    tool_name = metadata.get("tool_name", "unknown")
                     result.tool_calls.append(tool_name)
                     print(f"{Colors.MAGENTA}[tool_call] {tool_name}{Colors.ENDC}")
                 
@@ -354,7 +361,8 @@ async def run_single_test(
                         print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
                     
                     elif event_type == "tool_call":
-                        tool_name = data.get("tool_name", "unknown")
+                        metadata = data.get("metadata", {})
+                        tool_name = metadata.get("tool_name", "unknown")
                         result.tool_calls.append(tool_name)
                         print(f"{Colors.MAGENTA}[tool_call] {tool_name}{Colors.ENDC}")
                     
@@ -505,7 +513,7 @@ def stop_backend(process: subprocess.Popen):
 async def main():
     parser = argparse.ArgumentParser(description="E2E Stream Test - Multi-Mode Agent Testing")
     parser.add_argument("--no-server", action="store_true", help="Do not start backend server")
-    parser.add_argument("--mode", "-m", choices=["direct", "plan", "subagent", "all"], default="all",
+    parser.add_argument("--mode", "-m", choices=["direct", "plan", "subagent", "search", "all"], default="all",
                         help="Test mode to run (default: all)")
     parser.add_argument("--question", "-q", default=None, help="Custom question (overrides mode)")
     parser.add_argument("--user-id", "-u", type=int, default=99999, help="User ID")
