@@ -33,6 +33,33 @@ class RAG_DAO(BaseRAGDAO):
                 pass
         return None
 
+    def add_chunk(
+        self,
+        chunk: str,
+        chunk_id: Optional[str] = None,
+        collection_name: str = "default",
+        document_id: Optional[str] = None,
+        chunk_index: Optional[int] = None,
+        source: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        embedding: Optional[List[float]] = None,
+    ) -> str:
+        chunks = [{
+            "text": chunk,
+            "chunk_id": chunk_id,
+            "chunk_index": chunk_index or 0,
+            "metadata": metadata or {},
+            "embedding": embedding,
+            "source": source
+        }]
+        res = self.add_chunks(
+            chunks=chunks,
+            collection_name=collection_name,
+            document_id=document_id,
+            source=source
+        )
+        return res[0] if res else ""
+
     def add_chunks(
         self,
         chunks: List[Dict[str, Any]],
