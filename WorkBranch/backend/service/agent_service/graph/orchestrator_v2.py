@@ -18,12 +18,39 @@ from service.agent_service.service.plan_file_service import plan_file_service
 from service.agent_service.service.workspace_service import WorkspaceService
 from core.logging import console
 
-
 MAX_REPLAN_COUNT = 3
 MAX_MESSAGES = 10
 
 persistence = PersistenceService()
 workspace_service = WorkspaceService()
+
+
+def build_initial_state(
+    user_message: str,
+    workspace_id: str,
+    parent_chain_messages: List[dict] = None,
+    current_conversation_messages: List[dict] = None,
+    agent_type: Optional[str] = None,
+    is_root_graph: bool = False,
+) -> dict:
+    return {
+        "messages": [user_message],
+        "workspace_id": workspace_id,
+        "plan": [],
+        "current_step": 0,
+        "results": [],
+        "plan_failed": False,
+        "explore_result": None,
+        "tool_history": [],
+        "replan_count": 0,
+        "agent_type": agent_type,
+        "is_root_graph": is_root_graph,
+        "parent_chain_messages": parent_chain_messages or [],
+        "current_conversation_messages": current_conversation_messages or [],
+        "has_tool_use": False,
+        "final_reply": None,
+        "plan_file": None
+    }
 
 
 def check_state_v3(state: AgentState) -> Literal["analyze", "execute", "plan", "subagent", "done"]:
@@ -58,10 +85,11 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
     """分析节点 - 决定执行模式"""
     def analyze_node(state: AgentState) -> dict:
         user_message = state["messages"][-1] if state["messages"] else ""
-        
+        current_agent_type = state.get("agent_type") or "build_agent"
+
         console.step("分析节点", "入口", user_message)
-        
-        tool_prompt = generate_tool_prompt("build_agent", settings_service)
+
+        tool_prompt = generate_tool_prompt(current_agent_type, settings_service)
         print(f"[Analyze Node] tool_prompt: {tool_prompt[:200]}...")
         
         if llm_service:
@@ -71,8 +99,8 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
 
 执行模式选项：
 1. DIRECT - 直接执行：适用于简单任务，如读取文件、查询信息等
-2. PLAN - 规划模式：适用于复杂开发任务，需要多步骤规划
-3. SUBAGENT - 子Agent模式：适用于特定类型任务，如探索、审查等
+2. PLAN - 规划模式：适用于复杂开发任务，需要多步骤规划（仅 build_agent 可用）
+3. SUBAGENT - 子Agent模式：适用于特定类型任务，如探索、审查等（仅 build_agent 可用）
 
 请以JSON格式返回分析结果：
 {{
@@ -116,7 +144,13 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
                     "suggested_tools": analysis_result.get("suggested_tools", []),
                     "suggested_agent": analysis_result.get("suggested_agent")
                 }
-                
+
+                if current_agent_type != "build_agent":
+                    mode_decision["mode"] = ExecutionMode.DIRECT
+                    mode_decision["suggested_agent"] = None
+                    mode_decision["suggested_tools"] = []
+                    mode_decision["reason"] = f"{current_agent_type} 使用专属 graph，固定走 DIRECT 执行"
+
                 intent_analysis = {
                     "intent_type": analysis_result.get("intent_type", "other"),
                     "summary": user_message[:100],
@@ -159,27 +193,28 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
             "intent_analysis": intent_analysis,
             "execution_mode": mode_decision["mode"],
             "mode_reason": mode_decision["reason"],
-            "suggested_tools": mode_decision["suggested_tools"],
+            "suggested_tools": [],
             "suggested_subagent": mode_decision["suggested_agent"],
             "active_subagent": mode_decision["mode"] == ExecutionMode.SUBAGENT,
             "has_tool_use": False,
             "final_reply": None
         }
-        
-        if mode_decision["mode"] == ExecutionMode.DIRECT:
-            suggested_tools = mode_decision.get("suggested_tools", [])
-            if suggested_tools:
-                pending_tools = []
-                for tool in suggested_tools:
-                    if tool == "explore_internet":
-                        pending_tools.append({"tool": tool, "args": {"query": user_message}})
-                    else:
-                        pending_tools.append({"tool": tool, "args": {"description": user_message}})
-                result["pending_tools"] = pending_tools
-            else:
-                result["pending_tools"] = [
-                    {"tool": "thinking", "args": {"description": user_message}}
-                ]
+
+        if mode_decision["mode"] == ExecutionMode.DIRECT and current_agent_type == "build_agent":
+            result["pending_tools"] = [
+                {"tool": "thinking", "args": {"description": user_message}},
+                {"tool": "chat", "args": {"description": user_message}},
+            ]
+        elif mode_decision["mode"] == ExecutionMode.DIRECT:
+            suggested_tools = []
+            if current_agent_type == "explore_agent":
+                suggested_tools = ["thinking", "chat"]
+            elif current_agent_type == "review_agent":
+                suggested_tools = ["thinking", "chat"]
+            result["pending_tools"] = [
+                {"tool": tool, "args": {"description": user_message}}
+                for tool in suggested_tools
+            ]
         
         if message_context:
             send_message = message_context.get("send_message")
@@ -298,6 +333,7 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                 cancel_check()
         
         pending_tools = state.get("pending_tools", [])
+        current_agent_type = state.get("agent_type") or "build_agent"
         
         if pending_tools:
             tool_name = pending_tools[0].get("tool")
@@ -319,12 +355,15 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                 token_callback=token_callback,
                 task_description=tool_args.get("description", ""),
                 previous_results=[],
-                agent_type="build_agent",
+                agent_type=current_agent_type,
                 settings_service=settings_service,
                 message_context=message_context
             )
-            
-            result_str = str(tool_result.get("result", ""))
+            child_outcome = tool_result.get("outcome") if isinstance(tool_result, dict) else None
+            if child_outcome and child_outcome.get("produced_user_reply"):
+                result_str = child_outcome.get("payload") or ""
+            else:
+                result_str = str(tool_result.get("result", ""))
             console.box("工具执行结果", result_str[:200])
             
             new_tool_history = state.get("tool_history", []) + [{
@@ -335,9 +374,10 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
             
             has_more_tools = len(pending_tools) > 1
             is_chat_tool = tool_name == "chat"
-            
-            if is_chat_tool:
-                console.decision_box("done", "chat 工具输出最终回复，结束循环")
+            is_subagent_with_reply = tool_name in {"call_explore_agent", "call_review_agent"} and bool(child_outcome and child_outcome.get("produced_user_reply"))
+
+            if is_chat_tool or is_subagent_with_reply:
+                console.decision_box("done", "工具输出最终回复，结束循环")
                 return {
                     "pending_tools": pending_tools[1:],
                     "tool_history": new_tool_history,
@@ -386,7 +426,7 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                 token_callback=token_callback,
                 task_description=task.get("description", ""),
                 previous_results=[],
-                agent_type="build_agent",
+                agent_type=current_agent_type,
                 settings_service=settings_service,
                 message_context=message_context
             )
@@ -463,7 +503,7 @@ def create_subagent_node(llm_service=None, token_callback=None, settings_service
         print("[Graph执行] 上一步: 分析节点")
         
         user_message = state["messages"][-1] if state["messages"] else ""
-        suggested_agent = state.get("suggested_subagent", "explore")
+        suggested_agent = state.get("suggested_subagent", "explore_agent")
         print(f"[Graph执行] 输入消息: {user_message}")
         print(f"[Graph执行] 启动子Agent: {suggested_agent}")
         
@@ -471,8 +511,8 @@ def create_subagent_node(llm_service=None, token_callback=None, settings_service
         print(f"[Graph执行] 发送给大模型的prompt: {prompt}")
         
         subagent_tool_map = {
-            "explore": "call_explore_agent",
-            "review": "call_review_agent",
+            "explore_agent": "call_explore_agent",
+            "review_agent": "call_review_agent",
         }
         tool_name = subagent_tool_map.get(suggested_agent, "call_explore_agent")
         pending_tools = [{
@@ -577,27 +617,24 @@ def run_graph_v3(
         initial_state = saved_state
         initial_state["messages"] = initial_state.get("messages", []) + [user_message]
     else:
-        initial_state = {
-            "messages": [user_message],
-            "workspace_id": workspace_id,
-            "plan": [],
-            "current_step": 0,
-            "results": [],
-            "plan_failed": False,
-            "explore_result": None,
-            "tool_history": [],
-            "replan_count": 0,
-            "agent_type": None,
-            "parent_chain_messages": parent_chain_messages or [],
-            "current_conversation_messages": current_conversation_messages or [],
-            "has_tool_use": False,
-            "final_reply": None,
-            "plan_file": None
-        }
+        initial_state = build_initial_state(
+            user_message=user_message,
+            workspace_id=workspace_id,
+            parent_chain_messages=parent_chain_messages,
+            current_conversation_messages=current_conversation_messages,
+            is_root_graph=True,
+        )
     
     graph = create_orchestrator_graph_v3(llm_service, token_callback, memory_mode, window_size, settings_service, message_context)
     final_state = graph.invoke(initial_state)
-    
+
+    if final_state.get("is_root_graph") and message_context:
+        send_message = message_context.get("send_message")
+        if send_message:
+            send_message("", SegmentType.DONE, {
+                "message_id": message_context.get("message_id", "")
+            })
+
     persistence.save(workspace_id, final_state)
     
     print("\n" + "="*60)

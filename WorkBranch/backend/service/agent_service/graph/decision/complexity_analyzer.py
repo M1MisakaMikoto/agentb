@@ -34,22 +34,22 @@ def analyze_task_complexity(user_message: str, intent_analysis: dict) -> dict:
             "suggested_agent": None
         }
     
-    # 探索类任务：委托 Explore Agent
+    # 探索类任务：委托 Explore Agent Graph
     if intent_type == "explore":
         return {
             "mode": ExecutionMode.SUBAGENT,
-            "reason": "探索任务，委托给 Explore Agent",
+            "reason": "探索任务，切换到 Explore Agent Graph",
             "suggested_tools": [],
-            "suggested_agent": "explore"
+            "suggested_agent": "explore_agent"
         }
-    
-    # 审查类任务：委托 Review Agent
+
+    # 审查类任务：委托 Review Agent Graph
     if intent_type == "review":
         return {
             "mode": ExecutionMode.SUBAGENT,
-            "reason": "审查任务，委托给 Review Agent",
+            "reason": "审查任务，切换到 Review Agent Graph",
             "suggested_tools": [],
-            "suggested_agent": "review"
+            "suggested_agent": "review_agent"
         }
     
     # 复杂开发任务：进入规划模式

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from typing import Any, Optional
 
 
@@ -62,6 +63,11 @@ class ConsoleFormatter:
         "bullet": "•",
     }
     
+    @classmethod
+    def _safe_print(cls, *args, **kwargs) -> None:
+        with contextlib.suppress(Exception):
+            print(*args, **kwargs)
+
     @classmethod
     def _colorize(cls, text: str, color: str) -> str:
         if color not in cls.COLORS:
@@ -297,22 +303,22 @@ class ConsoleFormatter:
     @classmethod
     def info(cls, msg: str, icon: bool = True) -> None:
         prefix = f"{cls.ICONS['info']} " if icon else ""
-        print(f"{prefix}{msg}")
+        cls._safe_print(f"{prefix}{msg}")
     
     @classmethod
     def success(cls, msg: str, icon: bool = True) -> None:
         prefix = f"{cls.ICONS['success']} " if icon else ""
-        print(cls._colorize(f"{prefix}{msg}", "green"))
+        cls._safe_print(cls._colorize(f"{prefix}{msg}", "green"))
     
     @classmethod
     def warning(cls, msg: str, icon: bool = True) -> None:
         prefix = f"{cls.ICONS['warning']} " if icon else ""
-        print(cls._colorize(f"{prefix}{msg}", "yellow"))
+        cls._safe_print(cls._colorize(f"{prefix}{msg}", "yellow"))
     
     @classmethod
     def error(cls, msg: str, icon: bool = True) -> None:
         prefix = f"{cls.ICONS['error']} " if icon else ""
-        print(cls._colorize(f"{prefix}{msg}", "red"))
+        cls._safe_print(cls._colorize(f"{prefix}{msg}", "red"))
     
     @classmethod
     def debug(cls, msg: str, icon: bool = True) -> None:

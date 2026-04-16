@@ -137,9 +137,8 @@ class AgentService:
 
     def _get_message_queue(self):
         if self._message_queue is None:
-            from service.session_service.mq import MessageQueue
-            from service.settings_service.settings_service import SettingsService
-            self._message_queue = MessageQueue(SettingsService())
+            from singleton import get_message_queue
+            self._message_queue = get_message_queue()
         return self._message_queue
 
     def _generate_id(self) -> str:
@@ -426,7 +425,9 @@ class AgentService:
                         content=content,
                         metadata=merged_metadata,
                     )
-                mq.publish_sync(msg)
+                published = mq.publish_sync(msg)
+                if not published:
+                    print(f"[AgentStream] publish_sync failed: type={block_type}, conversation_id={conversation_id}")
 
             def cancel_check():
                 """检查对话是否被取消，如果取消则抛出异常"""
@@ -441,6 +442,9 @@ class AgentService:
                 "workspace_id": workspace_id,
                 "message_id": message_id,
                 "cancel_check": cancel_check,
+                "settings_service": settings,
+                "parent_chain_messages": parent_chain_messages,
+                "current_conversation_messages": current_conversation_messages,
             }
 
 
@@ -489,15 +493,6 @@ class AgentService:
                     metadata={"message_id": message_id},
                 )
                 mq.publish_sync(msg)
-            
-            done_msg = MessageBuilder.done(
-                message_id=message_id,
-                conversation_id=conversation_id,
-                session_id=session_id,
-                workspace_id=workspace_id,
-                metadata={"message_id": message_id},
-            )
-            mq.publish_sync(done_msg)
 
             self._log_agent_event(
                 "INFO",

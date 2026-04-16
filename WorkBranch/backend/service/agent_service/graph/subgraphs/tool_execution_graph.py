@@ -1,5 +1,6 @@
 from typing import TypedDict, List, Optional, Literal, Callable
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from langgraph.graph import StateGraph, END
 import os
 import shutil
@@ -963,80 +964,142 @@ def _execute_explore_internet(tool_args: dict) -> dict:
 
 
 def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callback: Optional[Callable[[str], None]] = None, message_context: dict = None) -> dict:
-    """执行 call_explore_agent 工具 - 调用探索子代理"""
+    """执行 call_explore_agent 工具 - 切换到探索 Agent Graph"""
     task_description = tool_args.get("task_description")
     if not task_description:
         return {"result": None, "error": "缺少 task_description 参数"}
-    
+
     print(f"[ToolExec] call_explore_agent: {task_description}")
-    
+
     if llm_service is None:
         return {"result": None, "error": "LLM 服务未配置，无法执行子代理任务"}
-    
+
+    workspace_id = None
+    parent_chain_messages = []
+    current_conversation_messages = []
+    settings_service = None
+    if message_context:
+        workspace_id = message_context.get("workspace_id")
+        parent_chain_messages = message_context.get("parent_chain_messages") or []
+        current_conversation_messages = message_context.get("current_conversation_messages") or []
+        settings_service = message_context.get("settings_service")
+
+    if not workspace_id:
+        return {"result": None, "error": "缺少 workspace_id，无法切换到探索 Agent Graph"}
+
     try:
-        EXPLORE_AGENT_PROMPT = """你是一个专业的代码探索代理。你的任务是帮助用户探索和分析代码库或搜索互联网信息。
-
-你可以使用以下工具：
-- read_file: 读取文件内容
-- list_dir: 列出目录内容
-- explore_internet: 搜索互联网获取信息
-- thinking: 思考工具
-
-请根据任务描述，使用合适的工具完成任务，并给出清晰的分析结果。"""
-
-        messages = [{"role": "user", "content": task_description}]
-        
-        def explore_token_callback(token: str):
-            if token_callback:
-                token_callback(token)
-        
-        result = ""
-        for chunk in llm_service.chat_stream(messages, EXPLORE_AGENT_PROMPT, explore_token_callback):
-            result += chunk
-        
+        from ..agent_graphs import run_agent_graph
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                run_agent_graph,
+                "explore_agent",
+                task_description,
+                workspace_id,
+                llm_service,
+                token_callback,
+                "accumulate",
+                3,
+                settings_service,
+                message_context,
+                parent_chain_messages,
+                current_conversation_messages,
+                False,
+            )
+            try:
+                outcome = future.result(timeout=45)
+            except FutureTimeoutError:
+                future.cancel()
+                outcome = {
+                    "kind": "graph",
+                    "status": "failed",
+                    "payload": None,
+                    "produced_user_reply": False,
+                    "exit_info": {
+                        "code": "subgraph_timeout",
+                        "message": "explore_agent 子图执行超时",
+                        "details": {"agent_type": "explore_agent", "timeout_seconds": 45},
+                    },
+                }
+        if outcome.get("status") == "failed":
+            exit_info = outcome.get("exit_info") or {}
+            error_msg = exit_info.get("message") or exit_info.get("code") or "子代理执行失败"
+            print(f"[ToolExec] call_explore_agent 失败: {error_msg}")
+            return {"result": None, "error": error_msg, "outcome": outcome}
+        result = outcome.get("payload") or ""
         print(f"[ToolExec] call_explore_agent 完成")
-        return {"result": result, "error": None}
-    
+        return {"result": result, "error": None, "outcome": outcome}
+
     except Exception as e:
         print(f"[ToolExec] call_explore_agent 失败: {e}")
         return {"result": None, "error": f"子代理执行失败: {str(e)}"}
 
 
 def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback: Optional[Callable[[str], None]] = None, message_context: dict = None) -> dict:
-    """执行 call_review_agent 工具 - 调用审查子代理"""
+    """执行 call_review_agent 工具 - 切换到审查 Agent Graph"""
     task_description = tool_args.get("task_description")
     if not task_description:
         return {"result": None, "error": "缺少 task_description 参数"}
-    
+
     print(f"[ToolExec] call_review_agent: {task_description}")
-    
+
     if llm_service is None:
         return {"result": None, "error": "LLM 服务未配置，无法执行子代理任务"}
-    
+
+    workspace_id = None
+    parent_chain_messages = []
+    current_conversation_messages = []
+    settings_service = None
+    if message_context:
+        workspace_id = message_context.get("workspace_id")
+        parent_chain_messages = message_context.get("parent_chain_messages") or []
+        current_conversation_messages = message_context.get("current_conversation_messages") or []
+        settings_service = message_context.get("settings_service")
+
+    if not workspace_id:
+        return {"result": None, "error": "缺少 workspace_id，无法切换到审查 Agent Graph"}
+
     try:
-        REVIEW_AGENT_PROMPT = """你是一个专业的代码审查代理。你的任务是审查代码质量、发现潜在问题并提供改进建议。
-
-你可以使用以下工具：
-- read_file: 读取文件内容
-- list_dir: 列出目录内容
-- explore_code: 探索代码库结构
-- thinking: 思考工具
-
-请根据任务描述，仔细审查代码并给出专业的审查意见。"""
-
-        messages = [{"role": "user", "content": task_description}]
-        
-        def review_token_callback(token: str):
-            if token_callback:
-                token_callback(token)
-        
-        result = ""
-        for chunk in llm_service.chat_stream(messages, REVIEW_AGENT_PROMPT, review_token_callback):
-            result += chunk
-        
+        from ..agent_graphs import run_agent_graph
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                run_agent_graph,
+                "review_agent",
+                task_description,
+                workspace_id,
+                llm_service,
+                token_callback,
+                "accumulate",
+                3,
+                settings_service,
+                message_context,
+                parent_chain_messages,
+                current_conversation_messages,
+                False,
+            )
+            try:
+                outcome = future.result(timeout=45)
+            except FutureTimeoutError:
+                future.cancel()
+                outcome = {
+                    "kind": "graph",
+                    "status": "failed",
+                    "payload": None,
+                    "produced_user_reply": False,
+                    "exit_info": {
+                        "code": "subgraph_timeout",
+                        "message": "review_agent 子图执行超时",
+                        "details": {"agent_type": "review_agent", "timeout_seconds": 45},
+                    },
+                }
+        if outcome.get("status") == "failed":
+            exit_info = outcome.get("exit_info") or {}
+            error_msg = exit_info.get("message") or exit_info.get("code") or "子代理执行失败"
+            print(f"[ToolExec] call_review_agent 失败: {error_msg}")
+            return {"result": None, "error": error_msg, "outcome": outcome}
+        result = outcome.get("payload") or ""
         print(f"[ToolExec] call_review_agent 完成")
-        return {"result": result, "error": None}
-    
+        return {"result": result, "error": None, "outcome": outcome}
+
     except Exception as e:
         print(f"[ToolExec] call_review_agent 失败: {e}")
         return {"result": None, "error": f"子代理执行失败: {str(e)}"}

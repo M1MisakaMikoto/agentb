@@ -162,16 +162,7 @@ async def stream_conversation_message(
                         request_ctx["workspace_id"] = current.get("workspace_id") or request_ctx.get("workspace_id")
                         state = current.get("state")
                         if state == "completed":
-                            done_received = True
-                            logger.info(
-                                event="stream.completed",
-                                msg="conversation stream completed from state",
-                                extra={
-                                    "conversation_id": conversation_id,
-                                    "latency_ms": round((time.perf_counter() - stream_start) * 1000),
-                                },
-                            )
-                            yield f"data: {json.dumps({'type': 'done', 'content': ''}, ensure_ascii=False)}\n\n"
+                            continue
                         elif state == "failed":
                             done_received = True
                             error_message = current.get("error") or state
@@ -225,6 +216,6 @@ async def stream_conversation_message(
                 yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
             finally:
                 if subscriber is not None:
-                    mq.unsubscribe(conversation.get("workspace_id"), subscriber)
+                    mq.unsubscribe(conversation_id, subscriber)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

@@ -85,7 +85,7 @@ DEFAULT_SETTINGS = {
     },
     "tool_permissions": {
         "build_agent": {
-            "allowed": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "call_explore_agent", "call_review_agent"],
+            "allowed": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent"],
             "forbidden": []
         },
         "plan_agent": {
@@ -93,11 +93,11 @@ DEFAULT_SETTINGS = {
             "forbidden": ["write_file", "delete_file", "create_dir", "explore_internet"]
         },
         "review_agent": {
-            "allowed": ["read_file", "list_dir", "explore_code", "thinking"],
+            "allowed": ["read_file", "list_dir", "explore_code", "thinking", "chat"],
             "forbidden": ["write_file", "delete_file", "create_dir", "explore_internet", "call_explore_agent", "call_review_agent"]
         },
         "explore_agent": {
-            "allowed": ["read_file", "list_dir", "thinking", "explore_internet"],
+            "allowed": ["read_file", "list_dir", "thinking", "chat", "explore_internet"],
             "forbidden": ["write_file", "delete_file", "create_dir", "explore_code", "call_explore_agent", "call_review_agent"]
         },
         "admin_agent": {

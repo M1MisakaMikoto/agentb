@@ -250,7 +250,14 @@ class ConversationService:
                     await collect_and_forward(message)
                 except asyncio.TimeoutError:
                     if task.done():
-                        break
+                        if messages:
+                            break
+                        try:
+                            await asyncio.wait_for(task, timeout=5.0)
+                        except asyncio.TimeoutError:
+                            task.cancel()
+                            raise RuntimeError("Agent task finished without emitting any stream messages")
+                        raise RuntimeError("Agent task finished without emitting any stream messages")
                     continue
 
             if not task.done():

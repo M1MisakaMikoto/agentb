@@ -230,7 +230,7 @@ class MessageQueue:
             except queue.Empty:
                 continue
             except Exception as e:
-                pass
+                print(f"[MQ] sync bridge error: {e}")
 
     async def _put_to_async_queue(self, message: Message) -> None:
         """将消息放入异步队列"""
@@ -304,7 +304,7 @@ class MessageQueue:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                pass
+                print(f"[MQ] consume loop error: {e}")
 
     async def _consume(self, message: Message) -> None:
         """
