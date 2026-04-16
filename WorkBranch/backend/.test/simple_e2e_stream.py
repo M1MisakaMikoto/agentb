@@ -68,10 +68,16 @@ TEST_CASES: Dict[str, Dict[str, any]] = {
         "expected_tools": ["spawn_agent"],
     },
     "search": {
-        "question": "请使用网络搜索工具查询市政设施管理规定的相关法规，然后查看工作区文件了解项目背景",
+        "question": "请使用 explore_internet 工具搜索市政设施管理规定的相关法规",
         "description": "SEARCH 模式 - 网络搜索与文件查看",
         "expected_mode": "DIRECT",
-        "expected_tools": ["explore_internet", "read_file"],
+        "expected_tools": ["explore_internet"],
+    },
+    "serial": {
+        "question": "请记住暗号 ALPHA-9271，只回复这串暗号。",
+        "description": "SERIAL 模式 - 同一 Session 串行对话约束与历史继承测试",
+        "expected_mode": "DIRECT",
+        "expected_tools": ["thinking", "chat"],
     },
 }
 
@@ -122,6 +128,9 @@ class APIClient:
             "POST", "/plan/approve",
             json={"workspace_id": workspace_id, "approved": approved}
         )
+
+    async def get_conversation(self, conversation_id: str) -> dict:
+        return await self._request("GET", f"/session/conversations/{conversation_id}")
 
     async def stream_message(self, conversation_id: str):
         url = f"{self.base_url}/session/conversations/{conversation_id}/messages/stream"
@@ -174,6 +183,158 @@ class TestResult:
             "workspace_id": self.workspace_id,
             "conversation_id": self.conversation_id,
         }
+
+
+async def collect_stream_output(api: APIClient, conversation_id: str):
+    event_types: List[str] = []
+    text_chunks: List[str] = []
+    chat_chunks: List[str] = []
+    errors: List[str] = []
+    done = False
+
+    async for item in api.stream_message(conversation_id):
+        raw_line = item.get("raw_line", "")
+        if not raw_line.strip() or not raw_line.startswith("data: "):
+            continue
+
+        try:
+            data = json.loads(raw_line[6:])
+        except json.JSONDecodeError:
+            continue
+
+        event_type = data.get("type", "unknown")
+        event_types.append(event_type)
+
+        if event_type == "text_delta":
+            text_chunks.append(data.get("content", ""))
+        elif event_type == "chat_delta":
+            chat_chunks.append(data.get("content", ""))
+        elif event_type == "error":
+            errors.append(data.get("content", "Unknown error"))
+        elif event_type == "done":
+            done = True
+
+    return {
+        "event_types": event_types,
+        "text": "".join(text_chunks),
+        "chat": "".join(chat_chunks),
+        "errors": errors,
+        "done": done,
+    }
+
+
+async def wait_for_conversation_state(api: APIClient, conversation_id: str, expected_state: str, timeout: float = 10.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        conversation_result = await api.get_conversation(conversation_id)
+        data = conversation_result.get("data") or {}
+        if data.get("state") == expected_state:
+            return conversation_result
+        await asyncio.sleep(0.1)
+    return conversation_result
+
+
+def extract_response_text(conversation_result: dict) -> str:
+    data = conversation_result.get("data") or {}
+    assistant_content = data.get("assistant_content")
+    if not assistant_content:
+        return ""
+    try:
+        events = json.loads(assistant_content)
+    except Exception:
+        return str(assistant_content)
+
+    parts: List[str] = []
+    for event in events:
+        event_type = event.get("type")
+        if event_type in {"text_delta", "chat_delta", "thinking_delta"}:
+            parts.append(event.get("content", ""))
+        elif event_type == "thinking_end":
+            metadata = event.get("metadata") or {}
+            if metadata.get("result"):
+                parts.append(metadata["result"])
+    return "".join(parts)
+
+
+async def run_serial_test(api: APIClient, output_file: str) -> TestResult:
+    test_case = TEST_CASES["serial"]
+    result = TestResult("serial", test_case)
+
+    session_result = await api.create_session("Test SERIAL")
+    if session_result.get("code") != 200:
+        result.errors.append(f"Session creation failed: {session_result.get('message', 'Unknown error')}")
+        return result
+
+    session_id = session_result["data"]["id"]
+
+    first_prompt = test_case["question"]
+    first_conv_result = await api.create_conversation(session_id, first_prompt)
+    if first_conv_result.get("code") != 200:
+        result.errors.append(f"First conversation creation failed: {first_conv_result.get('message', 'Unknown error')}")
+        return result
+
+    first_conversation_id = first_conv_result["data"]["conversation_id"]
+    result.conversation_id = first_conversation_id
+
+    first_stream_task = asyncio.create_task(collect_stream_output(api, first_conversation_id))
+    await wait_for_conversation_state(api, first_conversation_id, "running")
+
+    blocked_conv_result = await api.create_conversation(
+        session_id,
+        "上一轮会话中的暗号是什么？只回答暗号。",
+    )
+    if blocked_conv_result.get("code") != 409:
+        result.errors.append(f"Expected 409 while first conversation is running, got: {blocked_conv_result}")
+
+    blocked_message = blocked_conv_result.get("message", "")
+    if "正在执行" not in blocked_message:
+        result.errors.append(f"Unexpected conflict message: {blocked_message}")
+
+    first_stream_result = await first_stream_task
+    result.event_count += len(first_stream_result["event_types"])
+    if first_stream_result["errors"]:
+        result.errors.extend(first_stream_result["errors"])
+    if not first_stream_result["done"]:
+        result.errors.append("First conversation stream did not complete with done event")
+
+    first_conversation_state = await wait_for_conversation_state(api, first_conversation_id, "completed")
+    first_response = extract_response_text(first_conversation_state)
+    if "ALPHA-9271" not in first_response:
+        result.errors.append(f"First conversation did not return the code word: {first_response}")
+
+    second_conv_result = await api.create_conversation(
+        session_id,
+        "上一轮会话中的暗号是什么？只回答暗号。",
+    )
+    if second_conv_result.get("code") != 200:
+        result.errors.append(f"Second conversation creation failed: {second_conv_result.get('message', 'Unknown error')}")
+        return result
+
+    second_conversation_id = second_conv_result["data"]["conversation_id"]
+    second_stream_result = await collect_stream_output(api, second_conversation_id)
+    result.event_count += len(second_stream_result["event_types"])
+    if second_stream_result["errors"]:
+        result.errors.extend(second_stream_result["errors"])
+    if not second_stream_result["done"]:
+        result.errors.append("Second conversation stream did not complete with done event")
+
+    second_conversation_state = await wait_for_conversation_state(api, second_conversation_id, "completed")
+    second_response = extract_response_text(second_conversation_state)
+    if "ALPHA-9271" not in second_response:
+        result.errors.append(f"Second conversation did not inherit previous history: {second_response}")
+
+    with open(output_file, "a", encoding="utf-8") as f:
+        f.write("# SERIAL Session Conversation Test\n")
+        f.write(f"- session_id: {session_id}\n")
+        f.write(f"- first_conversation_id: {first_conversation_id}\n")
+        f.write(f"- blocked_create_result: {json.dumps(blocked_conv_result, ensure_ascii=False)}\n")
+        f.write(f"- second_conversation_id: {second_conversation_id}\n")
+        f.write(f"- first_response: {first_response}\n")
+        f.write(f"- second_response: {second_response}\n\n")
+
+    result.text_content = second_response
+    result.detected_mode = "DIRECT"
+    return result
 
 
 async def run_single_test(
@@ -513,7 +674,7 @@ def stop_backend(process: subprocess.Popen):
 async def main():
     parser = argparse.ArgumentParser(description="E2E Stream Test - Multi-Mode Agent Testing")
     parser.add_argument("--no-server", action="store_true", help="Do not start backend server")
-    parser.add_argument("--mode", "-m", choices=["direct", "plan", "subagent", "search", "all"], default="all",
+    parser.add_argument("--mode", "-m", choices=["direct", "plan", "subagent", "search", "serial", "all"], default="all",
                         help="Test mode to run (default: all)")
     parser.add_argument("--question", "-q", default=None, help="Custom question (overrides mode)")
     parser.add_argument("--user-id", "-u", type=int, default=99999, help="User ID")
@@ -523,7 +684,9 @@ async def main():
     args = parser.parse_args()
 
     timestamp = get_timestamp()
-    output_file = args.output or str(Path(__file__).parent / f"multi_mode_test_{timestamp}.md")
+    logs_dir = Path(__file__).parent / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    output_file = args.output or str(logs_dir / f"multi_mode_test_{timestamp}.md")
 
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(f"# Multi-Mode E2E Test Report\n")
@@ -568,16 +731,19 @@ async def main():
             result = await run_single_test(api, "custom", custom_case, output_file, args.auto_approve)
             results.append(result)
         else:
-            modes_to_test = ["direct", "plan", "subagent"] if args.mode == "all" else [args.mode]
-            
+            modes_to_test = ["direct", "plan", "subagent", "serial"] if args.mode == "all" else [args.mode]
+
             for mode in modes_to_test:
-                if mode in TEST_CASES:
+                if mode == "serial":
+                    result = await run_serial_test(api, output_file)
+                    results.append(result)
+                elif mode in TEST_CASES:
                     result = await run_single_test(
                         api, mode, TEST_CASES[mode], output_file, args.auto_approve
                     )
                     results.append(result)
-                    
-                    await asyncio.sleep(1)
+
+                await asyncio.sleep(1)
 
         all_passed = print_summary(results)
 

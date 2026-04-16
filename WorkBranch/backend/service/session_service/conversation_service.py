@@ -85,7 +85,11 @@ class ConversationService:
         session = await self._dao.get_session_by_id(session_id)
         if not session:
             raise ValueError(f"Session {session_id} not found")
-        
+
+        existing_conversations = await self._dao.list_conversations_by_session(session_id)
+        if any(conv.state == ConversationState.RUNNING.value for conv in existing_conversations):
+            raise RuntimeError(f"Session {session_id} already has a running conversation")
+
         workspace_id = session.workspace_id
 
         await self._dao.create_conversation(

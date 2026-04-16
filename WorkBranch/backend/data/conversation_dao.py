@@ -1,5 +1,6 @@
 from typing import List, Optional
 from dataclasses import dataclass
+import json
 
 
 @dataclass
@@ -171,7 +172,22 @@ class ConversationDAO:
             row_dict = dict(row)
             context.append({"role": "user", "content": row_dict["user_content"]})
             if row_dict["assistant_content"]:
-                context.append({"role": "assistant", "content": row_dict["assistant_content"]})
+                assistant_content = row_dict["assistant_content"]
+                try:
+                    events = json.loads(assistant_content)
+                    parts = []
+                    for event in events:
+                        event_type = event.get("type")
+                        if event_type in {"text_delta", "chat_delta", "thinking_delta"}:
+                            parts.append(event.get("content", ""))
+                        elif event_type == "thinking_end":
+                            metadata = event.get("metadata") or {}
+                            if metadata.get("result"):
+                                parts.append(metadata["result"])
+                    assistant_content = "".join(parts) if parts else assistant_content
+                except Exception:
+                    pass
+                context.append({"role": "assistant", "content": assistant_content})
         
         return context
 

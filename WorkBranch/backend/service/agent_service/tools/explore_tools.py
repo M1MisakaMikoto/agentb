@@ -64,7 +64,7 @@ def execute_explore_code(tool_args: dict) -> dict:
 
 def execute_explore_internet(tool_args: dict) -> dict:
     """执行 explore_internet 工具 - 使用 DuckDuckGo 搜索互联网"""
-    query = tool_args.get("query")
+    query = tool_args.get("query") or tool_args.get("description") or tool_args.get("task_description")
     if not query:
         return {"result": None, "error": "缺少 query 参数"}
     

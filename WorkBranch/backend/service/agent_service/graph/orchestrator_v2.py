@@ -12,7 +12,7 @@ from langgraph.graph import StateGraph, END
 from .decision.complexity_analyzer import ExecutionMode, analyze_task_complexity, evaluate_task_complexity
 from ..state import AgentState
 from ..persistence import PersistenceService
-from .subgraphs import run_tool_execution
+from .subgraphs import run_tool_execution, generate_tool_prompt
 from service.session_service.canonical import SegmentType
 from service.agent_service.service.plan_file_service import plan_file_service
 from service.agent_service.service.workspace_service import WorkspaceService
@@ -54,15 +54,20 @@ def check_state_v3(state: AgentState) -> Literal["analyze", "execute", "plan", "
     return "done"
 
 
-def create_analyze_node(llm_service=None, message_context=None):
+def create_analyze_node(llm_service=None, message_context=None, settings_service=None):
     """分析节点 - 决定执行模式"""
     def analyze_node(state: AgentState) -> dict:
         user_message = state["messages"][-1] if state["messages"] else ""
         
         console.step("分析节点", "入口", user_message)
         
+        tool_prompt = generate_tool_prompt("build_agent", settings_service)
+        print(f"[Analyze Node] tool_prompt: {tool_prompt[:200]}...")
+        
         if llm_service:
-            system_prompt = """你是一个任务分析专家。请分析用户任务的复杂度，并决定执行模式。
+            system_prompt = f"""你是一个任务分析专家。请分析用户任务的复杂度，并决定执行模式。
+
+{tool_prompt}
 
 执行模式选项：
 1. DIRECT - 直接执行：适用于简单任务，如读取文件、查询信息等
@@ -70,14 +75,14 @@ def create_analyze_node(llm_service=None, message_context=None):
 3. SUBAGENT - 子Agent模式：适用于特定类型任务，如探索、审查等
 
 请以JSON格式返回分析结果：
-{
+{{
     "complexity": "simple/medium/complex",
     "intent_type": "develop/explore/review/question/debug/refactor/other",
     "execution_mode": "DIRECT/PLAN/SUBAGENT",
     "reason": "选择该模式的原因",
-    "suggested_tools": ["工具列表"],
+    "suggested_tools": ["工具名称列表，必须使用上面列出的工具名称"],
     "suggested_agent": "explore/review/None"
-}
+}}
 
 只返回JSON，不要其他内容。"""
             
@@ -164,10 +169,13 @@ def create_analyze_node(llm_service=None, message_context=None):
         if mode_decision["mode"] == ExecutionMode.DIRECT:
             suggested_tools = mode_decision.get("suggested_tools", [])
             if suggested_tools:
-                result["pending_tools"] = [
-                    {"tool": tool, "args": {"description": user_message}}
-                    for tool in suggested_tools
-                ]
+                pending_tools = []
+                for tool in suggested_tools:
+                    if tool == "explore_internet":
+                        pending_tools.append({"tool": tool, "args": {"query": user_message}})
+                    else:
+                        pending_tools.append({"tool": tool, "args": {"description": user_message}})
+                result["pending_tools"] = pending_tools
             else:
                 result["pending_tools"] = [
                     {"tool": "thinking", "args": {"description": user_message}}
@@ -462,12 +470,15 @@ def create_subagent_node(llm_service=None, token_callback=None, settings_service
         prompt = f"请启动 {suggested_agent} Agent 执行任务: {user_message}"
         print(f"[Graph执行] 发送给大模型的prompt: {prompt}")
         
+        subagent_tool_map = {
+            "explore": "call_explore_agent",
+            "review": "call_review_agent",
+        }
+        tool_name = subagent_tool_map.get(suggested_agent, "call_explore_agent")
         pending_tools = [{
-            "tool": "spawn_agent",
+            "tool": tool_name,
             "args": {
-                "agent_type": suggested_agent,
                 "task_description": user_message,
-                "background": False
             }
         }]
         
@@ -499,7 +510,7 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
     """
     graph = StateGraph(AgentState)
     
-    graph.add_node("analyze", create_analyze_node(llm_service, message_context))
+    graph.add_node("analyze", create_analyze_node(llm_service, message_context, settings_service))
     graph.add_node("execute", create_execute_node(llm_service, token_callback, settings_service, message_context))
     graph.add_node("plan", create_plan_node(llm_service, token_callback, settings_service, message_context))
     graph.add_node("subagent", create_subagent_node(llm_service, token_callback, settings_service, message_context))

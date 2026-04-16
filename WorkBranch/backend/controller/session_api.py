@@ -86,10 +86,15 @@ async def create_conversation(session_id: int, body: CreateConversationBody) -> 
         raise HTTPException(status_code=404, detail="会话不存在")
     
     service = get_conversation_service()
-    conversation_id = await service.create_conversation(
-        session_id=session_id,
-        user_content=body.user_content,
-    )
+    try:
+        conversation_id = await service.create_conversation(
+            session_id=session_id,
+            user_content=body.user_content,
+        )
+    except RuntimeError as e:
+        if "already has a running conversation" in str(e):
+            raise HTTPException(status_code=409, detail="当前会话已有正在执行的对话，无法创建新对话") from e
+        raise
     return Result.success(data={
         "conversation_id": conversation_id,
         "session_id": session_id,

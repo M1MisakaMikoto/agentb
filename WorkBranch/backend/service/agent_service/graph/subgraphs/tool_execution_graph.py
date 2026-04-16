@@ -105,7 +105,7 @@ def get_allowed_tools(agent_type: str, settings_service=None) -> List[str]:
         pass
     
     default_permissions = {
-        "build_agent": ["read_file", "write_file", "list_dir", "create_dir", "explore_code", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files"],
+        "build_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files"],
         "plan_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat", "call_explore_agent", "call_review_agent"],
         "review_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat"],
         "explore_agent": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files"],
@@ -145,7 +145,9 @@ def generate_tool_prompt(agent_type: str, settings_service=None) -> str:
     for tool in tools:
         params_str = f", 参数: {tool['params']}" if tool['params'] else ""
         lines.append(f"- {tool['name']}: {tool['description']}{params_str}")
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    print(f"[Tool Prompt] agent_type={agent_type}, tools={[t['name'] for t in tools]}")
+    return result
 
 
 def is_tool_allowed(tool_name: str, agent_type: str, settings_service=None) -> bool:
@@ -379,10 +381,16 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
     if message_context:
         send_message = message_context.get("send_message")
         if send_message:
-            result_content = tool_result.get("result", "")
+            result_content = tool_result.get("result")
+            if result_content is None:
+                result_preview = ""
+            else:
+                result_preview = str(result_content)
+                if len(result_preview) > 500:
+                    result_preview = result_preview[:500] + "..."
             send_message("", SegmentType.TOOL_RES, {
                 "tool_name": tool_name,
-                "result": result_content[:500] + "..." if len(result_content) > 500 else result_content,
+                "result": result_preview,
                 "error": tool_result.get("error"),
                 "success": tool_result.get("error") is None
             })
@@ -907,7 +915,7 @@ def _execute_explore_code(tool_args: dict) -> dict:
 
 def _execute_explore_internet(tool_args: dict) -> dict:
     """执行 explore_internet 工具 - 使用 DuckDuckGo 搜索互联网"""
-    query = tool_args.get("query")
+    query = tool_args.get("query") or tool_args.get("description") or tool_args.get("task_description")
     if not query:
         return {"result": None, "error": "缺少 query 参数"}
     
