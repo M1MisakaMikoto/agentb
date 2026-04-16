@@ -210,11 +210,7 @@ class LLMService:
             elif role == "system":
                 lc_messages.append(SystemMessage(content=content))
         
-        console.header("LLM 原始提示词", style="single")
-        
-        for i, msg in enumerate(lc_messages):
-            role_name = msg.__class__.__name__.replace("Message", "").upper()
-            console.box(f"[{i+1}] {role_name}", msg.content[:200])
+        console.messages_box("LLM 原始提示词", lc_messages)
         
         console.info(f"发送请求: {len(lc_messages)} 条消息")
 
@@ -264,11 +260,7 @@ class LLMService:
             elif role == "system":
                 lc_messages.append(SystemMessage(content=content))
         
-        console.header("LLM 原始提示词", style="single")
-        
-        for i, msg in enumerate(lc_messages):
-            role_name = msg.__class__.__name__.replace("Message", "").upper()
-            console.box(f"[{i+1}] {role_name}", msg.content[:200])
+        console.messages_box("LLM 原始提示词", lc_messages)
         
         console.info(f"发送流式请求: {len(lc_messages)} 条消息")
         console.section("流式输出")

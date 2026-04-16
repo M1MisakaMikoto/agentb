@@ -142,14 +142,12 @@ class ConsoleFormatter:
                 value_str = str(value)
                 value_lines = value_str.split("\n")
                 for vline in value_lines:
-                    truncated = cls._truncate(vline, width - 4)
-                    print(cls.BOX_CHARS["vertical"] + "  " + truncated)
+                    print(cls.BOX_CHARS["vertical"] + "  " + vline)
                 print(cls.BOX_CHARS["vertical"])
         elif isinstance(content, list):
             for item in content:
                 item_str = str(item)
-                truncated = cls._truncate(item_str, width - 4)
-                line = f"  {cls.ICONS['bullet']} {truncated}"
+                line = f"  {cls.ICONS['bullet']} {item_str}"
                 if color:
                     line = cls._colorize(line, color)
                 print(cls.BOX_CHARS["vertical"] + line)
@@ -157,8 +155,7 @@ class ConsoleFormatter:
         else:
             lines = str(content).split("\n")
             for line in lines:
-                truncated = cls._truncate(line, width - 4)
-                display_line = cls._colorize(truncated, color) if color else truncated
+                display_line = cls._colorize(line, color) if color else line
                 print(cls.BOX_CHARS["vertical"] + "  " + display_line)
             print(cls.BOX_CHARS["vertical"])
         
@@ -172,21 +169,39 @@ class ConsoleFormatter:
         
         print(cls.BOX_CHARS["vertical"] + cls._colorize("  [系统提示词]", "magenta"))
         sys_lines = system_prompt.split("\n")
-        for line in sys_lines[:10]:
-            truncated = cls._truncate(line, width - 4)
-            print(cls.BOX_CHARS["vertical"] + "  " + truncated)
-        if len(sys_lines) > 10:
-            print(cls.BOX_CHARS["vertical"] + "  ...")
+        for line in sys_lines:
+            print(cls.BOX_CHARS["vertical"] + "  " + line)
         print(cls.BOX_CHARS["vertical"])
         
         print(cls.BOX_CHARS["vertical"] + cls._colorize("  [用户消息]", "cyan"))
         user_lines = user_message.split("\n")
-        for line in user_lines[:5]:
-            truncated = cls._truncate(line, width - 4)
-            print(cls.BOX_CHARS["vertical"] + "  " + truncated)
-        if len(user_lines) > 5:
-            print(cls.BOX_CHARS["vertical"] + "  ...")
+        for line in user_lines:
+            print(cls.BOX_CHARS["vertical"] + "  " + line)
         print(cls.BOX_CHARS["vertical"])
+        
+        print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
+    
+    @classmethod
+    def messages_box(cls, title: str, messages: list, width: int = 80) -> None:
+        print()
+        print(cls.BOX_CHARS["top_left"] + "─" + f" {title} " + "─" * (width - len(title) - 5) + cls.BOX_CHARS["top_right"])
+        print(cls.BOX_CHARS["vertical"])
+        
+        role_colors = {
+            "SYSTEM": "magenta",
+            "HUMAN": "cyan",
+            "AI": "green",
+        }
+        
+        for i, msg in enumerate(messages):
+            role_name = msg.__class__.__name__.replace("Message", "").upper()
+            color = role_colors.get(role_name, "white")
+            
+            print(cls.BOX_CHARS["vertical"] + cls._colorize(f"  [{i+1}] {role_name}", color))
+            lines = msg.content.split("\n")
+            for line in lines:
+                print(cls.BOX_CHARS["vertical"] + "  " + line)
+            print(cls.BOX_CHARS["vertical"])
         
         print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
     
@@ -202,8 +217,7 @@ class ConsoleFormatter:
         
         lines = content.split("\n")
         for line in lines:
-            truncated = cls._truncate(line, width - 4)
-            print(cls.BOX_CHARS["vertical"] + "  " + truncated)
+            print(cls.BOX_CHARS["vertical"] + "  " + line)
         
         print(cls.BOX_CHARS["vertical"])
         print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
@@ -234,8 +248,7 @@ class ConsoleFormatter:
             
             tool_info = f" [工具: {task.get('tool')}]" if task.get('tool') else ""
             task_line = f"    {task['id']}. {task['description']}{tool_info}"
-            truncated = cls._truncate(task_line, width - 4)
-            print(cls.BOX_CHARS["vertical"] + truncated)
+            print(cls.BOX_CHARS["vertical"] + task_line)
         
         print(cls.BOX_CHARS["vertical"])
         print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
@@ -253,8 +266,7 @@ class ConsoleFormatter:
         
         if args:
             args_str = str(args)
-            truncated = cls._truncate(args_str, width - 8)
-            print(cls.BOX_CHARS["vertical"] + cls._colorize(f"  工具参数: {truncated}", "dim"))
+            print(cls.BOX_CHARS["vertical"] + cls._colorize(f"  工具参数: {args_str}", "dim"))
         
         print(cls.BOX_CHARS["vertical"])
         print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
@@ -270,11 +282,8 @@ class ConsoleFormatter:
         
         print(cls.BOX_CHARS["vertical"] + "  结果:")
         result_lines = result.split("\n")
-        for line in result_lines[:5]:
-            truncated = cls._truncate(line, width - 4)
-            print(cls.BOX_CHARS["vertical"] + "  " + truncated)
-        if len(result_lines) > 5:
-            print(cls.BOX_CHARS["vertical"] + "  ...")
+        for line in result_lines:
+            print(cls.BOX_CHARS["vertical"] + "  " + line)
         
         print(cls.BOX_CHARS["vertical"])
         print(cls.BOX_CHARS["vertical"] + cls._colorize(f"  反馈: {feedback}", "cyan"))
@@ -293,9 +302,8 @@ class ConsoleFormatter:
         if reason:
             print(cls.BOX_CHARS["vertical"])
             reason_lines = reason.split("\n")
-            for line in reason_lines[:3]:
-                truncated = cls._truncate(line, width - 4)
-                print(cls.BOX_CHARS["vertical"] + "  " + truncated)
+            for line in reason_lines:
+                print(cls.BOX_CHARS["vertical"] + "  " + line)
         
         print(cls.BOX_CHARS["vertical"])
         print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
@@ -334,8 +342,7 @@ class ConsoleFormatter:
         print(cls.BOX_CHARS["double_vertical"] + cls._pad(f"当前步骤: {step_name}", width - 2) + cls.BOX_CHARS["double_vertical"])
         print(cls.BOX_CHARS["double_vertical"] + cls._pad(f"上一步:   {prev_step}", width - 2) + cls.BOX_CHARS["double_vertical"])
         
-        msg_display = cls._truncate(message, width - 14)
-        print(cls.BOX_CHARS["double_vertical"] + cls._pad(f"输入消息: {msg_display}", width - 2) + cls.BOX_CHARS["double_vertical"])
+        print(cls.BOX_CHARS["double_vertical"] + cls._pad(f"输入消息: {message}", width - 2) + cls.BOX_CHARS["double_vertical"])
         
         print(cls.BOX_CHARS["double_bottom_left"] + cls.BOX_CHARS["double_horizontal"] * (width - 2) + cls.BOX_CHARS["double_bottom_right"])
     

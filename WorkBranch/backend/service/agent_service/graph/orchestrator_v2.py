@@ -116,8 +116,6 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
             
             messages = [{"role": "user", "content": f"请分析以下任务：\n\n{user_message}"}]
             
-            console.prompt_box("发送给大模型的 Prompt", system_prompt, user_message)
-            
             try:
                 response = llm_service.chat(messages, system_prompt=system_prompt)
                 
@@ -255,8 +253,6 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
             system_prompt = get_plan_system_prompt("build_agent", settings_service)
             
             messages = [{"role": "user", "content": f"请为以下任务生成详细的执行计划，包含2-5个步骤：\n\n{user_message}"}]
-            
-            console.prompt_box("发送给大模型的 Prompt", system_prompt[:200] + "...", user_message)
             
             try:
                 response = llm_service.chat(messages, system_prompt=system_prompt)
