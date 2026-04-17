@@ -9,7 +9,7 @@ from rag.DAO.knowledge_base_dao import KnowledgeBaseDAO
 from rag.logging_utils import get_logger
 from rag.service.ingestion.chunk_engine.registry import ChunkEngineRegistry
 from rag.service.ingestion.embedding_engine.base_embedding_engine import BaseEmbeddingEngine
-from rag.service.ingestion.embedding_engine.bge_embedding_engine import BgeEmbeddingEngine
+from rag.service.ingestion.embedding_engine.OllamaEmbeddingEngine import OllamaEmbeddingEngine
 
 LOGGER = get_logger(__name__)
 
@@ -38,7 +38,10 @@ class IngestionService:
         self.rag_dao = rag_dao or RAG_DAO()
         self.meta_dao = meta_dao or IngestionMetaDAO(db_path=self.meta_db)
         self.chunk_registry = chunk_registry or ChunkEngineRegistry()
-        self.embedding_engine = embedding_engine or BgeEmbeddingEngine()
+        self.embedding_engine = embedding_engine or OllamaEmbeddingEngine(
+            base_url="http://127.0.0.1:11434",
+            model="bge-m3:latest",
+        )
 
     def _storage_abs(self, storage_key: str) -> Path:
         key = storage_key.replace("\\", "/").lstrip("/")

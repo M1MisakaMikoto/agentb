@@ -31,10 +31,11 @@ class BaseRAGDAO(ABC):
     @abstractmethod
     def search(
         self,
-        query_text: str,
+        query_vector: List[float],
         collection_name: str = "default",
         top_k: int = 5,
         where: Optional[Dict[str, Any]] = None,
+        document_id: Optional[str] = None,
     ) -> Dict[str, Any]: ...
 
     @abstractmethod

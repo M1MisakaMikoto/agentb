@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import os
 import shutil
 import signal
@@ -120,7 +120,7 @@ def wait_for_backend_health(host: str, port: int, process: subprocess.Popen[str]
             with urlopen(url, timeout=1) as response:
                 if response.status == 200:
                     return True
-        except URLError:
+        except (URLError, TimeoutError):
             pass
 
         time.sleep(0.5)
@@ -203,3 +203,4 @@ if __name__ == "__main__":
     except RuntimeError as error:
         print_line(f"[launcher] {error}", stream="stderr")
         raise SystemExit(1)
+

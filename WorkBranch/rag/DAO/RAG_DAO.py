@@ -21,7 +21,7 @@ class RAG_DAO(BaseRAGDAO):
             # Match existing backend db relative path
             app_root = Path(__file__).resolve().parents[2]
             db_path = app_root / "rag" / "file_meta.sqlite3"
-        
+
         self.vec_dao = SqliteVecDAO(db_path)
         LOGGER.info("RAG_DAO initialized with SqliteVecDAO")
 
@@ -32,6 +32,33 @@ class RAG_DAO(BaseRAGDAO):
             except ValueError:
                 pass
         return None
+
+    def add_chunk(
+        self,
+        chunk: str,
+        chunk_id: Optional[str] = None,
+        collection_name: str = "default",
+        document_id: Optional[str] = None,
+        chunk_index: Optional[int] = None,
+        source: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        embedding: Optional[List[float]] = None,
+    ) -> str:
+        chunks = [{
+            "text": chunk,
+            "chunk_id": chunk_id,
+            "chunk_index": chunk_index or 0,
+            "metadata": metadata or {},
+            "embedding": embedding,
+            "source": source
+        }]
+        res = self.add_chunks(
+            chunks=chunks,
+            collection_name=collection_name,
+            document_id=document_id,
+            source=source
+        )
+        return res[0] if res else ""
 
     def add_chunks(
         self,
