@@ -10,6 +10,7 @@ from service.agent_service.graph.director_agent import (
     _build_tool_schema_prompt,
     _hydrate_todos_from_plan,
     create_analyze_node,
+    create_execute_node,
     create_plan_node,
     create_decide_next_action_node,
     create_replan_remaining_steps_node,
@@ -208,6 +209,55 @@ def test_analyze_node_downgrades_legacy_subagent_mode_to_direct():
     assert result["has_tool_use"] is True
     assert "suggested_subagent" not in result
     assert "active_subagent" not in result
+
+
+def test_execute_update_todo_resets_direct_iteration_counters():
+    node = create_execute_node(llm_service=None, settings_service=DummySettingsService(), message_context={})
+
+    state = _base_state("读取 a.md")
+    state["execution_mode"] = "DIRECT"
+    state["iteration_count"] = 4
+    state["current_todo_iteration_count"] = 2
+    state["pending_tools"] = [{"tool": "update_todo", "args": {"todos": ["列出文件", "读取文件", "总结内容"], "doingIdx": 1}}]
+
+    result = node(state)
+
+    assert result["iteration_count"] == 0
+    assert result["current_todo_iteration_count"] == 0
+    assert result["todo_status"] == "pending"
+    assert result["last_tool_result"] == '{"todos": ["列出文件", "读取文件", "总结内容"], "doingIdx": 1}'
+
+
+def test_direct_invalid_tool_decision_retries_with_same_prompt_up_to_three_times():
+    llm = FakeLLMService(
+        chat_responses=[json.dumps({"kind": "tool"}, ensure_ascii=False)]
+    )
+    node = create_decide_next_action_node(llm_service=llm, settings_service=DummySettingsService(), message_context={})
+
+    state = _base_state("读取 a.md")
+    state["execution_mode"] = "DIRECT"
+
+    result = node(state)
+
+    assert result["pending_tools"] == []
+    assert result["final_reply"] is None
+    assert result["invalid_tool_retry_count"] == 1
+
+
+def test_direct_invalid_tool_decision_fails_after_three_retries():
+    llm = FakeLLMService(
+        chat_responses=[json.dumps({"kind": "tool"}, ensure_ascii=False)]
+    )
+    node = create_decide_next_action_node(llm_service=llm, settings_service=DummySettingsService(), message_context={})
+
+    state = _base_state("读取 a.md")
+    state["execution_mode"] = "DIRECT"
+    state["invalid_tool_retry_count"] = 3
+
+    result = node(state)
+
+    assert "工具决策无效" in result["final_reply"]
+    assert result["invalid_tool_retry_count"] == 4
 
 
 def test_direct_system_prompt_requires_complete_tool_json_shape():

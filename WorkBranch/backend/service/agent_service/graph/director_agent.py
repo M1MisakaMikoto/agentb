@@ -146,6 +146,7 @@ def build_initial_state(
         "last_tool_name": None,
         "last_tool_success": None,
         "last_tool_error": None,
+        "invalid_tool_retry_count": 0,
         "current_step_goal": None,
         "current_step_done_when": None,
         "current_step_iteration_count": 0,
@@ -630,6 +631,24 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
 
         if not tool_name or not is_tool_allowed(tool_name, current_agent_type, settings_service):
             console.box("无效工具决策原始回复", json.dumps(decision_data, ensure_ascii=False, indent=2))
+            retry_count = (state.get("invalid_tool_retry_count", 0) or 0) + 1
+            if retry_count <= 3:
+                if scope == "direct":
+                    console.decision_box("decide", f"工具决策无效，使用相同提示词重试第 {retry_count}/3 次")
+                    return {
+                        "pending_tools": [],
+                        "has_tool_use": False,
+                        "final_reply": None,
+                        "next_action": None,
+                        "invalid_tool_retry_count": retry_count,
+                    }
+                return {
+                    "step_status": "in_progress",
+                    "pending_tools": [],
+                    "has_tool_use": False,
+                    "invalid_tool_retry_count": retry_count,
+                }
+
             if scope == "direct":
                 reply = f"工具决策无效，无法继续执行：{tool_name}；原始回复：{json.dumps(decision_data, ensure_ascii=False)}"
                 _emit_final_reply(reply, message_context)
@@ -638,6 +657,7 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
                     "final_reply": reply,
                     "has_tool_use": False,
                     "pending_tools": [],
+                    "invalid_tool_retry_count": retry_count,
                 }
             return {
                 "step_status": "blocked",
@@ -652,6 +672,7 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
                 "step_status": "in_progress",
                 "pending_tools": pending,
                 "has_tool_use": True,
+                "invalid_tool_retry_count": 0,
             }
         return {
             "next_action": {
@@ -663,6 +684,7 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
             "pending_tools": pending,
             "has_tool_use": True,
             "final_reply": None,
+            "invalid_tool_retry_count": 0,
         }
 
     return decide_tool_action_node
@@ -1698,8 +1720,8 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
             tool_success = tool_result.get("error") is None
             tool_error = tool_result.get("error")
 
-            if execution_mode == ExecutionMode.DIRECT and tool_name != "chat":
-                return {
+            if str(execution_mode).upper().endswith("DIRECT") and tool_name != "chat":
+                direct_update = {
                     "pending_tools": [],
                     "tool_history": new_tool_history,
                     "current_conversation_messages": new_current_conv_msgs,
@@ -1713,6 +1735,19 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                     "todo_status": "in_progress",
                     "next_action": None,
                 }
+                if tool_success and tool_name == "update_todo":
+                    next_todos = tool_result.get("todos") or []
+                    next_doing_idx = tool_result.get("doingIdx", 0)
+                    direct_update.update({
+                        "todos": next_todos,
+                        "current_todo_index": next_doing_idx,
+                        "current_todo_goal": None,
+                        "current_todo_done_when": None,
+                        "iteration_count": 0,
+                        "current_todo_iteration_count": 0,
+                        "todo_status": "pending",
+                    })
+                return direct_update
 
             if execution_mode == ExecutionMode.PLAN and tool_name != "chat":
                 return {
