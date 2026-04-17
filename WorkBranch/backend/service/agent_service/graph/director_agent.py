@@ -371,8 +371,7 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
                     "plan_file": create_result.get("plan_file")
                 }
                 send_message("", SegmentType.STATE_CHANGE, state_metadata)
-                
-                send_message(plan_content, SegmentType.TEXT)
+                send_message(plan_content, SegmentType.TEXT_DELTA)
         
         console.decision_box("done", "计划已生成，等待用户确认执行")
         
@@ -787,7 +786,7 @@ def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callbac
         return {"result": None, "error": "缺少 workspace_id，无法切换到探索 Agent Graph"}
 
     try:
-        from ..agent_graphs import run_agent_graph
+        from .agent_graphs import run_agent_graph
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 run_agent_graph,
@@ -853,7 +852,7 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
         return {"result": None, "error": "缺少 workspace_id，无法切换到审查 Agent Graph"}
 
     try:
-        from ..agent_graphs import run_agent_graph
+        from .agent_graphs import run_agent_graph
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 run_agent_graph,
@@ -1447,41 +1446,44 @@ def create_subagent_node(llm_service=None, token_callback=None, settings_service
     def subagent_node(state: AgentState) -> dict:
         suggested_agent = state.get("suggested_subagent")
         user_message = state["messages"][-1] if state["messages"] else ""
-        
+        parent_chain_messages = state.get("parent_chain_messages", [])
+        current_conversation_messages = state.get("current_conversation_messages", [])
+
         console.step("子代理节点", "分析节点", f"启动 {suggested_agent}")
-        
-        if suggested_agent == "explore":
-            from .subgraphs.explore_graph import run_explore_agent
-            result = run_explore_agent(
-                task=user_message,
-                workspace_id=state["workspace_id"],
-                llm_service=llm_service,
-                token_callback=token_callback,
-                message_context=message_context
+
+        if suggested_agent in {"explore", "explore_agent"}:
+            result = _execute_call_explore_agent(
+                {"task_description": user_message},
+                llm_service,
+                token_callback,
+                message_context,
+                parent_chain_messages,
+                current_conversation_messages,
             )
-        elif suggested_agent == "review":
-            from .subgraphs.review_graph import run_review_agent
-            result = run_review_agent(
-                task=user_message,
-                workspace_id=state["workspace_id"],
-                llm_service=llm_service,
-                token_callback=token_callback,
-                message_context=message_context
+        elif suggested_agent in {"review", "review_agent"}:
+            result = _execute_call_review_agent(
+                {"task_description": user_message},
+                llm_service,
+                token_callback,
+                message_context,
+                parent_chain_messages,
+                current_conversation_messages,
             )
         else:
-            result = {"result": f"未知子代理: {suggested_agent}", "error": True}
-        
-        console.box("子代理结果", result.get("result", "")[:200])
-        
+            result = {"result": None, "error": f"未知子代理: {suggested_agent}"}
+
+        result_text = result.get("result") or result.get("error") or "子代理未返回结果"
+        console.box("子代理结果", result_text[:200])
+
         return {
             "explore_result": result.get("result"),
             "active_subagent": False,
             "pending_tools": [
-                {"tool": "chat", "args": {"description": f"总结子代理结果并回复用户: {result.get('result', '')[:200]}"}}
+                {"tool": "chat", "args": {"description": f"总结子代理结果并回复用户: {result_text[:200]}"}}
             ],
             "has_tool_use": True
         }
-    
+
     return subagent_node
 
 

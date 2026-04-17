@@ -116,29 +116,29 @@ def get_logging_runtime() -> LoggingRuntime:
     return LoggingRuntime(settings)
 
 
-def clear_all_singletons():
-    """清除所有单例缓存（例如测试用例 teardown 时调用）"""
+async def clear_all_singletons_async():
+    """清除所有单例缓存并关闭已打开的资源。"""
     global _mysql_pool_instance
-    
+    global _mysql_sync_instance
+
     try:
         get_logging_runtime().shutdown()
     except Exception:
         pass
 
-    # 关闭 MySQL 连接池
+    db_instances = []
     if _mysql_pool_instance is not None:
-        import asyncio
+        db_instances.append(_mysql_pool_instance)
+    if _mysql_sync_instance is not None and _mysql_sync_instance is not _mysql_pool_instance:
+        db_instances.append(_mysql_sync_instance)
+
+    for db_instance in db_instances:
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(_mysql_pool_instance.close_pool())
-            else:
-                loop.run_until_complete(_mysql_pool_instance.close_pool())
+            await db_instance.close_pool()
         except Exception:
             pass
-        _mysql_pool_instance = None
 
-    global _mysql_sync_instance
+    _mysql_pool_instance = None
     _mysql_sync_instance = None
 
     get_settings_service.cache_clear()
@@ -154,3 +154,16 @@ def clear_all_singletons():
     get_conversation_dao.cache_clear()
     get_message_queue.cache_clear()
     get_logging_runtime.cache_clear()
+
+
+def clear_all_singletons():
+    """清除所有单例缓存（用于同步 teardown）。"""
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(clear_all_singletons_async())
+        return
+
+    raise RuntimeError("当前已有运行中的事件循环，请改用 await clear_all_singletons_async()")

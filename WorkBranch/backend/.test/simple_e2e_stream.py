@@ -639,8 +639,10 @@ def start_backend() -> Optional[subprocess.Popen]:
 
     def stream_output():
         assert process.stdout is not None
+        stdout_encoding = sys.stdout.encoding or "utf-8"
         for line in process.stdout:
-            print(f"{Colors.DIM}[backend] {line.rstrip()}{Colors.ENDC}")
+            safe_line = line.rstrip().encode(stdout_encoding, errors="replace").decode(stdout_encoding)
+            print(f"{Colors.DIM}[backend] {safe_line}{Colors.ENDC}")
 
     thread = threading.Thread(target=stream_output, daemon=True)
     thread.start()
@@ -678,6 +680,8 @@ async def main():
     parser.add_argument("--mode", "-m", choices=["direct", "plan", "subagent", "search", "serial", "all"], default="all",
                         help="Test mode to run (default: all)")
     parser.add_argument("--question", "-q", default=None, help="Custom question (overrides mode)")
+    parser.add_argument("--expected-mode", choices=["DIRECT", "PLAN", "SUBAGENT"], default=None,
+                        help="Expected execution mode for custom question")
     parser.add_argument("--user-id", "-u", type=int, default=99999, help="User ID")
     parser.add_argument("--output", "-o", default=None, help="Output file path")
     parser.add_argument("--auto-approve", action="store_true", default=True,
@@ -723,10 +727,11 @@ async def main():
         results: List[TestResult] = []
 
         if args.question:
+            expected_mode = args.expected_mode or "DIRECT"
             custom_case = {
                 "question": args.question,
                 "description": "Custom question test",
-                "expected_mode": "DIRECT",
+                "expected_mode": expected_mode,
                 "expected_tools": ["thinking", "chat"],
             }
             result = await run_single_test(api, "custom", custom_case, output_file, args.auto_approve)
@@ -758,6 +763,14 @@ async def main():
     finally:
         if started_backend and backend_process is not None:
             stop_backend(backend_process)
+        try:
+            backend_dir = Path(__file__).parent.parent
+            if str(backend_dir) not in sys.path:
+                sys.path.insert(0, str(backend_dir))
+            from singleton import clear_all_singletons_async
+            await clear_all_singletons_async()
+        except Exception as e:
+            print(f"{Colors.YELLOW}Cleanup warning: {e}{Colors.ENDC}")
 
 
 if __name__ == "__main__":

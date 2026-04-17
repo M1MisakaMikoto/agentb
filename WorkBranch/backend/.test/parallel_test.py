@@ -520,6 +520,14 @@ async def main():
     finally:
         if started_backend and backend_process is not None:
             stop_backend(backend_process)
+        try:
+            backend_dir = Path(__file__).parent.parent
+            if str(backend_dir) not in sys.path:
+                sys.path.insert(0, str(backend_dir))
+            from singleton import clear_all_singletons_async
+            await clear_all_singletons_async()
+        except Exception as e:
+            print(f"{Colors.YELLOW}清理警告: {e}{Colors.ENDC}")
 
 
 if __name__ == "__main__":

@@ -107,8 +107,10 @@ def start_backend() -> Optional[subprocess.Popen]:
 
     def stream_output():
         assert process.stdout is not None
+        stdout_encoding = sys.stdout.encoding or "utf-8"
         for line in process.stdout:
-            print(f"{Colors.DIM}[backend] {line.rstrip()}{Colors.ENDC}")
+            safe_line = line.rstrip().encode(stdout_encoding, errors="replace").decode(stdout_encoding)
+            print(f"{Colors.DIM}[backend] {safe_line}{Colors.ENDC}")
 
     thread = threading.Thread(target=stream_output, daemon=True)
     thread.start()
@@ -359,6 +361,22 @@ async def run_conversation(
     output_lines.append(f"- response_text: {result.response_text}")
     output_lines.append("")
 
+    output_lines.append("### 原始流式数据")
+    output_lines.append("```json")
+    for raw_line in result.raw_lines:
+        if raw_line.startswith("data: "):
+            json_str = raw_line[6:]
+            try:
+                data = json.loads(json_str)
+                formatted = json.dumps(data, ensure_ascii=False, indent=2)
+                output_lines.append(formatted)
+            except json.JSONDecodeError:
+                output_lines.append(raw_line)
+        else:
+            output_lines.append(raw_line)
+    output_lines.append("```")
+    output_lines.append("")
+
     print(f"{Colors.GREEN}    Response: {result.response_text[:200]}{'...' if len(result.response_text) > 200 else ''}{Colors.ENDC}")
 
     return result
@@ -488,7 +506,9 @@ async def main():
 
         api = APIClient(BASE_URL, user_id=args.user_id)
         timestamp = get_timestamp()
-        output_file = Path(__file__).parent / f"serial_memory_test_output_{timestamp}.md"
+        logs_dir = Path(__file__).parent / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        output_file = logs_dir / f"serial_memory_test_output_{timestamp}.md"
 
         result = await run_serial_memory_test(api, str(output_file))
 
@@ -503,6 +523,14 @@ async def main():
     finally:
         if started_backend and backend_process is not None:
             stop_backend(backend_process)
+        try:
+            backend_dir = Path(__file__).parent.parent
+            if str(backend_dir) not in sys.path:
+                sys.path.insert(0, str(backend_dir))
+            from singleton import clear_all_singletons_async
+            await clear_all_singletons_async()
+        except Exception as e:
+            print(f"{Colors.YELLOW}Cleanup warning: {e}{Colors.ENDC}")
 
 
 if __name__ == "__main__":
