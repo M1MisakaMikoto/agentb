@@ -63,7 +63,7 @@ TEST_CASES: Dict[str, Dict[str, any]] = {
         "description": "DIRECT 模式 - 简单对话任务",
         "expected_mode": "DIRECT",
         "expected_tools": ["thinking", "chat"],
-        "forbidden_tools": ["todo_add", "todo_update", "todo_delete", "todo_list", "todo_clear"],
+        "forbidden_tools": ["update_todo"],
         "forbidden_reply_terms": ["ReAct", "todo", "工具", "执行代理", "状态机", "计划文件"],
     },
     "plan": {

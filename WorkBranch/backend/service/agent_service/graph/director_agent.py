@@ -349,30 +349,27 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
 def _build_tool_schema_prompt(tool_names: List[str]) -> str:
     from service.agent_service.tools import ALL_TOOLS
 
-    schema_lines = ["工具参数协议（必须严格使用这些参数名）："]
+    schema_lines = ["工具列表："]
     for tool_name in tool_names:
         tool_meta = ALL_TOOLS.get(tool_name)
         if not tool_meta:
             continue
         params = tool_meta.get("params", "")
         if params:
-            schema_lines.append(f"- {tool_name}: {params}")
-        else:
-            schema_lines.append(f"- {tool_name}: 不需要参数")
+            schema_lines.append(params)
     return "\n".join(schema_lines)
 
 
-def _format_todo_prompt_block(todos: List[dict], current_todo_index: int) -> str:
+def _format_todo_prompt_block(todos: List[str], current_todo_index: int) -> str:
     if not todos:
         return ""
 
     lines = ["当前 TODO 列表（完整状态）:"]
     for idx, todo in enumerate(todos):
-        marker = "<= 当前执行项" if idx == current_todo_index else ""
-        lines.append(
-            f"- [{todo.get('id')}] status={todo.get('status', 'pending')} desc={todo.get('description', '')} goal={todo.get('goal', '')} done_when={todo.get('done_when', '')} result={todo.get('result', '')} {marker}".rstrip()
-        )
-    lines.append("如果任务明显是多步骤、阶段化，或执行中发现当前任务过大/过难，应使用 todo 工具创建、拆分、更新任务；如果任务本身是单步骤且简单，则不要使用 todo 工具。")
+        marker = " <= 当前执行项" if idx == current_todo_index else ""
+        lines.append(f"- [{idx}] {todo}{marker}")
+    lines.append(f"doingIdx={current_todo_index}")
+    lines.append("如果任务明显是多步骤、阶段化，或执行中发现当前任务过大/过难，应使用 update_todo 一次性写入或重写完整 todo 列表；如果任务本身是单步骤且简单，则不要使用 todo 工具。")
     return "\n".join(lines)
 
 
@@ -499,8 +496,8 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
                 f"{todo_intro}"
                 f"最近工具结果:\n{last_result_block}\n\n"
                 f"最近工具历史:\n{history_block}\n\n"
-                "注意：只有当 todo 列表非空时，你才应围绕 todo 执行；如果当前没有 todo 且任务明显多步骤/阶段化，可以先使用 todo_add 建立任务列表。"
-                "如果 todo 列表非空，你应优先通过 todo_update 维护任务状态；如果发现当前任务过大，可以用 todo_add/todo_delete 重排或拆分。"
+                "注意：只有当 todo 列表非空时，你才应围绕 todo 执行；如果当前没有 todo 且任务明显多步骤/阶段化，可以先使用 update_todo 写入完整 todo 列表。"
+                "如果 todo 列表非空，你应继续通过 update_todo 覆盖更新完整 todo 列表和 doingIdx；如果任务拆分发生变化，也应通过 update_todo 一次性重写。"
                 "除非用户明确要求查看计划文件，否则不要读取 plan.md。"
                 "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果当前 todo 已完成，返回 kind=step_done；如果全部 todo 都已完成，返回 kind=reply；如果无法继续，返回 kind=blocked。"
                 "不要输出 chat 工具；最终回复请直接放在 reply 字段。"
@@ -509,19 +506,43 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
 
 当任务明显是多步骤、存在阶段划分，或者执行中发现当前任务过大/过难时，你应该使用 todo 工具维护任务列表，而不是硬撑着一次做完。
 
-请严格输出 JSON 结构化结果：
-- kind=tool: 表示下一步执行一个工具
-- kind=step_done: 表示当前 todo 已完成，准备进入下一个 todo
-- kind=reply: 表示所有工作都已完成，直接返回给用户的最终回复
-- kind=blocked: 表示当前工作无法继续
+你必须且只能返回以下四种 JSON 结构之一，不要输出额外文本：
+
+1. 调用工具：
+{
+  "kind": "tool",
+  "tool_name": "工具名",
+  "tool_args": {"参数名": "参数值"},
+  "task_description": "这一步要做什么"
+}
+
+2. 当前 todo 已完成：
+{
+  "kind": "step_done"
+}
+
+3. 所有工作已完成，直接回复用户：
+{
+  "kind": "reply",
+  "reply": "给用户的最终回复"
+}
+
+4. 当前无法继续：
+{
+  "kind": "blocked",
+  "reply": "阻塞原因"
+}
 
 规则：
 1. 一次只能决定一步，不要输出多步计划
-2. 调用工具时参考工具列表里的工具名和工具参数
-3. 如果当前任务是多步骤/有阶段或是任务执行过程中有不确定因素不能一口气完成的，使用todo系列工具
-4. 如果 todo 不为空，优先围绕完整 todo 列表继续执行，并通过 todo_update 维护状态
-5. 如果发现某个 todo 过大，允许新增更细的 todo 并删除或重置原 todo
-6. 只有当前工作真的完成时，才能返回 step_done；只有所有工作都完成时，才能返回 reply
+2. kind=tool 时，tool_name 必填，tool_args 必填，task_description 必填
+3. kind=tool 时，tool_name 必须来自工具协议里的工具名，tool_args 必须严格使用协议里的参数名
+4. kind=reply 或 kind=blocked 时，不要返回 tool_name 或 tool_args
+5. 如果当前任务是多步骤/有阶段或是任务执行过程中有不确定因素不能一口气完成的，使用 update_todo 写入完整 todo 列表
+6. 如果 todo 不为空，优先围绕完整 todo 列表继续执行，并通过 update_todo 覆盖更新完整列表与 doingIdx
+7. 如果任务拆分发生变化，直接用 update_todo 重写整个 todo 列表
+8. 只有当前工作真的完成时，才能返回 step_done；只有所有工作都完成时，才能返回 reply
+9. 如果拿不准下一步该用什么工具或缺少必填参数，返回 blocked，不要返回不完整的 tool JSON
 """
 
         context_prompt = build_context_prompt(parent_chain_messages, current_conversation_messages, current_task)
@@ -531,6 +552,7 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
                 messages=[{"role": "user", "content": context_prompt}],
                 system_prompt=system_prompt,
             )
+            console.response_box(response)
             response_text = response.strip()
             if response_text.startswith("```json"):
                 response_text = response_text[7:]
@@ -541,8 +563,9 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
             response_text = response_text.strip()
             decision_data = json.loads(response_text)
         except Exception as e:
+            console.box("决策解析失败", response_text if 'response_text' in locals() else str(response))
             if scope == "direct":
-                reply = f"当前无法自动决策下一步：{e}"
+                reply = f"当前无法自动决策下一步：{e}；原始回复：{response_text if 'response_text' in locals() else response}"
                 _emit_final_reply(reply, message_context)
                 return {
                     "next_action": {"kind": "reply", "reply": reply, "task_description": user_message},
@@ -552,7 +575,7 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
                 }
             return {
                 "step_status": "blocked",
-                "replan_reason": str(e),
+                "replan_reason": f"{e}；原始回复：{response_text if 'response_text' in locals() else response}",
                 "has_tool_use": False,
                 "pending_tools": [],
             }
@@ -606,8 +629,9 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
             task_description = decision_data.get("task_description") or (state.get("current_step_goal") or task_description)
 
         if not tool_name or not is_tool_allowed(tool_name, current_agent_type, settings_service):
+            console.box("无效工具决策原始回复", json.dumps(decision_data, ensure_ascii=False, indent=2))
             if scope == "direct":
-                reply = f"工具决策无效，无法继续执行：{tool_name}"
+                reply = f"工具决策无效，无法继续执行：{tool_name}；原始回复：{json.dumps(decision_data, ensure_ascii=False)}"
                 _emit_final_reply(reply, message_context)
                 return {
                     "next_action": {"kind": "reply", "reply": reply, "task_description": task_description},
@@ -678,46 +702,24 @@ def create_step_review_node(llm_service=None, message_context=None):
     return step_review_node
 
 
-def _parse_todos_from_plan_markdown(plan_content: str) -> List[dict]:
+def _parse_todos_from_plan_markdown(plan_content: str) -> List[str]:
     todos = []
-    current = None
     for raw_line in plan_content.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         task_match = re.match(r"^(\d+)\.\s+\*\*(.+?)\*\*$", line)
         if task_match:
-            if current:
-                todos.append(current)
-            current = {
-                "id": int(task_match.group(1)),
-                "description": task_match.group(2).strip(),
-                "goal": None,
-                "done_when": None,
-                "status": "pending",
-                "result": None,
-                "attempt_count": 0,
-            }
-            continue
-        if current and line.startswith("- 目标:"):
-            current["goal"] = line.split(":", 1)[1].strip().strip("`")
-            continue
-        if current and line.startswith("- 完成条件:"):
-            current["done_when"] = line.split(":", 1)[1].strip().strip("`")
-            continue
-    if current:
-        todos.append(current)
+            todos.append(task_match.group(2).strip())
     return todos
 
 
-def _hydrate_todos_from_plan(plan_content: str, workspace_id: str) -> List[dict]:
+def _hydrate_todos_from_plan(plan_content: str, workspace_id: str) -> List[str]:
     from service.agent_service.tools.todo_tools import TodoList
 
     todos = _parse_todos_from_plan_markdown(plan_content)
     todo_store = TodoList(workspace_id, base_dir=workspace_service.base_dir)
-    todo_store.clear_all()
-    for item in todos:
-        todo_store.add_task(description=item["description"], priority="medium")
+    todo_store.update(todos=todos, doing_idx=0)
     return todos
 
 
@@ -842,14 +844,13 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
         if plan_auto_approve:
             todos = _hydrate_todos_from_plan(plan_content, workspace_id)
             console.decision_box("decide", "计划已生成，已转为 todo，开始 DIRECT 执行")
-            first_todo = todos[0] if todos else {}
             return {
                 "plan": plan,
                 "plan_file": create_result.get("plan_file"),
                 "todos": todos,
                 "current_todo_index": 0,
-                "current_todo_goal": first_todo.get("goal"),
-                "current_todo_done_when": first_todo.get("done_when"),
+                "current_todo_goal": None,
+                "current_todo_done_when": None,
                 "current_todo_iteration_count": 0,
                 "todo_status": "pending",
                 "execution_mode": ExecutionMode.DIRECT,
@@ -1782,11 +1783,11 @@ def create_replan_remaining_steps_node(llm_service=None, settings_service=None, 
         completed_todos = todos[:current_todo_index]
         remaining_todos = todos[current_todo_index:]
         completed_summary = "\n".join(
-            f"- {item.get('description')} | status={item.get('status')} | result={item.get('result')}"
+            f"- {item}"
             for item in completed_todos
         ) or "(无已完成 todo)"
         remaining_summary = "\n".join(
-            f"- {item.get('description')} | goal={item.get('goal')} | done_when={item.get('done_when')}"
+            f"- {item}"
             for item in remaining_todos
         ) or "(无剩余 todo)"
 
@@ -1874,13 +1875,12 @@ def create_replan_remaining_steps_node(llm_service=None, settings_service=None, 
             )
 
             hydrated_todos = _hydrate_todos_from_plan(updated_plan_content, workspace_id)
-            next_todo = hydrated_todos[current_todo_index] if current_todo_index < len(hydrated_todos) else {}
             return {
                 "plan": updated_plan,
                 "todos": hydrated_todos,
                 "current_todo_index": current_todo_index,
-                "current_todo_goal": next_todo.get("goal"),
-                "current_todo_done_when": next_todo.get("done_when"),
+                "current_todo_goal": None,
+                "current_todo_done_when": None,
                 "current_todo_iteration_count": 0,
                 "todo_status": "pending",
                 "replan_reason": None,

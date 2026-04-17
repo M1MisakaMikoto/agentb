@@ -510,15 +510,15 @@ async def run_workspace_upload_direct_todo_test(api: APIClient, output_file: str
 
     todo_tool_calls = [
         tool for tool in result.tool_calls
-        if tool in {"todo_add", "todo_update", "todo_delete", "todo_list", "todo_clear"}
+        if tool == "update_todo"
     ]
 
     if "read_file" not in result.tool_calls:
         errors.append(f"read_file was not observed in tool calls: {result.tool_calls}")
-    if "todo_add" not in result.tool_calls:
-        errors.append(f"todo_add was not observed in tool calls: {result.tool_calls}")
+    if "update_todo" not in result.tool_calls:
+        errors.append(f"update_todo was not observed in tool calls: {result.tool_calls}")
     if not todo_tool_calls:
-        errors.append(f"No todo tool was observed in tool calls: {result.tool_calls}")
+        errors.append(f"No update_todo tool was observed in tool calls: {result.tool_calls}")
     if "write_file" in result.tool_calls:
         errors.append(f"write_file should not be used in this read-only test: {result.tool_calls}")
 

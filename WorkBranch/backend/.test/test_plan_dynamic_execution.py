@@ -123,9 +123,9 @@ def test_plan_node_generates_outline_without_fixed_tools():
     assert result["plan"][0]["tool"] is None
     assert result["plan"][0]["args"] is None
     assert str(result["execution_mode"]).upper().endswith("DIRECT")
-    assert result["todos"][0]["description"] == "梳理登录接口与表单字段"
-    assert result["current_todo_goal"] == "明确接口和页面的输入输出"
-    assert result["current_todo_done_when"] == "登录接口字段和前端表单字段均已明确"
+    assert result["todos"][0] == "梳理登录接口与表单字段"
+    assert result["current_todo_goal"] is None
+    assert result["current_todo_done_when"] is None
 
 
 def test_plan_markdown_can_hydrate_todos():
@@ -145,9 +145,7 @@ def test_plan_markdown_can_hydrate_todos():
 """
     todos = _hydrate_todos_from_plan(plan_md, "ws-plan-test")
     assert len(todos) == 2
-    assert todos[0]["description"] == "读取规格文件"
-    assert todos[0]["goal"] == "拿到规格内容"
-    assert todos[0]["done_when"] == "规格内容已确认"
+    assert todos == ["读取规格文件", "生成输出文件"]
 
 
 def test_direct_decide_can_work_against_current_todo():
@@ -169,15 +167,7 @@ def test_direct_decide_can_work_against_current_todo():
 
     state = _base_state()
     state["execution_mode"] = "DIRECT"
-    state["todos"] = [{
-        "id": 1,
-        "description": "读取规格文件",
-        "goal": "拿到规格内容",
-        "done_when": "规格内容已确认",
-        "status": "pending",
-        "result": None,
-        "attempt_count": 0,
-    }]
+    state["todos"] = ["读取规格文件"]
     state["current_todo_goal"] = "拿到规格内容"
     state["current_todo_done_when"] = "规格内容已确认"
 
@@ -193,12 +183,11 @@ def test_direct_decide_can_work_against_current_todo():
 
 
 def test_tool_schema_prompt_comes_from_registry_metadata():
-    prompt = _build_tool_schema_prompt(["read_file", "todo_add", "todo_update", "list_workspace_files"])
+    prompt = _build_tool_schema_prompt(["read_file", "update_todo", "list_workspace_files"])
 
-    assert "- read_file: file_path, start_line, end_line" in prompt
-    assert "- todo_add: description, priority(high/medium/low), tool, args" in prompt
-    assert "- todo_update: task_id, status(pending/in_progress/completed/failed), result" in prompt
-    assert "- list_workspace_files: 不需要参数" in prompt
+    assert 'read_file:{"file_path":"(文件路径)","start_line":"(第几行开始读，本参数可不填)","end_line":"(第几行结束读，本参数可不填)"}' in prompt
+    assert 'update_todo:{"todos": ["(todo内容1)", "(todo内容2)"...],"doingIdx": (当前todo进行到第几项了，从0开始数)}' in prompt
+    assert 'list_workspace_files:{}' in prompt
 
 
 def test_analyze_node_downgrades_legacy_subagent_mode_to_direct():
@@ -221,6 +210,32 @@ def test_analyze_node_downgrades_legacy_subagent_mode_to_direct():
     assert "active_subagent" not in result
 
 
+def test_direct_system_prompt_requires_complete_tool_json_shape():
+    llm = FakeLLMService(
+        chat_responses=[
+            json.dumps({
+                "kind": "tool",
+                "tool_name": "read_file",
+                "tool_args": {"file_path": "a.md"},
+                "task_description": "读取 a.md",
+            }, ensure_ascii=False)
+        ]
+    )
+    node = create_decide_next_action_node(llm_service=llm, settings_service=DummySettingsService(), message_context={})
+
+    state = _base_state("读取 a.md 并总结其中要点")
+    state["execution_mode"] = "DIRECT"
+
+    node(state)
+    system_prompt = llm.chat_calls[-1]["system_prompt"]
+
+    assert '"kind": "tool"' in system_prompt
+    assert '"tool_name": "工具名"' in system_prompt
+    assert '"tool_args": {"参数名": "参数值"}' in system_prompt
+    assert '"task_description": "这一步要做什么"' in system_prompt
+    assert '如果拿不准下一步该用什么工具或缺少必填参数，返回 blocked' in system_prompt
+
+
 def test_direct_prompt_uses_single_tool_schema_section():
     llm = FakeLLMService(
         chat_responses=[
@@ -240,7 +255,7 @@ def test_direct_prompt_uses_single_tool_schema_section():
     node(state)
     prompt = llm.chat_calls[-1]["messages"][0]["content"]
 
-    assert "工具参数协议（必须严格使用这些参数名）：" in prompt
+    assert "工具列表：" in prompt
     assert "可用工具:" not in prompt
 
 
@@ -271,9 +286,9 @@ def test_direct_prompt_omits_todo_block_when_empty():
         structured_responses=[
             {
                 "kind": "tool",
-                "tool_name": "todo_update",
-                "tool_args": {"task_id": 2, "status": "in_progress", "result": "开始处理第二项"},
-                "task_description": "更新当前 todo 状态",
+                "tool_name": "update_todo",
+                "tool_args": {"todos": ["阅读 a.md", "重构 a.md", "写重构结果"], "doingIdx": 1},
+                "task_description": "更新当前 todo 列表",
             }
         ]
     )
@@ -281,11 +296,7 @@ def test_direct_prompt_omits_todo_block_when_empty():
 
     state = _base_state()
     state["execution_mode"] = "DIRECT"
-    state["todos"] = [
-        {"id": 1, "description": "阅读 a.md", "goal": "理解文件", "done_when": "关键信息已确认", "status": "completed", "result": "ok", "attempt_count": 1},
-        {"id": 2, "description": "重构 a.md", "goal": "完成重构", "done_when": "重构后的内容已落地", "status": "in_progress", "result": None, "attempt_count": 1},
-        {"id": 3, "description": "写重构结果", "goal": "输出最终结果", "done_when": "结果文件已生成", "status": "pending", "result": None, "attempt_count": 0},
-    ]
+    state["todos"] = ["阅读 a.md", "重构 a.md", "写重构结果"]
     state["current_todo_index"] = 1
     state["current_todo_goal"] = "完成重构"
     state["current_todo_done_when"] = "重构后的内容已落地"
@@ -294,20 +305,20 @@ def test_direct_prompt_omits_todo_block_when_empty():
     prompt = llm.chat_calls[-1]["messages"][0]["content"]
 
     assert "当前 TODO 列表（完整状态）" in prompt
-    assert "[1] status=completed desc=阅读 a.md" in prompt
-    assert "[2] status=in_progress desc=重构 a.md" in prompt
-    assert "[3] status=pending desc=写重构结果" in prompt
-    assert result["pending_tools"][0]["tool"] == "todo_update"
+    assert "- [0] 阅读 a.md" in prompt
+    assert "- [1] 重构 a.md <= 当前执行项" in prompt
+    assert "- [2] 写重构结果" in prompt
+    assert result["pending_tools"][0]["tool"] == "update_todo"
 
 
-def test_direct_can_choose_explicit_todo_update_for_completion():
+def test_direct_can_choose_explicit_update_todo_for_completion():
     llm = FakeLLMService(
         chat_responses=[
             json.dumps({
                 "kind": "tool",
-                "tool_name": "todo_update",
-                "tool_args": {"task_id": 1, "status": "completed", "result": "规格内容已确认"},
-                "task_description": "将当前 todo 标记为完成",
+                "tool_name": "update_todo",
+                "tool_args": {"todos": ["读取规格文件"], "doingIdx": 0},
+                "task_description": "重写 todo 列表以反映当前状态",
             }, ensure_ascii=False)
         ]
     )
@@ -315,15 +326,7 @@ def test_direct_can_choose_explicit_todo_update_for_completion():
 
     state = _base_state()
     state["execution_mode"] = "DIRECT"
-    state["todos"] = [{
-        "id": 1,
-        "description": "读取规格文件",
-        "goal": "拿到规格内容",
-        "done_when": "规格内容已确认",
-        "status": "in_progress",
-        "result": None,
-        "attempt_count": 1,
-    }]
+    state["todos"] = ["读取规格文件"]
     state["current_todo_index"] = 0
     state["current_todo_goal"] = "拿到规格内容"
     state["current_todo_done_when"] = "规格内容已确认"
@@ -331,9 +334,8 @@ def test_direct_can_choose_explicit_todo_update_for_completion():
     state["tool_history"] = [{"tool": "read_file", "args": {"file_path": "spec.txt"}, "result": state["last_tool_result"]}]
 
     result = node(state)
-    assert result["pending_tools"][0]["tool"] == "todo_update"
-    assert result["pending_tools"][0]["args"]["task_id"] == 1
-    assert result["pending_tools"][0]["args"]["status"] == "completed"
+    assert result["pending_tools"][0]["tool"] == "update_todo"
+    assert result["pending_tools"][0]["args"] == {"todos": ["读取规格文件"], "doingIdx": 0}
     llm = FakeLLMService(
         chat_responses=[json.dumps({
             "tasks": [
@@ -359,10 +361,7 @@ def test_direct_can_choose_explicit_todo_update_for_completion():
         {"id": 1, "description": "完成需求分析", "goal": "明确范围", "done_when": "范围明确", "phase": "research", "status": "completed", "tool": None, "args": None, "result": "ok", "feedback": None},
         {"id": 2, "description": "旧实现步骤", "goal": "旧目标", "done_when": "旧完成条件", "phase": "implementation", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
     ]
-    state["todos"] = [
-        {"id": 1, "description": "完成需求分析", "goal": "明确范围", "done_when": "范围明确", "status": "completed", "result": "ok", "attempt_count": 0},
-        {"id": 2, "description": "旧实现步骤", "goal": "旧目标", "done_when": "旧完成条件", "status": "pending", "result": None, "attempt_count": 0},
-    ]
+    state["todos"] = ["完成需求分析", "旧实现步骤"]
     state["current_todo_index"] = 1
     state["replan_reason"] = "原步骤受阻"
 
@@ -371,5 +370,5 @@ def test_direct_can_choose_explicit_todo_update_for_completion():
     assert result["plan"][0]["description"] == "完成需求分析"
     assert result["plan"][1]["description"] == "补充剩余后端实现"
     assert result["current_todo_index"] == 1
-    assert result["current_todo_goal"] == "完成剩余后端逻辑"
+    assert result["current_todo_goal"] is None
     assert result["replan_reason"] is None
