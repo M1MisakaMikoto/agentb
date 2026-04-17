@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Any, Optional
+from typing import TypedDict, List, Any, Optional, Literal
 from enum import Enum
 
 
@@ -67,6 +67,14 @@ class IntentAnalysis(TypedDict):
     confidence: float
 
 
+class NextAction(TypedDict, total=False):
+    kind: Literal["tool", "reply"]
+    tool_name: Optional[str]
+    tool_args: Optional[dict]
+    reply: Optional[str]
+    task_description: Optional[str]
+
+
 class AgentState(TypedDict):
     """Agent 状态定义"""
     messages: List[Any]
@@ -93,3 +101,7 @@ class AgentState(TypedDict):
     has_tool_use: Optional[bool]
     final_reply: Optional[str]
     plan_file: Optional[str]
+    last_tool_result: Optional[str]
+    iteration_count: Optional[int]
+    max_iterations: Optional[int]
+    next_action: Optional[NextAction]

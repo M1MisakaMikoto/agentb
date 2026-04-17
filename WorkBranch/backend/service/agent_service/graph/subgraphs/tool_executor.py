@@ -74,11 +74,18 @@ def check_permission(state: ToolExecutionState, workspace_service=None, settings
         target_path = tool_args.get(path_key) or tool_args.get("directory")
 
         if target_path:
-            allowed, resolved_or_error = workspace_service.resolve_path(workspace_id, target_path)
+            allowed, resolved_path = workspace_service.resolve_path(workspace_id, target_path)
             if not allowed:
-                console.error(f"路径验证失败: {resolved_or_error}")
-                return {"permission": "deny", "error": resolved_or_error}
-            console.success(f"路径验证通过: {resolved_or_error}")
+                console.error(f"路径验证失败: {resolved_path}")
+                return {"permission": "deny", "error": resolved_path}
+            console.success(f"路径验证通过: {resolved_path}")
+        elif tool_name in {"list_dir", "create_dir"}:
+            workspace_dir = workspace_service.get_workspace_dir(workspace_id)
+            if not workspace_dir:
+                error_msg = f"工作区不存在: {workspace_id}"
+                console.error(error_msg)
+                return {"permission": "deny", "error": error_msg}
+            console.success(f"目录工具默认工作区: {workspace_dir}")
 
     dangerous_tools = ["delete_file", "execute_command", "modify_system"]
 
@@ -191,6 +198,14 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             else:
                 console.error(f"路径解析失败: {resolved_path}")
                 return {"result": None, "error": resolved_path}
+        elif tool_name in {"list_dir", "create_dir"}:
+            workspace_root = workspace_service.get_workspace_dir(workspace_id)
+            if not workspace_root:
+                error_msg = f"工作区不存在: {workspace_id}"
+                console.error(error_msg)
+                return {"result": None, "error": error_msg}
+            tool_args["directory"] = workspace_root
+            console.info(f"目录工具默认使用工作区根目录: {workspace_root}")
     
     if tool_name in EXPLORE_TOOLS and workspace_service:
         workspace_root = workspace_service.get_workspace_dir(workspace_id)
