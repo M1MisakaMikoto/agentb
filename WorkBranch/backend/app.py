@@ -13,8 +13,9 @@ _WORKBRANCH_ROOT = Path(__file__).resolve().parent.parent
 if str(_WORKBRANCH_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKBRANCH_ROOT))
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
+from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from controller.VO.result import Result
 from controller.user_api import router as user_router
@@ -71,7 +72,62 @@ async def lifespan(app: FastAPI):
             )
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    openapi_url="/openapi.json",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_tags=[
+        {"name": "frontend", "description": "前端相关接口"},
+        {"name": "health", "description": "健康检查"},
+        {"name": "user", "description": "用户相关接口"},
+        {"name": "session", "description": "会话相关接口"},
+        {"name": "conversation", "description": "会话相关接口"},
+        {"name": "workspace", "description": "工作区相关接口"},
+        {"name": "rag", "description": "RAG相关接口"},
+    ],
+    openapi_prefix="",
+)
+
+# 重写openapi方法以添加安全方案
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    # 获取默认的OpenAPI schema
+    from fastapi.openapi.utils import get_openapi
+    openapi_schema = get_openapi(
+        title="API Documentation",
+        version="1.0.0",
+        description="API接口文档",
+        routes=app.routes,
+    )
+    # 添加安全方案
+    openapi_schema["components"] = {
+        "securitySchemes": {
+            "Bearer": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+            },
+            "X-User-ID": {
+                "type": "apiKey",
+                "name": "X-User-ID",
+                "in": "header",
+                "description": "用户ID"
+            },
+        },
+    }
+    # 为所有路由添加安全要求
+    openapi_schema["security"] = [
+        {
+            "X-User-ID": [],
+        },
+    ]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
 app.add_middleware(AuthMiddleware)
 
 FRONTEND_LOG_ALLOWED_EVENTS = {
@@ -93,6 +149,14 @@ FRONTEND_LOG_MAX_EXTRA_BYTES = 4 * 1024
 FRONTEND_LOG_RATE_LIMIT = 60
 FRONTEND_LOG_RATE_WINDOW_SECONDS = 60.0
 _frontend_log_requests: dict[str, list[float]] = {}
+
+# 配置Bearer认证方案
+security = HTTPBearer(auto_error=False)
+
+# 用于FastAPI文档的依赖项
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    # 对于文档页面的访问，允许无token
+    return None
 
 
 class FrontendLogBody(BaseModel):

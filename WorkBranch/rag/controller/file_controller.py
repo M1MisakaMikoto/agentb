@@ -37,11 +37,12 @@ from rag.service.document_delete_service import DocumentDeleteService
 from rag.service.file_system_service import FileSystemService
 from rag.service.ingestion import IngestionService
 
-APP_ROOT = Path(__file__).resolve().parents[3]
+APP_ROOT = Path(__file__).resolve().parents[3]  # D:\project_hub\agentb
+RAG_ROOT = Path(__file__).resolve().parents[1]  # ...\WorkBranch\rag
 DOCS_ROOT = (APP_ROOT / "DOCS").resolve()
 MANAGED_ROOT = (DOCS_ROOT / "raw").resolve()
-UI_PATH = (APP_ROOT / "rag" / "ui" / "file_manager.html").resolve()
-META_DB = (APP_ROOT / "rag" / "file_meta.sqlite3").resolve()
+UI_PATH = (RAG_ROOT / "ui" / "file_manager.html").resolve()
+META_DB = (RAG_ROOT / "file_meta.sqlite3").resolve()
 FILE_META_DAO = FileMetaDAO(META_DB)
 KNOWLEDGE_BASE_DAO = KnowledgeBaseDAO(META_DB)
 FILE_SYSTEM_SERVICE = FileSystemService(MANAGED_ROOT)
