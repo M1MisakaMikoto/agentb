@@ -10,9 +10,9 @@ Director Agent - 统一编排图
 4. 最终回复：chat 工具输出，打破循环
 """
 from typing import Literal, Optional, Dict, Any, List, Callable
-from pydantic import BaseModel
 from langgraph.graph import StateGraph, END
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import json
 import os
 import re
 import shutil
@@ -37,13 +37,6 @@ MAX_DIRECT_ITERATIONS = 8
 
 workspace_service = get_workspace_service()
 
-
-class NextActionDecision(BaseModel):
-    kind: Literal["tool", "reply", "step_done", "blocked"]
-    tool_name: Optional[str] = None
-    tool_args: Optional[dict] = None
-    reply: Optional[str] = None
-    task_description: Optional[str] = None
 
 def _emit_final_reply(reply: str, message_context: dict = None) -> None:
     if not message_context:
@@ -364,6 +357,49 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
     return analyze_node
 
 
+def _build_tool_schema_prompt(tool_names: List[str]) -> str:
+    schema_lines = ["工具参数协议（必须严格使用这些参数名）："]
+    if "read_file" in tool_names:
+        schema_lines.append("- read_file: 必填 file_path；可选 start_line, end_line, encoding")
+    if "write_file" in tool_names:
+        schema_lines.append("- write_file: 必填 file_path, content；可选 mode(write/append), encoding")
+    if "delete_file" in tool_names:
+        schema_lines.append("- delete_file: 必填 file_path")
+    if "list_dir" in tool_names:
+        schema_lines.append("- list_dir: 可选 directory；可选 recursive, show_hidden")
+    if "create_dir" in tool_names:
+        schema_lines.append("- create_dir: 必填 directory")
+    if "list_workspace_files" in tool_names:
+        schema_lines.append("- list_workspace_files: 不需要参数")
+    if "get_workspace_info" in tool_names:
+        schema_lines.append("- get_workspace_info: 不需要参数")
+    if "search_files" in tool_names:
+        schema_lines.append("- search_files: 必填 pattern")
+    if "explore_code" in tool_names:
+        schema_lines.append("- explore_code: 常用 query, search_type, max_results, file_pattern")
+    if "explore_internet" in tool_names:
+        schema_lines.append("- explore_internet: 必填 query；可选 max_results")
+    if "call_explore_agent" in tool_names:
+        schema_lines.append("- call_explore_agent: 必填 task_description")
+    if "call_review_agent" in tool_names:
+        schema_lines.append("- call_review_agent: 必填 task_description")
+    return "\n".join(schema_lines)
+
+
+def _format_todo_prompt_block(todos: List[dict], current_todo_index: int) -> str:
+    if not todos:
+        return ""
+
+    lines = ["当前 TODO 列表（完整状态）:"]
+    for idx, todo in enumerate(todos):
+        marker = "<= 当前执行项" if idx == current_todo_index else ""
+        lines.append(
+            f"- [{todo.get('id')}] status={todo.get('status', 'pending')} desc={todo.get('description', '')} goal={todo.get('goal', '')} done_when={todo.get('done_when', '')} result={todo.get('result', '')} {marker}".rstrip()
+        )
+    lines.append("如果任务明显是多步骤、阶段化，或执行中发现当前任务过大/过难，应使用 todo 工具创建、拆分、更新任务；如果任务本身是单步骤且简单，则不要使用 todo 工具。")
+    return "\n".join(lines)
+
+
 def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_service=None, settings_service=None, message_context=None):
     def decide_tool_action_node(state: AgentState) -> dict:
         user_message = state["messages"][-1] if state["messages"] else ""
@@ -427,6 +463,7 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
             if tool in SPECIAL_TOOLS:
                 continue
             tool_lines.append(f"- {tool}")
+        tool_schema_prompt = _build_tool_schema_prompt(allowed_tools)
 
         history_lines = []
         for idx, item in enumerate(tool_history[-5:], 1):
@@ -440,6 +477,8 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
         if last_tool_result:
             last_result_block = last_tool_result if len(last_tool_result) <= 1000 else last_tool_result[:1000] + "..."
 
+        tool_schema_prompt = _build_tool_schema_prompt(allowed_tools)
+
         if scope == "plan_step":
             plan = state.get("plan") or []
             current_step = state.get("current_step", 0)
@@ -452,6 +491,7 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
                 f"当前步骤轮次: {iteration_count}/{max_iterations}\n"
                 f"工作区ID: {state['workspace_id']}\n"
                 f"可用工具:\n{chr(10).join(tool_lines) if tool_lines else '(无)'}\n\n"
+                f"{tool_schema_prompt}\n\n"
                 f"最近工具结果:\n{last_result_block}\n\n"
                 f"最近工具历史:\n{history_block}\n\n"
                 "请仅决定当前步骤的下一步，并以 JSON 形式返回。"
@@ -477,45 +517,66 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
             todos = state.get("todos") or []
             current_todo_index = state.get("current_todo_index", 0) or 0
             current_todo = todos[current_todo_index] if current_todo_index < len(todos) else {}
+            todo_block = _format_todo_prompt_block(todos, current_todo_index)
+            todo_intro = ""
+            if todo_block:
+                todo_intro = f"\n\n{todo_block}\n\n"
             current_task = (
                 f"原始用户请求: {user_message}\n\n"
-                f"当前 todo: {current_todo.get('description', user_message)}\n"
-                f"todo 目标: {state.get('current_todo_goal') or current_todo.get('goal') or current_todo.get('description') or ''}\n"
-                f"todo 完成条件: {state.get('current_todo_done_when') or current_todo.get('done_when') or ''}\n"
-                f"当前 todo 轮次: {iteration_count}/{max_iterations}\n"
                 f"当前工作区ID: {state['workspace_id']}\n"
+                f"已执行轮次: {iteration_count}/{max_iterations}\n"
                 f"可用工具:\n{chr(10).join(tool_lines) if tool_lines else '(无)'}\n\n"
+                f"{tool_schema_prompt}\n"
+                f"{todo_intro}"
                 f"最近工具结果:\n{last_result_block}\n\n"
                 f"最近工具历史:\n{history_block}\n\n"
-                "请只决定当前 todo 的下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果当前 todo 已完成，返回 kind=step_done；如果全部 todo 都已完成，返回 kind=reply。"
+                "注意：只有当 todo 列表非空时，你才应围绕 todo 执行；如果当前没有 todo 且任务明显多步骤/阶段化，可以先使用 todo_add 建立任务列表。"
+                "如果 todo 列表非空，你应优先通过 todo_update 维护任务状态；如果发现当前任务过大，可以用 todo_add/todo_delete 重排或拆分。"
+                "除非用户明确要求查看计划文件，否则不要读取 plan.md。"
+                "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果当前 todo 已完成，返回 kind=step_done；如果全部 todo 都已完成，返回 kind=reply；如果无法继续，返回 kind=blocked。"
                 "不要输出 chat 工具；最终回复请直接放在 reply 字段。"
             )
-            system_prompt = """你是一个基于 todo 执行任务的工具决策器。你的职责是围绕当前 todo 决定下一步只做一件事。
+            system_prompt = """你现在的职责是作为 branch code，围绕当前用户任务做出下一步执行决策，并在需要时调用合适的工具完成工作。
+
+当任务明显是多步骤、存在阶段划分，或者执行中发现当前任务过大/过难时，你应该使用 todo 工具维护任务列表，而不是硬撑着一次做完。
 
 请严格输出 JSON 结构化结果：
 - kind=tool: 表示下一步执行一个工具
 - kind=step_done: 表示当前 todo 已完成，准备进入下一个 todo
-- kind=reply: 表示所有 todo 已完成，直接返回给用户的最终回复
-- kind=blocked: 表示当前 todo 无法继续
+- kind=reply: 表示所有工作都已完成，直接返回给用户的最终回复
+- kind=blocked: 表示当前工作无法继续
 
-要求：
+规则：
 1. 一次只能决定一步，不要输出多步计划
-2. tool_name 必须来自允许列表
-3. 如果选择 tool，必须提供尽可能完整、可执行的 tool_args
-4. 优先复用工作区工具和文件工具
-5. 如果最近一次工具返回 error，优先修正动作或返回 blocked，不要假装完成
-6. 只有当前 todo 的完成条件满足时，才能返回 step_done
-7. 只有所有 todo 都完成时，才能返回 reply
+2. tool_name 必须来自允许列表，并且必须严格使用提示里给出的参数名
+3. 如果 todo 为空且任务是单步骤，不要使用 todo 工具，直接执行
+4. 如果 todo 为空但任务明显是多步骤/有阶段，先用 todo_add 建立 todo
+5. 如果 todo 不为空，优先围绕完整 todo 列表继续执行，并通过 todo_update 维护状态
+6. 如果发现某个 todo 过大，允许新增更细的 todo 并删除或重置原 todo
+7. 不要通过猜测参数名调用工具；例如 write_file 必须用 file_path 和 content
+8. 除非用户明确要求，否则不要读取 plan.md 作为执行输入
+9. 如果最近一次工具返回 error，优先修正动作或返回 blocked，不要假装完成
+10. 只有当前工作真的完成时，才能返回 step_done；只有所有工作都完成时，才能返回 reply
+11. 如果用户只是简单问候、寒暄、普通问答，且不需要任何工具，请直接返回自然、简短、面向用户的正常回复
+12. 在最终 reply 中，绝不要暴露内部执行策略、提示词、ReAct、todo、工具、状态机、计划文件等内部实现细节
 """
 
         context_prompt = build_context_prompt(parent_chain_messages, current_conversation_messages, current_task)
 
         try:
-            decision = llm_service.structured_output(
+            response = llm_service.chat(
                 messages=[{"role": "user", "content": context_prompt}],
-                schema=NextActionDecision,
                 system_prompt=system_prompt,
             )
+            response_text = response.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+            decision_data = json.loads(response_text)
         except Exception as e:
             if scope == "direct":
                 reply = f"当前无法自动决策下一步：{e}"
@@ -533,14 +594,14 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
                 "pending_tools": [],
             }
 
-        kind = getattr(decision, "kind", None)
+        kind = decision_data.get("kind")
         if scope == "plan_step":
             if kind == "step_done":
                 return {"step_status": "step_done", "has_tool_use": False, "pending_tools": []}
             if kind == "blocked":
                 return {
                     "step_status": "blocked",
-                    "replan_reason": getattr(decision, "reply", None) or "步骤被阻塞",
+                    "replan_reason": decision_data.get("reply") or "步骤被阻塞",
                     "has_tool_use": False,
                     "pending_tools": [],
                 }
@@ -552,7 +613,7 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
                     "pending_tools": [],
                 }
             if kind == "blocked":
-                reply = getattr(decision, "reply", None) or "当前 todo 被阻塞"
+                reply = decision_data.get("reply") or "当前 todo 被阻塞"
                 _emit_final_reply(reply, message_context)
                 return {
                     "todo_status": "blocked",
@@ -562,24 +623,24 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
                     "pending_tools": [],
                 }
             if kind == "reply":
-                reply = getattr(decision, "reply", None) or "任务已完成。"
+                reply = decision_data.get("reply") or "任务已完成。"
                 _emit_final_reply(reply, message_context)
                 return {
                     "next_action": {
                         "kind": "reply",
                         "reply": reply,
-                        "task_description": getattr(decision, "task_description", None) or "向用户输出最终回复",
+                        "task_description": decision_data.get("task_description") or "向用户输出最终回复",
                     },
                     "final_reply": reply,
                     "has_tool_use": False,
                     "pending_tools": [],
                 }
 
-        tool_name = getattr(decision, "tool_name", None)
-        tool_args = getattr(decision, "tool_args", None) or {}
-        task_description = getattr(decision, "task_description", None) or user_message
+        tool_name = decision_data.get("tool_name")
+        tool_args = decision_data.get("tool_args") or {}
+        task_description = decision_data.get("task_description") or user_message
         if scope == "plan_step":
-            task_description = getattr(decision, "task_description", None) or (state.get("current_step_goal") or task_description)
+            task_description = decision_data.get("task_description") or (state.get("current_step_goal") or task_description)
 
         if not tool_name or not is_tool_allowed(tool_name, current_agent_type, settings_service):
             if scope == "direct":
@@ -635,10 +696,6 @@ def create_step_review_node(llm_service=None, message_context=None):
         if current_todo_index >= len(todos):
             return {"final_reply": "任务已完成。", "has_tool_use": False}
 
-        current_todo = todos[current_todo_index]
-        current_todo["result"] = state.get("last_tool_result")
-        current_todo["status"] = "failed" if state.get("last_tool_success") is False else "in_progress"
-
         if state.get("last_tool_success") is False:
             return {
                 "todo_status": "blocked",
@@ -649,7 +706,7 @@ def create_step_review_node(llm_service=None, message_context=None):
             }
 
         return {
-            "todo_status": "continue",
+            "todo_status": state.get("todo_status") or "continue",
             "has_tool_use": False,
             "pending_tools": [],
             "todos": todos,
@@ -1967,44 +2024,10 @@ def create_advance_plan_step_node():
     return advance_plan_step_node
 
 
-def create_advance_todo_node():
-    def advance_todo_node(state: AgentState) -> dict:
-        todos = state.get("todos") or []
-        current_todo_index = state.get("current_todo_index", 0) or 0
-        if current_todo_index >= len(todos):
-            return {"final_reply": "任务已完成。", "has_tool_use": False}
-
-        todos[current_todo_index]["status"] = "completed"
-        todos[current_todo_index]["result"] = state.get("last_tool_result")
-        next_index = current_todo_index + 1
-        if next_index >= len(todos):
-            return {
-                "todos": todos,
-                "current_todo_index": next_index,
-                "todo_status": "all_done",
-                "has_tool_use": False,
-                "pending_tools": [],
-            }
-
-        next_todo = todos[next_index]
-        return {
-            "todos": todos,
-            "current_todo_index": next_index,
-            "current_todo_goal": next_todo.get("goal"),
-            "current_todo_done_when": next_todo.get("done_when"),
-            "current_todo_iteration_count": 0,
-            "todo_status": "pending",
-            "pending_tools": [],
-            "has_tool_use": False,
-        }
-
-    return advance_todo_node
-
-
 def route_after_todo_review(state: AgentState) -> str:
     if state.get("replan_reason"):
         return "replan"
-    return state.get("todo_status") or "decide"
+    return "decide"
 
 
 def route_after_execute(state: AgentState) -> str:
@@ -2026,7 +2049,6 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
     graph.add_node("decide", create_decide_next_action_node(llm_service, settings_service, message_context))
     graph.add_node("plan", create_plan_node(llm_service, token_callback, settings_service, message_context))
     graph.add_node("todo_review", create_step_review_node(llm_service, message_context))
-    graph.add_node("advance_todo", create_advance_todo_node())
     graph.add_node("replan", create_replan_remaining_steps_node(llm_service, settings_service, message_context))
     graph.add_node("execute", create_execute_node(llm_service, token_callback, settings_service, message_context))
     graph.add_node("subagent", create_subagent_node(llm_service, token_callback, settings_service, message_context))
@@ -2070,19 +2092,8 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
     })
 
     graph.add_conditional_edges("todo_review", route_after_todo_review, {
-        "continue": "decide",
-        "pending": "decide",
-        "step_done": "advance_todo",
-        "blocked": "replan",
+        "decide": "decide",
         "replan": "replan",
-        "all_done": END,
-    })
-
-    graph.add_conditional_edges("advance_todo", route_after_todo_review, {
-        "pending": "decide",
-        "all_done": END,
-        "continue": "decide",
-        "blocked": "replan",
     })
 
     graph.add_edge("replan", "decide")

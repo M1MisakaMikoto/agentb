@@ -23,9 +23,11 @@ class FakeLLMService:
 
     def chat(self, messages, system_prompt=None, **kwargs):
         self.chat_calls.append({"messages": messages, "system_prompt": system_prompt, "kwargs": kwargs})
-        if not self.chat_responses:
-            raise AssertionError("No fake chat response configured")
-        return self.chat_responses.pop(0)
+        if self.chat_responses:
+            return self.chat_responses.pop(0)
+        if self.structured_responses:
+            return json.dumps(self.structured_responses.pop(0), ensure_ascii=False)
+        raise AssertionError("No fake chat response configured")
 
     def structured_output(self, messages, schema, system_prompt=None, **kwargs):
         self.structured_calls.append({"messages": messages, "schema": schema, "system_prompt": system_prompt, "kwargs": kwargs})
@@ -150,17 +152,17 @@ def test_plan_markdown_can_hydrate_todos():
 
 def test_direct_decide_can_work_against_current_todo():
     llm = FakeLLMService(
-        structured_responses=[
-            {
+        chat_responses=[
+            json.dumps({
                 "kind": "tool",
                 "tool_name": "read_file",
                 "tool_args": {"file_path": "spec.txt"},
                 "task_description": "读取规格文件",
-            },
-            {
+            }, ensure_ascii=False),
+            json.dumps({
                 "kind": "step_done",
                 "reply": "当前 todo 已完成",
-            },
+            }, ensure_ascii=False),
         ]
     )
     node = create_decide_next_action_node(llm_service=llm, settings_service=DummySettingsService(), message_context={})
@@ -190,7 +192,96 @@ def test_direct_decide_can_work_against_current_todo():
     assert second["todo_status"] == "step_done"
 
 
-def test_replan_remaining_steps_only_rewrites_unfinished_steps():
+def test_direct_prompt_omits_todo_block_when_empty():
+    llm = FakeLLMService(
+        chat_responses=[
+            json.dumps({
+                "kind": "tool",
+                "tool_name": "read_file",
+                "tool_args": {"file_path": "a.md"},
+                "task_description": "读取 a.md",
+            }, ensure_ascii=False)
+        ]
+    )
+    node = create_decide_next_action_node(llm_service=llm, settings_service=DummySettingsService(), message_context={})
+
+    state = _base_state("读取 a.md 并总结其中要点")
+    state["execution_mode"] = "DIRECT"
+
+    result = node(state)
+    prompt = llm.chat_calls[-1]["messages"][0]["content"]
+
+    assert "当前 TODO 列表（完整状态）" not in prompt
+    assert result["pending_tools"][0]["tool"] == "read_file"
+
+
+    llm = FakeLLMService(
+        structured_responses=[
+            {
+                "kind": "tool",
+                "tool_name": "todo_update",
+                "tool_args": {"task_id": 2, "status": "in_progress", "result": "开始处理第二项"},
+                "task_description": "更新当前 todo 状态",
+            }
+        ]
+    )
+    node = create_decide_next_action_node(llm_service=llm, settings_service=DummySettingsService(), message_context={})
+
+    state = _base_state()
+    state["execution_mode"] = "DIRECT"
+    state["todos"] = [
+        {"id": 1, "description": "阅读 a.md", "goal": "理解文件", "done_when": "关键信息已确认", "status": "completed", "result": "ok", "attempt_count": 1},
+        {"id": 2, "description": "重构 a.md", "goal": "完成重构", "done_when": "重构后的内容已落地", "status": "in_progress", "result": None, "attempt_count": 1},
+        {"id": 3, "description": "写重构结果", "goal": "输出最终结果", "done_when": "结果文件已生成", "status": "pending", "result": None, "attempt_count": 0},
+    ]
+    state["current_todo_index"] = 1
+    state["current_todo_goal"] = "完成重构"
+    state["current_todo_done_when"] = "重构后的内容已落地"
+
+    result = node(state)
+    prompt = llm.chat_calls[-1]["messages"][0]["content"]
+
+    assert "当前 TODO 列表（完整状态）" in prompt
+    assert "[1] status=completed desc=阅读 a.md" in prompt
+    assert "[2] status=in_progress desc=重构 a.md" in prompt
+    assert "[3] status=pending desc=写重构结果" in prompt
+    assert result["pending_tools"][0]["tool"] == "todo_update"
+
+
+def test_direct_can_choose_explicit_todo_update_for_completion():
+    llm = FakeLLMService(
+        chat_responses=[
+            json.dumps({
+                "kind": "tool",
+                "tool_name": "todo_update",
+                "tool_args": {"task_id": 1, "status": "completed", "result": "规格内容已确认"},
+                "task_description": "将当前 todo 标记为完成",
+            }, ensure_ascii=False)
+        ]
+    )
+    node = create_decide_next_action_node(llm_service=llm, settings_service=DummySettingsService(), message_context={})
+
+    state = _base_state()
+    state["execution_mode"] = "DIRECT"
+    state["todos"] = [{
+        "id": 1,
+        "description": "读取规格文件",
+        "goal": "拿到规格内容",
+        "done_when": "规格内容已确认",
+        "status": "in_progress",
+        "result": None,
+        "attempt_count": 1,
+    }]
+    state["current_todo_index"] = 0
+    state["current_todo_goal"] = "拿到规格内容"
+    state["current_todo_done_when"] = "规格内容已确认"
+    state["last_tool_result"] = "文件共 1 行，已读取全部内容\n\n1\t需求定义"
+    state["tool_history"] = [{"tool": "read_file", "args": {"file_path": "spec.txt"}, "result": state["last_tool_result"]}]
+
+    result = node(state)
+    assert result["pending_tools"][0]["tool"] == "todo_update"
+    assert result["pending_tools"][0]["args"]["task_id"] == 1
+    assert result["pending_tools"][0]["args"]["status"] == "completed"
     llm = FakeLLMService(
         chat_responses=[json.dumps({
             "tasks": [

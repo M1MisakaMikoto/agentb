@@ -63,6 +63,8 @@ TEST_CASES: Dict[str, Dict[str, any]] = {
         "description": "DIRECT 模式 - 简单对话任务",
         "expected_mode": "DIRECT",
         "expected_tools": ["thinking", "chat"],
+        "forbidden_tools": ["todo_add", "todo_update", "todo_delete", "todo_list", "todo_clear"],
+        "forbidden_reply_terms": ["ReAct", "todo", "工具", "执行代理", "状态机", "计划文件"],
     },
     "plan": {
         "question": "帮我设计并实现一个简单的用户登录功能，包括前端表单和后端验证",
@@ -495,6 +497,22 @@ async def run_single_test(
     summary = result.to_dict()
     for key, value in summary.items():
         log_raw(f"- {key}: {value}")
+
+    forbidden_tools = test_case.get("forbidden_tools", [])
+    for forbidden_tool in forbidden_tools:
+        if forbidden_tool in result.tool_calls:
+            result.errors.append(f"Forbidden tool was used: {forbidden_tool}")
+
+    forbidden_reply_terms = test_case.get("forbidden_reply_terms", [])
+    final_visible_reply = (result.chat_content or result.text_content or "").strip()
+    for term in forbidden_reply_terms:
+        if term and term.lower() in final_visible_reply.lower():
+            result.errors.append(f"Forbidden reply term was exposed: {term}")
+
+    expected_tools = test_case.get("expected_tools", [])
+    for expected_tool in expected_tools:
+        if expected_tool not in result.tool_calls and expected_tool not in {"thinking", "chat"}:
+            result.errors.append(f"Expected tool was not used: {expected_tool}")
 
     with open(output_file, "a", encoding="utf-8") as f:
         f.write("\n".join(raw_output_lines) + "\n\n")

@@ -13,7 +13,7 @@ import shutil
 import fnmatch
 
 from ...state import ToolExecutionState, ToolCall
-from ...tools import ALL_TOOLS
+from ...tools.todo_tools import todo_add, todo_update, todo_delete, todo_list, todo_clear
 from .tool_registry import (
     FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS,
     generate_tool_prompt, is_tool_allowed, get_allowed_tools, _write_tool_event
@@ -54,7 +54,11 @@ def check_permission(state: ToolExecutionState, workspace_service=None, settings
 
     tool_name = state["tool_name"]
     workspace_id = state["workspace_id"]
-    tool_args = state["tool_args"]
+    tool_args = state["tool_args"].copy()
+    if "file_name" in tool_args and "file_path" not in tool_args and "path" not in tool_args:
+        tool_args["file_path"] = tool_args["file_name"]
+    if "file_content" in tool_args and "content" not in tool_args:
+        tool_args["content"] = tool_args["file_content"]
     agent_type = state.get("agent_type", "director_agent")
     auto_approve = state.get("auto_approve", False)
 
@@ -153,6 +157,10 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
     
     tool_name = state["tool_name"]
     tool_args = state["tool_args"].copy()
+    if "file_name" in tool_args and "file_path" not in tool_args and "path" not in tool_args:
+        tool_args["file_path"] = tool_args.pop("file_name")
+    if "file_content" in tool_args and "content" not in tool_args:
+        tool_args["content"] = tool_args.pop("file_content")
     workspace_id = state["workspace_id"]
     task_description = state.get("task_description", "")
     previous_results = state.get("previous_results", [])
@@ -251,6 +259,36 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
         tool_result = _execute_call_explore_agent(tool_args, llm_service, token_callback, message_context)
     elif tool_name == "call_review_agent":
         tool_result = _execute_call_review_agent(tool_args, llm_service, token_callback, message_context)
+    elif tool_name == "todo_add":
+        tool_result = todo_add(
+            workspace_id=workspace_id,
+            description=tool_args.get("description", ""),
+            priority=tool_args.get("priority", "medium"),
+            tool=tool_args.get("tool"),
+            args=tool_args.get("args"),
+        )
+    elif tool_name == "todo_update":
+        tool_result = todo_update(
+            workspace_id=workspace_id,
+            task_id=tool_args.get("task_id"),
+            status=tool_args.get("status"),
+            result=tool_args.get("result"),
+        )
+    elif tool_name == "todo_delete":
+        tool_result = todo_delete(
+            workspace_id=workspace_id,
+            task_id=tool_args.get("task_id"),
+        )
+    elif tool_name == "todo_list":
+        tool_result = todo_list(
+            workspace_id=workspace_id,
+            status=tool_args.get("status"),
+        )
+    elif tool_name == "todo_clear":
+        tool_result = todo_clear(
+            workspace_id=workspace_id,
+            completed_only=tool_args.get("completed_only", True),
+        )
     elif tool_name in WORKSPACE_TOOLS:
         tool_result = _execute_workspace_tool(tool_name, tool_args, workspace_id, workspace_service)
     else:

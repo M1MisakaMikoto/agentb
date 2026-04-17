@@ -16,6 +16,7 @@ FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir"
 EXPLORE_TOOLS = {"explore_code", "explore_internet"}
 SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent"}
 WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}
+TODO_TOOLS = {"todo_add", "todo_update", "todo_delete", "todo_list", "todo_clear"}
 
 SPECIAL_TOOLS = {
     "thinking": {
@@ -94,7 +95,7 @@ def get_allowed_tools(agent_type: str, settings_service=None) -> List[str]:
         pass
     
     default_permissions = {
-        "director_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files"],
+        "director_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files", "todo_add", "todo_update", "todo_delete", "todo_list", "todo_clear"],
         "plan_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat", "call_explore_agent", "call_review_agent"],
         "review_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat"],
         "explore_agent": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files"],
