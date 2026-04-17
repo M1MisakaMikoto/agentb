@@ -38,10 +38,12 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
 
 
-class Task(TypedDict):
+class Task(TypedDict, total=False):
     """单个任务定义"""
     id: int
     description: str
+    goal: Optional[str]
+    done_when: Optional[str]
     phase: str
     status: str
     tool: Optional[str]
@@ -68,11 +70,21 @@ class IntentAnalysis(TypedDict):
 
 
 class NextAction(TypedDict, total=False):
-    kind: Literal["tool", "reply"]
+    kind: Literal["tool", "reply", "step_done", "blocked"]
     tool_name: Optional[str]
     tool_args: Optional[dict]
     reply: Optional[str]
     task_description: Optional[str]
+
+
+class TodoItem(TypedDict, total=False):
+    id: int
+    description: str
+    goal: Optional[str]
+    done_when: Optional[str]
+    status: str
+    result: Optional[str]
+    attempt_count: Optional[int]
 
 
 class AgentState(TypedDict):
@@ -102,6 +114,22 @@ class AgentState(TypedDict):
     final_reply: Optional[str]
     plan_file: Optional[str]
     last_tool_result: Optional[str]
+    last_tool_name: Optional[str]
+    last_tool_success: Optional[bool]
+    last_tool_error: Optional[str]
     iteration_count: Optional[int]
     max_iterations: Optional[int]
+    current_step_goal: Optional[str]
+    current_step_done_when: Optional[str]
+    current_step_iteration_count: Optional[int]
+    step_max_iterations: Optional[int]
+    step_status: Optional[str]
+    replan_reason: Optional[str]
+    todos: Optional[List[TodoItem]]
+    current_todo_index: Optional[int]
+    current_todo_goal: Optional[str]
+    current_todo_done_when: Optional[str]
+    current_todo_iteration_count: Optional[int]
+    todo_max_iterations: Optional[int]
+    todo_status: Optional[str]
     next_action: Optional[NextAction]

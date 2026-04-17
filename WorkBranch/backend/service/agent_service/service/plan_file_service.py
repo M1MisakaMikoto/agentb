@@ -325,9 +325,13 @@ class PlanFileService:
             
             step_id = step.get("id", "?")
             description = step.get("description", "")
-            tool = step.get("tool", "thinking")
-            
+            goal = step.get("goal", "")
+            done_when = step.get("done_when", "")
+            tool = step.get("tool", "None")
+
             lines.append(f"{step_id}. **{description}**")
+            lines.append(f"   - 目标: `{goal}`")
+            lines.append(f"   - 完成条件: `{done_when}`")
             lines.append(f"   - 工具: `{tool}`")
             lines.append("")
         
