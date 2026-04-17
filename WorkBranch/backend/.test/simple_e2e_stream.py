@@ -5,10 +5,10 @@ Simple E2E Test - Multi-Mode Agent Testing with Raw Stream Output
 Tests different execution modes:
 - DIRECT: Simple tasks (e.g., "你好")
 - PLAN: Complex development tasks (e.g., "帮我实现一个用户登录功能")
-- SUBAGENT: Exploration tasks (e.g., "探索这个项目的代码结构")
+- SEARCH: Search tasks that still stay in DIRECT mode
 
 Usage:
-    python simple_e2e_stream.py [--no-server] [--mode direct|plan|subagent|all]
+    python simple_e2e_stream.py [--no-server] [--mode direct|plan|search|serial|all]
 """
 
 import argparse
@@ -71,12 +71,6 @@ TEST_CASES: Dict[str, Dict[str, any]] = {
         "description": "PLAN 模式 - 复杂开发任务",
         "expected_mode": "PLAN",
         "expected_tools": ["thinking", "read_file", "write_file", "chat"],
-    },
-    "subagent": {
-        "question": "探索这个项目的代码结构，找出主要的模块和它们之间的关系",
-        "description": "SUBAGENT 模式 - 代码探索任务",
-        "expected_mode": "SUBAGENT",
-        "expected_tools": ["spawn_agent"],
     },
     "search": {
         "question": "请使用 explore_internet 工具搜索市政设施管理规定的相关法规",
@@ -647,10 +641,10 @@ def stop_backend(process: subprocess.Popen):
 async def main():
     parser = argparse.ArgumentParser(description="E2E Stream Test - Multi-Mode Agent Testing")
     parser.add_argument("--no-server", action="store_true", help="Do not start backend server")
-    parser.add_argument("--mode", "-m", choices=["direct", "plan", "subagent", "search", "serial", "all"], default="all",
+    parser.add_argument("--mode", "-m", choices=["direct", "plan", "search", "serial", "all"], default="all",
                         help="Test mode to run (default: all)")
     parser.add_argument("--question", "-q", default=None, help="Custom question (overrides mode)")
-    parser.add_argument("--expected-mode", choices=["DIRECT", "PLAN", "SUBAGENT"], default=None,
+    parser.add_argument("--expected-mode", choices=["DIRECT", "PLAN"], default=None,
                         help="Expected execution mode for custom question")
     parser.add_argument("--user-id", "-u", type=int, default=99999, help="User ID")
     parser.add_argument("--output", "-o", default=None, help="Output file path")
@@ -707,7 +701,7 @@ async def main():
             result = await run_single_test(api, "custom", custom_case, output_file, args.auto_approve)
             results.append(result)
         else:
-            modes_to_test = ["direct", "plan", "subagent", "serial"] if args.mode == "all" else [args.mode]
+            modes_to_test = ["direct", "plan", "search", "serial"] if args.mode == "all" else [args.mode]
 
             for mode in modes_to_test:
                 if mode == "serial":

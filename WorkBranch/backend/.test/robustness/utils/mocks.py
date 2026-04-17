@@ -344,9 +344,7 @@ def create_mock_agent_state(
         "execution_mode": None,
         "mode_reason": None,
         "suggested_tools": None,
-        "suggested_subagent": None,
         "in_plan_mode": False,
-        "active_subagent": False,
         "pending_tools": None,
     }
 

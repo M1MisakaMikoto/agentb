@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Workspace Upload Extract Write E2E Test
+Workspace Upload DIRECT Todo E2E Test
 
 测试目标:
 1. 模拟用户将本地知识文件上传到 session 对应工作区
-2. 创建对话，让 agent 在工作区内读取该文件
-3. 让 agent 提取知识正文并写入新的固定文件
-4. 验证流式执行完成、工具调用符合预期、输出文件存在且内容正确
+2. 创建对话，让 agent 在 DIRECT 模式下围绕该文件完成一个分阶段只读任务
+3. 验证流式执行完成、执行模式为 DIRECT、并且触发了 todo 工具
+4. 验证 agent 读取到了正确的知识内容，且没有发生写文件行为
 
 Usage:
     python test_workspace_upload_extract_write_e2e.py [--no-server]
@@ -31,12 +31,13 @@ import httpx
 
 BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 SOURCE_FILE = Path(__file__).resolve().parents[3] / ".dev" / "table" / "我是测试知识文件.txt"
-OUTPUT_FILENAME = "extracted_knowledge_output.txt"
 PROMPT = (
-    "请在当前工作区内完成这个任务。工作区里已经有一个文件，文件名是“我是测试知识文件.txt”。"
-    "请先查看工作区文件，再读取这个文件内容，然后提取其中的知识正文，并把结果写入新文件“extracted_knowledge_output.txt”。"
-    "不要输出代码方案，不要假设文件不存在，不要创建示例内容。"
-    "任务完成后，只回复：DONE: extracted_knowledge_output.txt"
+    "请在当前工作区内完成一个分阶段的只读任务。工作区里已经有一个文件，文件名是“我是测试知识文件.txt”。"
+    "请先查看工作区里有哪些文件并确认该文件位置；"
+    "再读取“我是测试知识文件.txt”；"
+    "然后总结这个知识文件里写了什么，并判断它是否像测试样例文件。"
+    "这是一个多步骤任务；如果你判断需要拆分阶段，请先建立任务列表再继续执行。"
+    "不要修改任何文件，不要创建新文件，最后给出简短结论。"
 )
 
 
@@ -322,15 +323,15 @@ def extract_response_text(conversation_result: dict) -> str:
     return "".join(parts)
 
 
-async def run_workspace_upload_extract_write_test(api: APIClient, output_file: str) -> Dict:
+async def run_workspace_upload_direct_todo_test(api: APIClient, output_file: str) -> Dict:
     output_lines: List[str] = []
     errors: List[str] = []
 
-    output_lines.append(f"# Workspace Upload Extract Write E2E - {get_timestamp()}")
+    output_lines.append(f"# Workspace Upload DIRECT Todo E2E - {get_timestamp()}")
     output_lines.append("")
 
     print(f"\n{Colors.HEADER}{'=' * 72}{Colors.ENDC}")
-    print(f"{Colors.HEADER}  Workspace Upload Extract Write E2E Test{Colors.ENDC}")
+    print(f"{Colors.HEADER}  Workspace Upload DIRECT Todo E2E Test{Colors.ENDC}")
     print(f"{Colors.HEADER}{'=' * 72}{Colors.ENDC}\n")
 
     if not SOURCE_FILE.exists():
@@ -344,7 +345,7 @@ async def run_workspace_upload_extract_write_test(api: APIClient, output_file: s
     output_lines.append("")
 
     print(f"{Colors.CYAN}[Step 1] Creating session...{Colors.ENDC}")
-    session_result = await api.create_session("Workspace Upload Extract Write E2E")
+    session_result = await api.create_session("Workspace Upload DIRECT Todo E2E")
     if session_result.get("code") != 200:
         error_msg = f"Session creation failed: {session_result.get('message', 'Unknown error')}"
         print(f"{Colors.RED}{error_msg}{Colors.ENDC}")
@@ -507,16 +508,24 @@ async def run_workspace_upload_extract_write_test(api: APIClient, output_file: s
     if result.execution_mode != "DIRECT":
         errors.append(f"Expected DIRECT execution mode, got: {result.execution_mode}")
 
+    todo_tool_calls = [
+        tool for tool in result.tool_calls
+        if tool in {"todo_add", "todo_update", "todo_delete", "todo_list", "todo_clear"}
+    ]
+
     if "read_file" not in result.tool_calls:
         errors.append(f"read_file was not observed in tool calls: {result.tool_calls}")
-    if "write_file" not in result.tool_calls:
-        errors.append(f"write_file was not observed in tool calls: {result.tool_calls}")
+    if "todo_add" not in result.tool_calls:
+        errors.append(f"todo_add was not observed in tool calls: {result.tool_calls}")
+    if not todo_tool_calls:
+        errors.append(f"No todo tool was observed in tool calls: {result.tool_calls}")
+    if "write_file" in result.tool_calls:
+        errors.append(f"write_file should not be used in this read-only test: {result.tool_calls}")
 
-    expected_done_message = f"DONE: {OUTPUT_FILENAME}"
-    if SOURCE_FILE.name not in result.response_text and expected_done_message not in result.response_text:
-        print(f"{Colors.YELLOW}    Final reply did not mention source file name; relying on output file assertions{Colors.ENDC}")
-    if expected_done_message not in result.response_text:
-        errors.append(f"Final response does not contain expected marker: {expected_done_message}")
+    if "aaaeee222" not in result.response_text:
+        errors.append(f"Final response does not contain expected knowledge content: {result.response_text!r}")
+    if "测试" not in result.response_text:
+        print(f"{Colors.YELLOW}    Final reply did not explicitly mention testing/sample judgment{Colors.ENDC}")
 
     print(f"{Colors.CYAN}[Step 7] Listing workspace files...{Colors.ENDC}")
     workspace_files_result = await api.list_workspace_files(workspace_id)
@@ -533,12 +542,9 @@ async def run_workspace_upload_extract_write_test(api: APIClient, output_file: s
     workspace_paths = {item.get("path") for item in workspace_files if item.get("path")}
     if SOURCE_FILE.name not in workspace_paths:
         errors.append(f"Uploaded source file is missing from workspace listing: {workspace_paths}")
-    if OUTPUT_FILENAME not in workspace_paths:
-        errors.append(f"Output file is missing from workspace listing: {workspace_paths}")
 
     if workspace_dir is not None:
         uploaded_workspace_file = workspace_dir / SOURCE_FILE.name
-        generated_workspace_file = workspace_dir / OUTPUT_FILENAME
 
         if not uploaded_workspace_file.exists():
             errors.append(f"Uploaded file missing on disk: {uploaded_workspace_file}")
@@ -547,17 +553,6 @@ async def run_workspace_upload_extract_write_test(api: APIClient, output_file: s
             if uploaded_content != expected_content:
                 errors.append(
                     f"Uploaded workspace file content mismatch: expected={expected_content!r}, actual={uploaded_content!r}"
-                )
-
-        if not generated_workspace_file.exists():
-            errors.append(f"Generated file missing on disk: {generated_workspace_file}")
-        else:
-            generated_content = normalize_text(generated_workspace_file.read_text(encoding="utf-8"))
-            if not generated_content:
-                errors.append("Generated file should not be empty")
-            if generated_content != "aaaeee222":
-                errors.append(
-                    f"Generated file content mismatch: expected extracted body='aaaeee222', actual={generated_content!r}"
                 )
 
     output_lines.append("## Final Errors")
@@ -586,7 +581,7 @@ async def run_workspace_upload_extract_write_test(api: APIClient, output_file: s
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Workspace Upload Extract Write E2E Test")
+    parser = argparse.ArgumentParser(description="Workspace Upload DIRECT Todo E2E Test")
     parser.add_argument("--no-server", action="store_true", help="Do not start server automatically")
     parser.add_argument("--user-id", type=int, default=1, help="User ID for API requests")
     args = parser.parse_args()
@@ -621,9 +616,9 @@ async def main():
         api = APIClient(BASE_URL, user_id=args.user_id)
         logs_dir = Path(__file__).parent / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
-        output_file = logs_dir / f"workspace_upload_extract_write_e2e_{get_timestamp()}.md"
+        output_file = logs_dir / f"workspace_upload_direct_todo_e2e_{get_timestamp()}.md"
 
-        result = await run_workspace_upload_extract_write_test(api, str(output_file))
+        result = await run_workspace_upload_direct_todo_test(api, str(output_file))
         return 0 if result.get("success") else 1
 
     except KeyboardInterrupt:

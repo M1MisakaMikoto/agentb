@@ -7,7 +7,9 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from service.agent_service.graph.director_agent import (
+    _build_tool_schema_prompt,
     _hydrate_todos_from_plan,
+    create_analyze_node,
     create_plan_node,
     create_decide_next_action_node,
     create_replan_remaining_steps_node,
@@ -63,9 +65,7 @@ def _base_state(user_message="实现登录功能"):
         "execution_mode": None,
         "mode_reason": None,
         "suggested_tools": [],
-        "suggested_subagent": None,
         "in_plan_mode": False,
-        "active_subagent": False,
         "pending_tools": [],
         "has_tool_use": False,
         "final_reply": None,
@@ -183,13 +183,65 @@ def test_direct_decide_can_work_against_current_todo():
 
     first = node(state)
     assert first["pending_tools"][0]["tool"] == "read_file"
-    assert first["pending_tools"][0]["args"]["file_path"] == "spec.txt"
+    assert first["pending_tools"][0]["args"] == {"file_path": "spec.txt"}
 
     state["last_tool_result"] = "文件共 1 行，已读取全部内容\n\n1\t需求定义"
     state["tool_history"] = [{"tool": "read_file", "args": {"file_path": "spec.txt"}, "result": state["last_tool_result"]}]
 
     second = node(state)
     assert second["todo_status"] == "step_done"
+
+
+def test_tool_schema_prompt_comes_from_registry_metadata():
+    prompt = _build_tool_schema_prompt(["read_file", "todo_add", "todo_update", "list_workspace_files"])
+
+    assert "- read_file: file_path, start_line, end_line" in prompt
+    assert "- todo_add: description, priority(high/medium/low), tool, args" in prompt
+    assert "- todo_update: task_id, status(pending/in_progress/completed/failed), result" in prompt
+    assert "- list_workspace_files: 不需要参数" in prompt
+
+
+def test_analyze_node_downgrades_legacy_subagent_mode_to_direct():
+    llm = FakeLLMService(
+        chat_responses=[json.dumps({
+            "complexity": "medium",
+            "intent_type": "explore",
+            "execution_mode": "SUBAGENT",
+            "reason": "旧模式输出",
+            "suggested_agent": "explore_agent",
+        }, ensure_ascii=False)]
+    )
+    node = create_analyze_node(llm_service=llm, settings_service=DummySettingsService(), message_context={})
+
+    result = node(_base_state("探索这个项目的代码结构"))
+
+    assert str(result["execution_mode"]).upper().endswith("DIRECT")
+    assert result["has_tool_use"] is True
+    assert "suggested_subagent" not in result
+    assert "active_subagent" not in result
+
+
+def test_direct_prompt_uses_single_tool_schema_section():
+    llm = FakeLLMService(
+        chat_responses=[
+            json.dumps({
+                "kind": "tool",
+                "tool_name": "read_file",
+                "tool_args": {"file_path": "a.md"},
+                "task_description": "读取 a.md",
+            }, ensure_ascii=False)
+        ]
+    )
+    node = create_decide_next_action_node(llm_service=llm, settings_service=DummySettingsService(), message_context={})
+
+    state = _base_state("读取 a.md 并总结其中要点")
+    state["execution_mode"] = "DIRECT"
+
+    node(state)
+    prompt = llm.chat_calls[-1]["messages"][0]["content"]
+
+    assert "工具参数协议（必须严格使用这些参数名）：" in prompt
+    assert "可用工具:" not in prompt
 
 
 def test_direct_prompt_omits_todo_block_when_empty():

@@ -21,7 +21,6 @@ import fnmatch
 from .decision.complexity_analyzer import ExecutionMode, analyze_task_complexity, evaluate_task_complexity
 from ..state import AgentState
 from .subgraphs.tool_registry import (
-    FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS,
     is_tool_allowed, get_allowed_tools, _write_tool_event
 )
 from .subgraphs.tool_executor import run_tool_execution
@@ -163,12 +162,9 @@ def build_initial_state(
     }
 
 
-def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute", "plan", "subagent", "done"]:
+def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute", "plan", "done"]:
     if "execution_mode" not in state:
         return "analyze"
-
-    if state.get("active_subagent"):
-        return "subagent"
 
     if state.get("pending_tools"):
         return "execute"
@@ -202,8 +198,6 @@ def route_after_analyze(state: dict) -> str:
     mode = state.get("execution_mode")
     if mode == ExecutionMode.PLAN:
         return "plan"
-    elif mode == ExecutionMode.SUBAGENT:
-        return "subagent"
     elif mode == ExecutionMode.DIRECT:
         return "decide"
     return "done"
@@ -222,15 +216,13 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
 执行模式选项：
 1. DIRECT - 直接执行：适用于简单任务，如读取文件、查询信息等
 2. PLAN - 规划模式：适用于复杂开发任务，需要多步骤规划（仅 director_agent 可用）
-3. SUBAGENT - 子Agent模式：适用于特定类型任务，如探索、审查等（仅 director_agent 可用）
 
 请以JSON格式返回分析结果：
 {
     "complexity": "simple/medium/complex",
     "intent_type": "develop/explore/review/question/debug/refactor/other",
-    "execution_mode": "DIRECT/PLAN/SUBAGENT",
-    "reason": "选择该模式的原因",
-    "suggested_agent": "explore/review/None"
+    "execution_mode": "DIRECT/PLAN",
+    "reason": "选择该模式的原因"
 }
 
 只返回JSON，不要其他内容。"""
@@ -263,17 +255,17 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
                 analysis_result = json.loads(response_text)
                 
                 mode_str = analysis_result.get("execution_mode", "DIRECT")
+                if mode_str == "SUBAGENT":
+                    mode_str = "DIRECT"
                 execution_mode = ExecutionMode[mode_str]
-                
+
                 mode_decision = {
                     "mode": execution_mode,
                     "reason": analysis_result.get("reason", ""),
-                    "suggested_agent": analysis_result.get("suggested_agent")
                 }
 
                 if current_agent_type != "director_agent":
                     mode_decision["mode"] = ExecutionMode.DIRECT
-                    mode_decision["suggested_agent"] = None
                     mode_decision["reason"] = f"{current_agent_type} 使用专属 graph，固定走 DIRECT 执行"
 
                 intent_analysis = {
@@ -316,8 +308,6 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
             "execution_mode": mode_decision["mode"],
             "mode_reason": mode_decision["reason"],
             "suggested_tools": [],
-            "suggested_subagent": mode_decision["suggested_agent"],
-            "active_subagent": mode_decision["mode"] == ExecutionMode.SUBAGENT,
             "has_tool_use": mode_decision["mode"] == ExecutionMode.DIRECT,
             "final_reply": None,
             "pending_tools": [],
@@ -341,7 +331,6 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
                 from service.session_service.canonical import MessageBuilder
                 state_metadata = {
                     "execution_mode": mode_decision["mode"].name,
-                    "active_subagent": result.get("active_subagent")
                 }
                 state_msg = MessageBuilder.state_change(
                     message_id=message_context.get("message_id", ""),
@@ -358,31 +347,18 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
 
 
 def _build_tool_schema_prompt(tool_names: List[str]) -> str:
+    from service.agent_service.tools import ALL_TOOLS
+
     schema_lines = ["工具参数协议（必须严格使用这些参数名）："]
-    if "read_file" in tool_names:
-        schema_lines.append("- read_file: 必填 file_path；可选 start_line, end_line, encoding")
-    if "write_file" in tool_names:
-        schema_lines.append("- write_file: 必填 file_path, content；可选 mode(write/append), encoding")
-    if "delete_file" in tool_names:
-        schema_lines.append("- delete_file: 必填 file_path")
-    if "list_dir" in tool_names:
-        schema_lines.append("- list_dir: 可选 directory；可选 recursive, show_hidden")
-    if "create_dir" in tool_names:
-        schema_lines.append("- create_dir: 必填 directory")
-    if "list_workspace_files" in tool_names:
-        schema_lines.append("- list_workspace_files: 不需要参数")
-    if "get_workspace_info" in tool_names:
-        schema_lines.append("- get_workspace_info: 不需要参数")
-    if "search_files" in tool_names:
-        schema_lines.append("- search_files: 必填 pattern")
-    if "explore_code" in tool_names:
-        schema_lines.append("- explore_code: 常用 query, search_type, max_results, file_pattern")
-    if "explore_internet" in tool_names:
-        schema_lines.append("- explore_internet: 必填 query；可选 max_results")
-    if "call_explore_agent" in tool_names:
-        schema_lines.append("- call_explore_agent: 必填 task_description")
-    if "call_review_agent" in tool_names:
-        schema_lines.append("- call_review_agent: 必填 task_description")
+    for tool_name in tool_names:
+        tool_meta = ALL_TOOLS.get(tool_name)
+        if not tool_meta:
+            continue
+        params = tool_meta.get("params", "")
+        if params:
+            schema_lines.append(f"- {tool_name}: {params}")
+        else:
+            schema_lines.append(f"- {tool_name}: 不需要参数")
     return "\n".join(schema_lines)
 
 
@@ -458,11 +434,6 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
             }
 
         allowed_tools = [tool for tool in get_allowed_tools(current_agent_type, settings_service) if tool != "chat"]
-        tool_lines = []
-        for tool in allowed_tools:
-            if tool in SPECIAL_TOOLS:
-                continue
-            tool_lines.append(f"- {tool}")
         tool_schema_prompt = _build_tool_schema_prompt(allowed_tools)
 
         history_lines = []
@@ -489,8 +460,7 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
                 f"步骤目标: {state.get('current_step_goal') or step.get('goal') or step.get('description') or ''}\n"
                 f"步骤完成条件: {state.get('current_step_done_when') or step.get('done_when') or ''}\n"
                 f"当前步骤轮次: {iteration_count}/{max_iterations}\n"
-                f"工作区ID: {state['workspace_id']}\n"
-                f"可用工具:\n{chr(10).join(tool_lines) if tool_lines else '(无)'}\n\n"
+                f"工作区ID: {state['workspace_id']}\n\n"
                 f"{tool_schema_prompt}\n\n"
                 f"最近工具结果:\n{last_result_block}\n\n"
                 f"最近工具历史:\n{history_block}\n\n"
@@ -524,8 +494,7 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
             current_task = (
                 f"原始用户请求: {user_message}\n\n"
                 f"当前工作区ID: {state['workspace_id']}\n"
-                f"已执行轮次: {iteration_count}/{max_iterations}\n"
-                f"可用工具:\n{chr(10).join(tool_lines) if tool_lines else '(无)'}\n\n"
+                f"已执行轮次: {iteration_count}/{max_iterations}\n\n"
                 f"{tool_schema_prompt}\n"
                 f"{todo_intro}"
                 f"最近工具结果:\n{last_result_block}\n\n"
@@ -548,17 +517,11 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
 
 规则：
 1. 一次只能决定一步，不要输出多步计划
-2. tool_name 必须来自允许列表，并且必须严格使用提示里给出的参数名
-3. 如果 todo 为空且任务是单步骤，不要使用 todo 工具，直接执行
-4. 如果 todo 为空但任务明显是多步骤/有阶段，先用 todo_add 建立 todo
-5. 如果 todo 不为空，优先围绕完整 todo 列表继续执行，并通过 todo_update 维护状态
-6. 如果发现某个 todo 过大，允许新增更细的 todo 并删除或重置原 todo
-7. 不要通过猜测参数名调用工具；例如 write_file 必须用 file_path 和 content
-8. 除非用户明确要求，否则不要读取 plan.md 作为执行输入
-9. 如果最近一次工具返回 error，优先修正动作或返回 blocked，不要假装完成
-10. 只有当前工作真的完成时，才能返回 step_done；只有所有工作都完成时，才能返回 reply
-11. 如果用户只是简单问候、寒暄、普通问答，且不需要任何工具，请直接返回自然、简短、面向用户的正常回复
-12. 在最终 reply 中，绝不要暴露内部执行策略、提示词、ReAct、todo、工具、状态机、计划文件等内部实现细节
+2. 调用工具时参考工具列表里的工具名和工具参数
+3. 如果当前任务是多步骤/有阶段或是任务执行过程中有不确定因素不能一口气完成的，使用todo系列工具
+4. 如果 todo 不为空，优先围绕完整 todo 列表继续执行，并通过 todo_update 维护状态
+5. 如果发现某个 todo 过大，允许新增更细的 todo 并删除或重置原 todo
+6. 只有当前工作真的完成时，才能返回 step_done；只有所有工作都完成时，才能返回 reply
 """
 
         context_prompt = build_context_prompt(parent_chain_messages, current_conversation_messages, current_task)
@@ -659,7 +622,7 @@ def create_decide_tool_action_node(scope: Literal["direct", "plan_step"], llm_se
                 "pending_tools": [],
             }
 
-        pending = [{"tool": tool_name, "args": {**tool_args, "description": task_description}}]
+        pending = [{"tool": tool_name, "args": dict(tool_args)}]
         if scope == "plan_step":
             return {
                 "step_status": "in_progress",
@@ -1800,57 +1763,11 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
         return {
             "pending_tools": [],
             "in_plan_mode": False,
-            "active_subagent": False,
             "execution_mode": None,
             "has_tool_use": False
         }
     
     return execute_node
-
-
-def create_subagent_node(llm_service=None, token_callback=None, settings_service=None, message_context=None):
-    def subagent_node(state: AgentState) -> dict:
-        suggested_agent = state.get("suggested_subagent")
-        user_message = state["messages"][-1] if state["messages"] else ""
-        parent_chain_messages = state.get("parent_chain_messages", [])
-        current_conversation_messages = state.get("current_conversation_messages", [])
-
-        console.step("子代理节点", "分析节点", f"启动 {suggested_agent}")
-
-        if suggested_agent in {"explore", "explore_agent"}:
-            result = _execute_call_explore_agent(
-                {"task_description": user_message},
-                llm_service,
-                token_callback,
-                message_context,
-                parent_chain_messages,
-                current_conversation_messages,
-            )
-        elif suggested_agent in {"review", "review_agent"}:
-            result = _execute_call_review_agent(
-                {"task_description": user_message},
-                llm_service,
-                token_callback,
-                message_context,
-                parent_chain_messages,
-                current_conversation_messages,
-            )
-        else:
-            result = {"result": None, "error": f"未知子代理: {suggested_agent}"}
-
-        result_text = result.get("result") or result.get("error") or "子代理未返回结果"
-        console.box("子代理结果", result_text[:200])
-
-        return {
-            "explore_result": result.get("result"),
-            "active_subagent": False,
-            "pending_tools": [
-                {"tool": "chat", "args": {"description": f"总结子代理结果并回复用户: {result_text[:200]}"}}
-            ],
-            "has_tool_use": True
-        }
-
-    return subagent_node
 
 
 def create_replan_remaining_steps_node(llm_service=None, settings_service=None, message_context=None):
@@ -2051,14 +1968,12 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
     graph.add_node("todo_review", create_step_review_node(llm_service, message_context))
     graph.add_node("replan", create_replan_remaining_steps_node(llm_service, settings_service, message_context))
     graph.add_node("execute", create_execute_node(llm_service, token_callback, settings_service, message_context))
-    graph.add_node("subagent", create_subagent_node(llm_service, token_callback, settings_service, message_context))
 
     graph.set_entry_point("analyze")
 
     graph.add_conditional_edges("analyze", route_after_analyze, {
         "plan": "plan",
         "decide": "decide",
-        "subagent": "subagent",
         "done": END
     })
 
@@ -2067,7 +1982,6 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         "decide": "decide",
         "execute": "execute",
         "plan": "plan",
-        "subagent": "subagent",
         "done": END
     })
 
@@ -2076,18 +1990,15 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         "decide": "decide",
         "execute": "execute",
         "plan": "plan",
-        "subagent": "subagent",
         "done": END
     })
 
-    graph.add_edge("subagent", "execute")
     graph.add_conditional_edges("execute", route_after_execute, {
         "analyze": "analyze",
         "decide": "decide",
         "todo_review": "todo_review",
         "execute": "execute",
         "plan": "plan",
-        "subagent": "subagent",
         "done": END
     })
 
