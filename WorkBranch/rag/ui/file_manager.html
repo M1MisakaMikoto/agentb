@@ -239,9 +239,21 @@
   <div id="root"></div>
   <script type="text/babel">
     const { useEffect, useMemo, useRef, useState } = React;
+    const USER_ID_STORAGE_KEY = "x-user-id";
+    const API_BASE = "/rag/api";
+
+    function getUserIdFromStorage() {
+      const raw = localStorage.getItem(USER_ID_STORAGE_KEY);
+      if (raw && raw.trim()) return raw.trim();
+      return "1";
+    }
 
     async function api(url, options = {}) {
-      const res = await fetch(url, options);
+      const headers = new Headers(options.headers || {});
+      if (!headers.has("X-User-ID")) {
+        headers.set("X-User-ID", getUserIdFromStorage());
+      }
+      const res = await fetch(url, { ...options, headers });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "请求失败");
       return data;
@@ -285,7 +297,7 @@
       );
 
       async function loadCategories() {
-        const data = await api("/api/categories/tree");
+        const data = await api(`${API_BASE}/categories/tree`);
         setCategories(data.items || []);
       }
 
@@ -295,7 +307,7 @@
         params.set("size", String(size));
         if (nextKeyword.trim()) params.set("keyword", nextKeyword.trim());
         if (nextCategoryId !== null) params.set("category_id", String(nextCategoryId));
-        const data = await api(`/api/documents?${params.toString()}`);
+        const data = await api(`${API_BASE}/documents?${params.toString()}`);
         setDocs(data.items || []);
         setTotal(data.total || 0);
         setPage(nextPage);
@@ -304,7 +316,7 @@
       async function createCategory() {
         const name = newCategoryName.trim();
         if (!name) return;
-        await api("/api/categories", {
+        await api(`${API_BASE}/categories`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name, parent_id: selectedCategoryId }),
@@ -322,14 +334,14 @@
         setDocCategories([]);
         setPrimaryCategoryId("");
 
-        const detail = await api(`/api/documents/${doc.id}`);
+        const detail = await api(`${API_BASE}/documents/${doc.id}`);
         const cats = detail.categories || [];
         setDocCategories(cats);
         const primary = cats.find(c => Number(c.is_primary) === 1);
         setPrimaryCategoryId(primary ? String(primary.id) : (cats[0] ? String(cats[0].id) : ""));
 
         try {
-          const fileData = await api(`/api/file?path=${encodeURIComponent(doc.storage_key)}`);
+          const fileData = await api(`${API_BASE}/file?path=${encodeURIComponent(doc.storage_key)}`);
           setDocContent(fileData.content || "");
         } catch {
           setDocContent("");
@@ -338,20 +350,20 @@
 
       async function switchPrimaryCategory() {
         if (!selectedDoc || !primaryCategoryId) return;
-        await api(`/api/documents/${selectedDoc.id}/primary-category/${primaryCategoryId}`, { method: "PUT" });
+        await api(`${API_BASE}/documents/${selectedDoc.id}/primary-category/${primaryCategoryId}`, { method: "PUT" });
         setStatusText(`主分类已切换为：${primaryCategoryId}`);
         await onSelectDoc(selectedDoc);
       }
 
       async function saveDoc() {
         if (!selectedDoc) return;
-        await api(`/api/documents/${selectedDoc.id}`, {
+        await api(`${API_BASE}/documents/${selectedDoc.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ display_name: docName }),
         });
         if (docPath) {
-          await api("/api/file", {
+          await api(`${API_BASE}/file`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ path: docPath, content: docContent }),
@@ -363,7 +375,7 @@
 
       async function deleteDoc(doc) {
         if (!confirm(`确认删除文档：${doc.display_name || doc.filename} ?`)) return;
-        await api(`/api/documents/${doc.id}`, { method: "DELETE" });
+        await api(`${API_BASE}/documents/${doc.id}`, { method: "DELETE" });
         setStatusText(`已删除文档：${doc.id}`);
         if (selectedDoc?.id === doc.id) {
           setSelectedDoc(null);
@@ -381,7 +393,7 @@
         const fd = new FormData();
         fd.append("file", file);
         if (selectedCategoryId !== null) fd.append("category_id", String(selectedCategoryId));
-        await api("/api/documents/upload", { method: "POST", body: fd });
+        await api(`${API_BASE}/documents/upload`, { method: "POST", body: fd });
         setStatusText(`上传成功：${file.name}`);
         await loadDocs(1);
       }
