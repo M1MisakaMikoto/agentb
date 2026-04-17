@@ -62,7 +62,8 @@ DEFAULT_SETTINGS = {
     },
     "agent": {
         "memory_mode": "accumulate",
-        "memory_window_size": 3
+        "memory_window_size": 3,
+        "plan_auto_approve": True
     },
     "logging": {
         "enabled": True,

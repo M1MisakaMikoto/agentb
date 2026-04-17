@@ -22,15 +22,17 @@ from .subgraphs.tool_registry import (
     FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS,
     is_tool_allowed, get_allowed_tools, _write_tool_event
 )
+from .subgraphs.tool_executor import run_tool_execution
 from service.session_service.canonical import SegmentType
 from service.agent_service.service.plan_file_service import plan_file_service
 from service.agent_service.service.workspace_service import WorkspaceService
 from core.logging import console
+from singleton import get_workspace_service
 
 MAX_REPLAN_COUNT = 3
 MAX_MESSAGES = 10
 
-workspace_service = WorkspaceService()
+workspace_service = get_workspace_service()
 
 THINK_SYSTEM_PROMPT = """你是一个专业的软件工程师助手。当前正在执行一个任务计划中的某个步骤。
 
@@ -118,25 +120,34 @@ def build_initial_state(
 def check_state_v3(state: AgentState) -> Literal["analyze", "execute", "plan", "subagent", "done"]:
     if "execution_mode" not in state:
         return "analyze"
-    
-    if state.get("execution_mode") is None:
-        return "done"
-    
-    if state.get("execution_mode") == ExecutionMode.PLAN:
-        return "plan"
-    
+
     if state.get("active_subagent"):
         return "subagent"
-    
-    if state.get("has_tool_use", False):
-        return "execute"
-    
+
     if state.get("pending_tools"):
         return "execute"
-    
+
+    execution_mode = state.get("execution_mode")
+    if execution_mode is None:
+        return "done"
+
+    if execution_mode == ExecutionMode.PLAN:
+        plan = state.get("plan") or []
+        current_step = state.get("current_step", 0)
+        if not plan:
+            return "plan"
+        if current_step < len(plan):
+            return "execute"
+        if state.get("final_reply"):
+            return "done"
+        return "done"
+
+    if state.get("has_tool_use", False):
+        return "execute"
+
     if state.get("final_reply"):
         return "done"
-    
+
     return "done"
 
 
@@ -306,31 +317,37 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
     def plan_node(state: AgentState) -> dict:
         user_message = state["messages"][-1] if state["messages"] else ""
         workspace_id = state["workspace_id"]
-        
+        plan_auto_approve = True
+        if settings_service is not None:
+            try:
+                plan_auto_approve = bool(settings_service.get("agent:plan_auto_approve"))
+            except KeyError:
+                plan_auto_approve = True
+
         console.step("规划节点", "分析节点", user_message)
-        
+
         workspace_info = workspace_service.get_workspace_info(workspace_id)
         session_id = workspace_info.get("session_id", "default") if workspace_info else "default"
-        
+
         if llm_service:
             from .subgraphs.plan_graph import get_plan_system_prompt, parse_plan_from_text
-            
+
             system_prompt = get_plan_system_prompt("director_agent", settings_service)
-            
+
             messages = [{"role": "user", "content": f"请为以下任务生成详细的执行计划，包含2-5个步骤：\n\n{user_message}"}]
-            
+
             try:
                 response = llm_service.chat(messages, system_prompt=system_prompt)
-                
+
                 console.response_box(response)
-                
+
                 plan = parse_plan_from_text(response)
-                
+
                 for i, task in enumerate(plan):
                     task["id"] = i + 1
-                
+
                 console.task_list_box(plan)
-                
+
             except Exception as e:
                 console.warning(f"调用大模型失败: {e}，使用默认计划")
                 plan = [
@@ -347,9 +364,11 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
                 {"id": 3, "description": "执行实现", "phase": "implementation", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
                 {"id": 4, "description": "验证结果", "phase": "verification", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
             ]
-        
+
         plan_content = plan_file_service.format_plan_as_markdown(user_message, plan)
-        
+        if plan_auto_approve:
+            plan_content = plan_content.replace("*此计划由 Agent 自动生成，请审核后批准执行。*", "*此计划由 Agent 自动生成，已根据配置自动继续执行。*")
+
         create_result = plan_file_service.create_plan(
             session_id=session_id,
             workspace_id=workspace_id,
@@ -357,30 +376,39 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
             plan_steps=plan,
             metadata={"task_description": user_message}
         )
-        
+
         console.box("计划文件已创建", create_result.get("plan_file"))
-        
+
         if message_context:
             send_message = message_context.get("send_message")
             if send_message:
-                from service.session_service.canonical import MessageBuilder
-                
                 state_metadata = {
                     "execution_mode": "PLAN",
                     "plan_steps": len(plan),
-                    "plan_file": create_result.get("plan_file")
+                    "plan_file": create_result.get("plan_file"),
+                    "plan_auto_approve": plan_auto_approve,
                 }
                 send_message("", SegmentType.STATE_CHANGE, state_metadata)
                 send_message(plan_content, SegmentType.TEXT_DELTA)
-        
+
+        if plan_auto_approve:
+            console.decision_box("execute", "计划已生成，开始执行")
+            return {
+                "plan": plan,
+                "plan_file": create_result.get("plan_file"),
+                "current_step": 0,
+                "results": [],
+                "has_tool_use": True,
+                "final_reply": None,
+            }
+
         console.decision_box("done", "计划已生成，等待用户确认执行")
-        
         return {
             "plan": plan,
             "plan_file": create_result.get("plan_file"),
             "final_reply": plan_content
         }
-    
+
     return plan_node
 
 
@@ -1331,7 +1359,13 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
             step = state.get("current_step", 0)
             plan = state["plan"]
             task = plan[step]
-            
+            plan_auto_approve = True
+            if settings_service is not None:
+                try:
+                    plan_auto_approve = bool(settings_service.get("agent:plan_auto_approve"))
+                except KeyError:
+                    plan_auto_approve = True
+
             phase = task.get('phase', 'implementation')
             phase_names = {
                 'research': '研究阶段',
@@ -1340,71 +1374,76 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                 'verification': '验证阶段'
             }
             phase_name = phase_names.get(phase, phase)
-            
+
             console.step("执行节点", "规划节点", task['description'])
-            
+
             tool_name = task.get("tool") or "thinking"
             tool_args = task.get("args") or {}
-            
+            tool_history = state.get("tool_history", [])
+            previous_results = [
+                item.get("result") for item in tool_history
+                if item.get("result")
+            ]
+
             console.execution_box(
                 step + 1, len(plan), phase_name,
                 task['description'], tool_name, tool_args
             )
-            
-            if tool_name == "thinking":
-                tool_result = _execute_thinking_tool_direct(
-                    task_description=task.get("description", ""),
-                    llm_service=llm_service,
-                    message_context=message_context,
-                    parent_chain_messages=parent_chain_messages,
-                    current_conversation_messages=current_conversation_messages,
-                )
-            elif tool_name == "chat":
-                tool_result = _execute_chat_tool_direct(
-                    task_description=task.get("description", ""),
-                    llm_service=llm_service,
-                    message_context=message_context,
-                    parent_chain_messages=parent_chain_messages,
-                    current_conversation_messages=current_conversation_messages,
-                )
-            else:
-                tool_result = {"result": f"工具 {tool_name} 执行成功", "error": None}
-            
+
+            plan_message_context = dict(message_context or {})
+            if plan_auto_approve:
+                plan_message_context["plan_auto_approve"] = True
+
+            tool_result = run_tool_execution(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                workspace_id=workspace_id,
+                previous_calls=tool_history,
+                llm_service=llm_service,
+                token_callback=token_callback,
+                task_description=task.get("description", ""),
+                previous_results=previous_results,
+                agent_type=current_agent_type,
+                settings_service=settings_service,
+                message_context=plan_message_context,
+                auto_approve=plan_auto_approve,
+            )
+
             result_str = str(tool_result.get("result", ""))
-            task["status"] = "completed" if tool_result.get("result") else "failed"
+            task["status"] = "completed" if tool_result.get("error") is None else "failed"
             task["result"] = result_str
-            
+
             if phase == "research":
                 task["feedback"] = f"研究完成：{result_str[:100]}..."
             elif phase == "synthesis":
-                task["feedback"] = f"综合完成：制定了实现规范"
+                task["feedback"] = "综合完成：制定了实现规范"
             elif phase == "implementation":
                 task["feedback"] = f"实现完成：{result_str[:100]}..."
             elif phase == "verification":
                 task["feedback"] = f"验证完成：{result_str[:100]}..."
-            
+
             console.result_box(task['status'], result_str[:200], task['feedback'])
-            
+
             new_results = state.get("results", []) + [{
                 "task": task,
                 "result": tool_result
             }]
-            
-            new_tool_history = state.get("tool_history", []) + [{
+
+            new_tool_history = tool_history + [{
                 "tool": tool_name,
                 "args": tool_args,
                 "result": tool_result.get("result")
             }]
-            
+
             new_current_conv_msgs = list(current_conversation_messages)
             new_current_conv_msgs.append({
                 "role": "assistant",
                 "content": f"[工具执行: {tool_name}]\n结果: {result_str[:1000]}"
             })
-            
+
             has_more_steps = step + 1 < len(plan)
             is_chat_tool = tool_name == "chat"
-            
+
             if is_chat_tool:
                 console.decision_box("done", "chat 工具输出最终回复，结束循环")
                 return {
@@ -1414,18 +1453,31 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                     "current_conversation_messages": new_current_conv_msgs,
                     "plan": plan,
                     "has_tool_use": False,
-                    "final_reply": result_str
+                    "final_reply": result_str,
+                    "execution_mode": None,
                 }
-            
-            console.decision_box("execute" if has_more_steps else "done", "继续执行或完成")
-            
+
+            if has_more_steps:
+                console.decision_box("execute", "继续执行下一个计划步骤")
+                return {
+                    "current_step": step + 1,
+                    "results": new_results,
+                    "tool_history": new_tool_history,
+                    "current_conversation_messages": new_current_conv_msgs,
+                    "plan": plan,
+                    "has_tool_use": True,
+                }
+
+            summary_description = "请根据以上计划执行结果，给用户一个简洁的最终总结回复。"
+            console.decision_box("execute", "计划步骤完成，生成最终回复")
             return {
                 "current_step": step + 1,
                 "results": new_results,
                 "tool_history": new_tool_history,
                 "current_conversation_messages": new_current_conv_msgs,
                 "plan": plan,
-                "has_tool_use": has_more_steps
+                "pending_tools": [{"tool": "chat", "args": {"description": summary_description}}],
+                "has_tool_use": True,
             }
         
         console.step("执行节点", "无", "没有任务可执行")
@@ -1489,22 +1541,31 @@ def create_subagent_node(llm_service=None, token_callback=None, settings_service
 
 def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_mode: str = "accumulate", window_size: int = 3, settings_service=None, message_context=None):
     graph = StateGraph(AgentState)
-    
+    plan_auto_approve = True
+    if settings_service is not None:
+        try:
+            plan_auto_approve = bool(settings_service.get("agent:plan_auto_approve"))
+        except KeyError:
+            plan_auto_approve = True
+
     graph.add_node("analyze", create_analyze_node(llm_service, message_context, settings_service))
     graph.add_node("plan", create_plan_node(llm_service, token_callback, settings_service, message_context))
     graph.add_node("execute", create_execute_node(llm_service, token_callback, settings_service, message_context))
     graph.add_node("subagent", create_subagent_node(llm_service, token_callback, settings_service, message_context))
-    
+
     graph.set_entry_point("analyze")
-    
+
     graph.add_conditional_edges("analyze", route_after_analyze, {
         "plan": "plan",
         "execute": "execute",
         "subagent": "subagent",
         "done": END
     })
-    
-    graph.add_edge("plan", END)
+
+    if plan_auto_approve:
+        graph.add_edge("plan", "execute")
+    else:
+        graph.add_edge("plan", END)
     graph.add_edge("subagent", "execute")
     graph.add_conditional_edges("execute", check_state_v3, {
         "analyze": "analyze",
@@ -1513,7 +1574,7 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         "subagent": "subagent",
         "done": END
     })
-    
+
     return graph.compile()
 
 

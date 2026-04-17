@@ -2,6 +2,8 @@ from typing import List, Dict, Optional, Any
 
 from langgraph.graph import StateGraph, END
 
+from singleton import get_workspace_service
+
 from .director_agent import build_initial_state, create_orchestrator_graph_v3
 from .decision.complexity_analyzer import ExecutionMode
 from .subgraphs import run_tool_execution
@@ -107,6 +109,7 @@ def create_child_agent_graph(
             tool_args=tool_args,
             workspace_id=state["workspace_id"],
             previous_calls=state.get("tool_history", []),
+            workspace_service=get_workspace_service(),
             llm_service=llm_service,
             token_callback=token_callback,
             task_description=tool_args.get("description", ""),

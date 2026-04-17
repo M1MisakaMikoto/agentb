@@ -44,6 +44,15 @@ class Colors:
     MAGENTA = "\033[35m"
 
 
+def safe_print(text: str):
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        sanitized = text.encode(encoding, errors="replace").decode(encoding)
+        print(sanitized)
+
+
 def get_timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -423,17 +432,17 @@ async def run_single_test(
                 if event_type == "thinking_delta":
                     content = data.get("content", "")
                     result.thinking_content += content
-                    print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
+                    safe_print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
                 
                 elif event_type == "chat_delta":
                     content = data.get("content", "")
                     result.chat_content += content
-                    print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
+                    safe_print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
                 
                 elif event_type == "text_delta":
                     content = data.get("content", "")
                     result.text_content += content
-                    print(f"{Colors.CYAN}[text] {content}{Colors.ENDC}")
+                    safe_print(f"{Colors.CYAN}[text] {content}{Colors.ENDC}")
                 
                 elif event_type == "tool_call":
                     metadata = data.get("metadata", {})
@@ -468,11 +477,11 @@ async def run_single_test(
                 elif event_type == "error":
                     error_content = data.get("content", "Unknown error")
                     result.errors.append(error_content)
-                    print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
+                    safe_print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
                 
                 else:
                     print(f"{Colors.BLUE}[{event_type}] {json.dumps(data, ensure_ascii=False)[:100]}...{Colors.ENDC}")
-                    
+
             except json.JSONDecodeError as e:
                 print(f"{Colors.RED}JSON parse error: {e}{Colors.ENDC}")
 
@@ -480,64 +489,7 @@ async def run_single_test(
     log_raw("")
 
     if result.plan_status == "waiting_approval" and auto_approve_plan and workspace_id:
-        print(f"\n{Colors.CYAN}[4] Plan waiting for approval, auto-approving...{Colors.ENDC}")
-        
-        plan_data = await api.get_plan_status(workspace_id)
-        print(f"{Colors.DIM}    Plan status: {plan_data}{Colors.ENDC}")
-        
-        approve_result = await api.approve_plan(workspace_id, approved=True)
-        print(f"{Colors.GREEN}    Plan approved: {approve_result}{Colors.ENDC}")
-        
-        log_raw("## Plan Auto-Approved")
-        log_raw(f"```json\n{json.dumps(approve_result, ensure_ascii=False, indent=2)}\n```")
-        
-        print(f"\n{Colors.CYAN}[5] Continuing execution after approval...{Colors.ENDC}\n")
-        
-        async for item in api.stream_message(conversation_id):
-            raw_line = item.get("raw_line", "")
-            
-            if not raw_line.strip():
-                continue
-
-            log_raw(raw_line)
-
-            if raw_line.startswith(": heartbeat"):
-                continue
-
-            if raw_line.startswith("data: "):
-                result.event_count += 1
-                json_str = raw_line[6:]
-                
-                try:
-                    data = json.loads(json_str)
-                    event_type = data.get("type", "unknown")
-                    
-                    if event_type == "chat_delta":
-                        content = data.get("content", "")
-                        result.chat_content += content
-                        print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
-                    
-                    elif event_type == "thinking_delta":
-                        content = data.get("content", "")
-                        result.thinking_content += content
-                        print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
-                    
-                    elif event_type == "tool_call":
-                        metadata = data.get("metadata", {})
-                        tool_name = metadata.get("tool_name", "unknown")
-                        result.tool_calls.append(tool_name)
-                        print(f"{Colors.MAGENTA}[tool_call] {tool_name}{Colors.ENDC}")
-                    
-                    elif event_type == "done":
-                        print(f"{Colors.GREEN}[done] Execution completed{Colors.ENDC}")
-                    
-                    elif event_type == "error":
-                        error_content = data.get("content", "Unknown error")
-                        result.errors.append(error_content)
-                        print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
-                        
-                except json.JSONDecodeError:
-                    pass
+        print(f"\n{Colors.YELLOW}[4] Plan approval flow is no longer used in this test path{Colors.ENDC}")
 
     log_raw("## Test Result Summary")
     summary = result.to_dict()
