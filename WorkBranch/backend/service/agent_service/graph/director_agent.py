@@ -1263,7 +1263,7 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
             
             if message_context:
                 send_message = message_context.get("send_message")
-                if send_message:
+                if send_message and tool_name not in SPECIAL_TOOLS:
                     result_content = tool_result.get("result")
                     if result_content is None:
                         result_preview = ""
