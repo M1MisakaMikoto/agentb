@@ -70,7 +70,7 @@ class IntentAnalysis(TypedDict):
 
 
 class NextAction(TypedDict, total=False):
-    kind: Literal["tool", "reply", "step_done", "blocked"]
+    kind: Literal["tool", "reply", "step_done", "blocked", "enter_plan"]
     tool_name: Optional[str]
     tool_args: Optional[dict]
     reply: Optional[str]

@@ -9,7 +9,7 @@ class CompactionState(TypedDict):
     summary: str
 
 
-class ToolExecutionState(TypedDict):
+class ToolExecutionState(TypedDict, total=False):
     """工具执行子图状态"""
     tool_name: str
     tool_args: dict
@@ -22,3 +22,6 @@ class ToolExecutionState(TypedDict):
     task_description: str
     previous_results: List[str]
     agent_type: str
+    auto_approve: bool
+    execution_mode: str
+    mode_reason: str

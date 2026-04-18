@@ -175,12 +175,22 @@ def _load_plan_content_for_state(state: AgentState) -> tuple[Optional[str], Opti
     return plan_result.get("content"), plan_result.get("plan_file")
 
 
+def _mode_name(value) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, ExecutionMode):
+        return value.name
+    if hasattr(value, "name"):
+        return getattr(value, "name")
+    return str(value).split(".")[-1].upper()
+
+
 def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute", "plan", "done"]:
     if state.get("pending_tools"):
         return "execute"
 
     execution_mode = state.get("execution_mode")
-    if execution_mode == ExecutionMode.PLAN:
+    if _mode_name(execution_mode) == "PLAN":
         if state.get("final_reply"):
             return "done"
         return "plan"
@@ -338,15 +348,14 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         current_todo_index = state.get("current_todo_index", 0) or 0
         todo_block = _format_todo_prompt_block(todos, current_todo_index)
         todo_intro = f"\n\n{todo_block}\n\n" if todo_block else ""
-        plan_content, plan_file = _load_plan_content_for_state(state)
+        plan_content, _ = _load_plan_content_for_state(state)
         plan_intro = ""
         if plan_content:
-            plan_file_display = plan_file or "plan.md"
+            plan_file_display = "plan.md"
             plan_intro = (
                 f"\n\n当前工作区存在计划文件: {plan_file_display}\n"
                 "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，"
-                "那么你应主动阅读 plan.md，并严格遵守该计划执行；否则不要因为计划文件存在就默认按计划执行。\n"
-                f"[plan.md]\n{plan_content}\n[/plan.md]\n"
+                "那么你应主动使用 read_file 读取该 plan.md，再严格遵守该计划执行；否则不要因为计划文件存在就默认按计划执行。\n"
             )
         current_task = (
             f"原始用户请求: {user_message}\n\n"
@@ -360,18 +369,14 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             "注意：只有当 todo 列表非空时，你才应围绕 todo 执行；如果当前没有 todo 且任务明显多步骤/阶段化，可以先使用 update_todo 写入完整 todo 列表。"
             "如果 todo 列表非空，你应继续通过 update_todo 覆盖更新完整 todo 列表和 doingIdx；如果任务拆分发生变化，也应通过 update_todo 一次性重写。"
             "默认按 DIRECT 执行；如果你在执行过程中发现任务明显复杂、多阶段、跨文件、需要先输出方案，才调用 switch_execution_mode 把模式切到 PLAN。"
-            "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应主动阅读 plan.md，并严格遵守该计划执行。"
+            "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应先使用 read_file 读取该 plan.md，再严格遵守该计划执行。"
             "除非用户明确要求查看计划文件，否则不要为了展示而读取 plan.md。"
             "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果当前 todo 已完成，返回 kind=step_done；如果全部 todo 都已完成，返回 kind=reply；如果无法继续，返回 kind=blocked。"
             "不要输出 chat 工具；最终回复请直接放在 reply 字段。"
         )
         system_prompt = """你现在的职责是作为 branch code，围绕当前用户任务做出下一步执行决策，并在需要时调用合适的工具完成工作。
 
-默认按 DIRECT 执行。只有当你在执行过程中发现任务明显复杂、多阶段、跨文件、需要先输出方案，或用户明确要求先给方案/计划再执行时，才调用 switch_execution_mode 把模式切到 PLAN。
-
-当任务明显是多步骤、存在阶段划分，或者执行中发现当前任务过大/过难时，你应该使用 todo 工具维护任务列表，而不是硬撑着一次做完。
-
-如果历史对话中上一条提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应主动阅读 plan.md，并严格遵守该计划执行；否则不要因为工作区里存在 plan.md 就默认按计划执行。
+如果历史对话中上一条提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应先使用 read_file 读取该 plan.md，再严格遵守该计划执行；否则不要因为工作区里存在 plan.md 就默认按计划执行。
 
 你必须且只能返回以下四种 JSON 结构之一，不要输出额外文本：
 
@@ -649,8 +654,8 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
         )
         plan_file_path = create_result.get("plan_file")
         final_reply = (
-            f"已生成方案，计划文件为 {plan_file_path}。\n"
-            f"如果你同意方案，请直接回复“可以”或“同意方案”，我会读取 plan.md 并严格按照方案继续执行。\n\n"
+            "已生成方案，计划文件为 plan.md。\n"
+            "如果你同意方案，请直接回复“可以”或“同意方案”，我会读取 plan.md 并严格按照方案继续执行。\n\n"
             f"{plan_content}"
         )
 
@@ -1506,7 +1511,7 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
             tool_success = tool_result.get("error") is None
             tool_error = tool_result.get("error")
 
-            if str(execution_mode).upper().endswith("DIRECT") and tool_name != "chat":
+            if _mode_name(execution_mode) == "DIRECT" and tool_name != "chat":
                 direct_update = {
                     "pending_tools": [],
                     "tool_history": new_tool_history,
@@ -1541,6 +1546,10 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                             "mode_reason": tool_result.get("mode_reason") or "agent 主动切换到 PLAN",
                             "pending_tools": [],
                             "has_tool_use": False,
+                            "next_action": {
+                                "kind": "enter_plan",
+                                "task_description": tool_result.get("mode_reason") or "切换到 PLAN",
+                            },
                         })
                     elif mode_value == "DIRECT":
                         direct_update.update({
@@ -1598,9 +1607,14 @@ def route_after_todo_review(_state: AgentState) -> str:
 
 
 def route_after_execute(state: AgentState) -> str:
-    if state.get("execution_mode") == ExecutionMode.PLAN and not state.get("pending_tools"):
+    next_action = state.get("next_action") or {}
+    mode_name = _mode_name(state.get("execution_mode"))
+    if next_action.get("kind") == "enter_plan":
         return "plan"
-    if state.get("execution_mode") == ExecutionMode.DIRECT and not state.get("pending_tools"):
+
+    if mode_name == "PLAN" and not state.get("pending_tools"):
+        return "plan"
+    if mode_name == "DIRECT" and not state.get("pending_tools"):
         return "todo_review"
     return check_state_v3(state)
 
