@@ -67,10 +67,10 @@ TEST_CASES: Dict[str, Dict[str, any]] = {
         "forbidden_reply_terms": ["ReAct", "todo", "工具", "执行代理", "状态机", "计划文件"],
     },
     "plan": {
-        "question": "帮我设计并实现一个简单的用户登录功能，包括前端表单和后端验证",
-        "description": "PLAN 模式 - 复杂开发任务",
-        "expected_mode": "PLAN",
-        "expected_tools": ["thinking", "read_file", "write_file", "chat"],
+        "question": "请先为“实现一个简单的用户登录功能”制定一个简短计划，然后只读取当前工作区结构，说明如果后续真的要实现它，应该优先查看哪些文件。不要修改任何文件，不要创建新文件，也不要真正实现登录功能，最后给出简短结论。",
+        "description": "PLAN 模式 - 先规划再轻量执行",
+        "expected_modes": ["PLAN", "DIRECT"],
+        "forbidden_tools": ["write_file", "delete_file", "create_dir"],
     },
     "search": {
         "question": "请使用 explore_internet 工具搜索市政设施管理规定的相关法规",
@@ -170,6 +170,7 @@ class TestResult:
         self.workspace_id: Optional[str] = None
         self.conversation_id: Optional[str] = None
         self.detected_mode: Optional[str] = None
+        self.detected_modes: List[str] = []
         self.raw_lines: List[str] = []
 
     def to_dict(self) -> dict:
@@ -451,6 +452,8 @@ async def run_single_test(
                     execution_mode = metadata.get("execution_mode")
                     if execution_mode:
                         result.detected_mode = execution_mode
+                        if execution_mode not in result.detected_modes:
+                            result.detected_modes.append(execution_mode)
                         print(f"{Colors.YELLOW}[state] execution_mode: {execution_mode}{Colors.ENDC}")
                     plan_status = metadata.get("plan_status")
                     if plan_status:
@@ -524,15 +527,22 @@ def print_summary(results: List[TestResult]):
 
     all_passed = True
     for r in results:
-        mode_match = r.detected_mode == r.test_case.get("expected_mode") if r.detected_mode else False
+        expected_modes = r.test_case.get("expected_modes")
+        if expected_modes:
+            mode_match = all(mode in r.detected_modes for mode in expected_modes)
+            expected_display = "->".join(expected_modes)
+            detected = "->".join(r.detected_modes) if r.detected_modes else (r.detected_mode or "N/A")
+        else:
+            mode_match = r.detected_mode == r.test_case.get("expected_mode") if r.detected_mode else False
+            expected_display = r.test_case.get("expected_mode")
+            detected = r.detected_mode or "N/A"
         status = f"{Colors.GREEN}PASS{Colors.ENDC}" if mode_match and not r.errors else f"{Colors.RED}FAIL{Colors.ENDC}"
         if not (mode_match and not r.errors):
             all_passed = False
-        
+
         tools_str = ", ".join(r.tool_calls[:3]) + ("..." if len(r.tool_calls) > 3 else "")
-        detected = r.detected_mode or "N/A"
-        
-        print(f"| {r.mode:<10} | {r.test_case.get('expected_mode'):<10} | {detected:<10} | {r.event_count:<8} | {tools_str:<30} | {status} |")
+
+        print(f"| {r.mode:<10} | {expected_display:<10} | {detected:<10} | {r.event_count:<8} | {tools_str:<30} | {status} |")
         
         if r.errors:
             print(f"  {Colors.RED}Errors: {r.errors}{Colors.ENDC}")

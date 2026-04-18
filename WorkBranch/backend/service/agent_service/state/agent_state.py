@@ -92,12 +92,9 @@ class AgentState(TypedDict):
     messages: List[Any]
     workspace_id: str
     plan: List[Task]
-    current_step: int
     results: List[Any]
-    plan_failed: bool
     explore_result: Optional[dict]
     tool_history: List[ToolCall]
-    replan_count: int
     agent_type: Optional[str]
     is_root_graph: Optional[bool]
     intent_analysis: Optional[IntentAnalysis]
@@ -111,18 +108,14 @@ class AgentState(TypedDict):
     has_tool_use: Optional[bool]
     final_reply: Optional[str]
     plan_file: Optional[str]
+    plan_content: Optional[str]
+    forced_execution_mode: Optional[str]
     last_tool_result: Optional[str]
     last_tool_name: Optional[str]
     last_tool_success: Optional[bool]
     last_tool_error: Optional[str]
     iteration_count: Optional[int]
     max_iterations: Optional[int]
-    current_step_goal: Optional[str]
-    current_step_done_when: Optional[str]
-    current_step_iteration_count: Optional[int]
-    step_max_iterations: Optional[int]
-    step_status: Optional[str]
-    replan_reason: Optional[str]
     todos: Optional[List[TodoItem]]
     current_todo_index: Optional[int]
     current_todo_goal: Optional[str]

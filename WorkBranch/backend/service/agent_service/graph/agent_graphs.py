@@ -4,7 +4,7 @@ from langgraph.graph import StateGraph, END
 
 from singleton import get_workspace_service
 
-from .director_agent import build_initial_state, create_orchestrator_graph_v3
+from .director_agent import build_initial_state, create_orchestrator_graph_v3, _start_fresh_direct_run_from_plan
 from .decision.complexity_analyzer import ExecutionMode
 from .subgraphs import run_tool_execution
 from ..persistence import PersistenceService
@@ -254,6 +254,20 @@ def run_agent_graph(
         message_context=message_context,
     )
     final_state = graph.invoke(initial_state)
+
+    if agent_type == "director_agent" and final_state.get("execution_mode") == ExecutionMode.PLAN and final_state.get("plan_file"):
+        final_state = _start_fresh_direct_run_from_plan(
+            user_message=user_message,
+            workspace_id=workspace_id,
+            llm_service=llm_service,
+            token_callback=token_callback,
+            memory_mode=memory_mode,
+            window_size=window_size,
+            settings_service=settings_service,
+            message_context=message_context,
+            parent_chain_messages=parent_chain_messages,
+            current_conversation_messages=current_conversation_messages,
+        )
 
     if persist_state:
         persistence.save(workspace_id, final_state)
