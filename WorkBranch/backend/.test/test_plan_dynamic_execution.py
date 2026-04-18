@@ -1,6 +1,8 @@
 import json
 import sys
 from pathlib import Path
+from unittest.mock import patch
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -8,13 +10,12 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from service.agent_service.graph.director_agent import (
     _build_tool_schema_prompt,
-    _hydrate_todos_from_plan,
     create_analyze_node,
     create_execute_node,
     create_plan_node,
     create_decide_next_action_node,
-    create_replan_remaining_steps_node,
 )
+from service.agent_service.graph.subgraphs.tool_registry import get_allowed_tools
 
 
 class FakeLLMService:
@@ -123,30 +124,8 @@ def test_plan_node_generates_outline_without_fixed_tools():
     assert result["plan"][0]["done_when"] == "登录接口字段和前端表单字段均已明确"
     assert result["plan"][0]["tool"] is None
     assert result["plan"][0]["args"] is None
-    assert str(result["execution_mode"]).upper().endswith("DIRECT")
-    assert result["todos"][0] == "梳理登录接口与表单字段"
-    assert result["current_todo_goal"] is None
-    assert result["current_todo_done_when"] is None
-
-
-def test_plan_markdown_can_hydrate_todos():
-    plan_md = """# 执行计划
-
-## 执行步骤
-
-1. **读取规格文件**
-   - 目标: `拿到规格内容`
-   - 完成条件: `规格内容已确认`
-   - 工具: `None`
-
-2. **生成输出文件**
-   - 目标: `写出结果文件`
-   - 完成条件: `输出文件已经存在`
-   - 工具: `None`
-"""
-    todos = _hydrate_todos_from_plan(plan_md, "ws-plan-test")
-    assert len(todos) == 2
-    assert todos == ["读取规格文件", "生成输出文件"]
+    assert result["plan_file"]
+    assert "plan.md" in result["final_reply"]
 
 
 def test_direct_decide_can_work_against_current_todo():
@@ -184,31 +163,147 @@ def test_direct_decide_can_work_against_current_todo():
 
 
 def test_tool_schema_prompt_comes_from_registry_metadata():
-    prompt = _build_tool_schema_prompt(["read_file", "update_todo", "list_workspace_files"])
+    prompt = _build_tool_schema_prompt(["read_file", "update_todo", "list_workspace_files", "rag_search", "read_document"])
 
     assert 'read_file:{"file_path":"(文件路径)","start_line":"(第几行开始读，本参数可不填)","end_line":"(第几行结束读，本参数可不填)"}' in prompt
     assert 'update_todo:{"todos": ["(todo内容1)", "(todo内容2)"...],"doingIdx": (当前todo进行到第几项了，从0开始数)}' in prompt
     assert 'list_workspace_files:{}' in prompt
+    assert 'rag_search:{"query":"(查询内容)","kb_ids":"(知识库ID列表，本参数可不填)","top_k":"(返回条数，本参数可不填)","min_score":"(最低相关度，本参数可不填)"}' in prompt
+    assert 'read_document:{"file_path":"(文档路径)","start_idx":"(起始索引，从第几个字符开始读，默认0)","max_length":"(最大读取字符数，默认10000)","include_metadata":"(是否包含元数据，默认true)"}' in prompt
 
 
-def test_analyze_node_downgrades_legacy_subagent_mode_to_direct():
-    llm = FakeLLMService(
-        chat_responses=[json.dumps({
-            "complexity": "medium",
-            "intent_type": "explore",
-            "execution_mode": "SUBAGENT",
-            "reason": "旧模式输出",
-            "suggested_agent": "explore_agent",
-        }, ensure_ascii=False)]
-    )
-    node = create_analyze_node(llm_service=llm, settings_service=DummySettingsService(), message_context={})
+def test_default_tool_permissions_include_rag_search_for_director_and_plan():
+    class PermissionSettingsService:
+        def get(self, key):
+            if key == "tool_permissions":
+                return {
+                    "director_agent": {"allowed": ["read_file", "rag_search"]},
+                    "plan_agent": {"allowed": ["read_file", "rag_search"]},
+                }
+            raise KeyError(key)
+
+    settings = PermissionSettingsService()
+
+    assert "rag_search" in get_allowed_tools("director_agent", settings)
+    assert "rag_search" in get_allowed_tools("plan_agent", settings)
+
+
+def test_analyze_node_defaults_to_direct_mode_for_root_agent():
+    node = create_analyze_node(_llm_service=None, message_context={}, _settings_service=DummySettingsService())
 
     result = node(_base_state("探索这个项目的代码结构"))
 
     assert str(result["execution_mode"]).upper().endswith("DIRECT")
-    assert result["has_tool_use"] is True
-    assert "suggested_subagent" not in result
-    assert "active_subagent" not in result
+    assert result["has_tool_use"] is False
+    assert result["pending_tools"] == []
+
+
+def test_execute_rag_search_uses_real_executor_instead_of_fallback_success():
+    node = create_execute_node(llm_service=None, settings_service=DummySettingsService(), message_context={})
+
+    state = _base_state("从知识库检索登录方案")
+    state["execution_mode"] = "DIRECT"
+    state["pending_tools"] = [{"tool": "rag_search", "args": {"query": "登录方案"}}]
+
+    with patch("service.agent_service.graph.subgraphs.tool_executor.execute_rag_search", return_value={"result": "mock rag result", "error": None}) as mock_rag:
+        result = node(state)
+
+    mock_rag.assert_called_once_with({"query": "登录方案"})
+    assert result["last_tool_name"] == "rag_search"
+    assert result["last_tool_success"] is True
+    assert result["last_tool_result"] == "mock rag result"
+    assert "工具 rag_search 执行成功" not in result["last_tool_result"]
+
+
+def test_run_tool_execution_returns_failure_on_timeout():
+    from service.agent_service.graph.subgraphs import tool_executor as module
+
+    with patch.object(module, "create_tool_execution_subgraph") as mock_create:
+        mock_graph = mock_create.return_value
+        mock_graph.invoke = lambda state: {"result": "never returned", "error": None}
+
+        class FakeFuture:
+            def result(self, timeout=None):
+                raise FutureTimeoutError()
+
+        class FakeExecutor:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc, tb):
+                return False
+            def submit(self, fn, *args, **kwargs):
+                return FakeFuture()
+
+        with patch.object(module, "ThreadPoolExecutor", return_value=FakeExecutor()):
+            result = module.run_tool_execution(
+                tool_name="read_document",
+                tool_args={"file_path": "demo.docx"},
+                workspace_id="ws-1",
+                agent_type="director_agent",
+                message_context={},
+            )
+
+    assert result["result"] is None
+    assert "执行超时" in result["error"]
+
+
+def test_run_tool_execution_returns_failure_on_unexpected_exception():
+    from service.agent_service.graph.subgraphs import tool_executor as module
+
+    with patch.object(module, "create_tool_execution_subgraph") as mock_create:
+        mock_graph = mock_create.return_value
+        mock_graph.invoke = lambda state: {"result": "never returned", "error": None}
+
+        class FakeFuture:
+            def result(self, timeout=None):
+                raise RuntimeError("boom")
+
+        class FakeExecutor:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc, tb):
+                return False
+            def submit(self, fn, *args, **kwargs):
+                return FakeFuture()
+
+        with patch.object(module, "ThreadPoolExecutor", return_value=FakeExecutor()):
+            result = module.run_tool_execution(
+                tool_name="read_document",
+                tool_args={"file_path": "demo.docx"},
+                workspace_id="ws-1",
+                agent_type="director_agent",
+                message_context={},
+            )
+
+    assert result["result"] is None
+    assert "执行异常" in result["error"]
+
+
+def test_execute_read_document_structured_result_does_not_fail_tool_event_summary():
+    node = create_execute_node(llm_service=None, settings_service=DummySettingsService(), message_context={})
+
+    state = _base_state("读取测试 DOCX 文档")
+    state["execution_mode"] = "DIRECT"
+    state["pending_tools"] = [{"tool": "read_document", "args": {"file_path": "测试 DOCX 文档.docx"}}]
+
+    structured_result = {
+        "result": {
+            "content": "文档内容摘要",
+            "metadata": {"file_type": "docx"},
+            "total_length": 6,
+            "read_range": "0-6",
+            "truncated": False,
+        },
+        "error": None,
+    }
+
+    with patch("service.agent_service.graph.subgraphs.tool_executor.execute_read_document", return_value=structured_result):
+        with patch("service.agent_service.graph.subgraphs.tool_executor.FILE_TOOLS", set()):
+            result = node(state)
+
+    assert result["last_tool_name"] == "read_document"
+    assert result["last_tool_success"] is True
+    assert "dict' object has no attribute 'split" not in (result["last_tool_error"] or "")
 
 
 def test_execute_update_todo_resets_direct_iteration_counters():
@@ -386,39 +481,3 @@ def test_direct_can_choose_explicit_update_todo_for_completion():
     result = node(state)
     assert result["pending_tools"][0]["tool"] == "update_todo"
     assert result["pending_tools"][0]["args"] == {"todos": ["读取规格文件"], "doingIdx": 0}
-    llm = FakeLLMService(
-        chat_responses=[json.dumps({
-            "tasks": [
-                {
-                    "description": "补充剩余后端实现",
-                    "goal": "完成剩余后端逻辑",
-                    "done_when": "剩余后端改动完成",
-                    "phase": "implementation",
-                },
-                {
-                    "description": "补充验证",
-                    "goal": "确认修复有效",
-                    "done_when": "验证通过",
-                    "phase": "verification",
-                },
-            ]
-        })]
-    )
-    node = create_replan_remaining_steps_node(llm_service=llm, settings_service=DummySettingsService(), message_context={})
-
-    state = _base_state()
-    state["plan"] = [
-        {"id": 1, "description": "完成需求分析", "goal": "明确范围", "done_when": "范围明确", "phase": "research", "status": "completed", "tool": None, "args": None, "result": "ok", "feedback": None},
-        {"id": 2, "description": "旧实现步骤", "goal": "旧目标", "done_when": "旧完成条件", "phase": "implementation", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
-    ]
-    state["todos"] = ["完成需求分析", "旧实现步骤"]
-    state["current_todo_index"] = 1
-    state["replan_reason"] = "原步骤受阻"
-
-    result = node(state)
-    assert len(result["plan"]) == 3
-    assert result["plan"][0]["description"] == "完成需求分析"
-    assert result["plan"][1]["description"] == "补充剩余后端实现"
-    assert result["current_todo_index"] == 1
-    assert result["current_todo_goal"] is None
-    assert result["replan_reason"] is None

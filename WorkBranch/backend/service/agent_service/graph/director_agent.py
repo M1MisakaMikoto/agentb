@@ -1467,7 +1467,10 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
         if pending_tools:
             tool_name = pending_tools[0].get("tool")
             tool_args = pending_tools[0].get("args", {})
-            task_description = tool_args.get("description", "")
+            task_description = (
+                (state.get("next_action") or {}).get("task_description")
+                or tool_args.get("description", "")
+            )
 
             console.step("执行节点", "分析节点", f"执行工具: {tool_name}")
 

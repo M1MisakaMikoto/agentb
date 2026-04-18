@@ -14,8 +14,11 @@ import fnmatch
 
 from ...state import ToolExecutionState, ToolCall
 from ...tools.todo_tools import update_todo
+from ...tools.rag_tool import execute_rag_search
+from ...tools.document_tools import execute_read_document
+from ...tools.sql_tools import execute_sql_query
 from .tool_registry import (
-    FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS,
+    FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS, SQL_TOOLS,
     generate_tool_prompt, is_tool_allowed, get_allowed_tools, _write_tool_event
 )
 from service.session_service.canonical import SegmentType
@@ -46,6 +49,37 @@ CHAT_SYSTEM_PROMPT = """你是一个专业的软件工程师助手。当前需�
 - 直接回答用户问题
 - 不要输出思考过程，只输出最终回复
 - 使用友好、专业的语气"""
+
+TOOL_EXECUTION_TIMEOUT_SECONDS = 30
+
+
+def _build_tool_failure_result(
+    tool_name: str,
+    error: str,
+    *,
+    message_context: dict | None = None,
+    conversation_id: str | None = None,
+    task_description: str = "",
+    tool_args: dict | None = None,
+) -> dict:
+    tool_result = {"result": None, "error": error}
+    if message_context:
+        send_message = message_context.get("send_message")
+        if send_message and tool_name not in SPECIAL_TOOLS:
+            send_message("", SegmentType.TOOL_RES, {
+                "tool_name": tool_name,
+                "result": None,
+                "error": error,
+                "success": False,
+            })
+    _write_tool_event(
+        conversation_id,
+        tool_name,
+        "failed",
+        task_description=task_description,
+        error=error,
+    )
+    return tool_result
 
 
 def check_permission(state: ToolExecutionState, workspace_service=None, settings_service=None) -> dict:
@@ -149,12 +183,12 @@ def deny_execution(state: ToolExecutionState, message_context: dict = None) -> d
 def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=None, token_callback: Optional[Callable[[str], None]] = None, message_context: dict = None) -> dict:
     """执行工具"""
     console.section("ToolExec 执行工具")
-    
+
     if message_context:
         cancel_check = message_context.get("cancel_check")
         if cancel_check:
             cancel_check()
-    
+
     tool_name = state["tool_name"]
     tool_args = state["tool_args"].copy()
     if "file_name" in tool_args and "file_path" not in tool_args and "path" not in tool_args:
@@ -172,9 +206,10 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
     console.info(f"参数: {tool_args}")
     console.info(f"任务描述: {task_description}")
     console.info(f"之前结果数量: {len(previous_results)}")
-    
-    if message_context:
-        send_message = message_context.get("send_message")
+
+    send_message = message_context.get("send_message") if message_context else None
+
+    try:
         if send_message and tool_name not in SPECIAL_TOOLS:
             send_message("", SegmentType.TOOL_CALL, {
                 "tool_name": tool_name,
@@ -182,109 +217,127 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
                 "task_description": task_description
             })
 
-    _write_tool_event(
-        conversation_id,
-        tool_name,
-        "started",
-        task_description=task_description,
-    )
+        _write_tool_event(
+            conversation_id,
+            tool_name,
+            "started",
+            task_description=task_description,
+        )
 
-    if tool_name in FILE_TOOLS and workspace_service:
-        path_key = "path" if "path" in tool_args else "file_path"
-        target_path = tool_args.get(path_key) or tool_args.get("directory")
+        if tool_name in FILE_TOOLS and workspace_service:
+            path_key = "path" if "path" in tool_args else "file_path"
+            target_path = tool_args.get(path_key) or tool_args.get("directory")
 
-        if target_path:
-            allowed, resolved_path = workspace_service.resolve_path(workspace_id, target_path)
-            if allowed:
-                if "path" in tool_args:
-                    tool_args["path"] = resolved_path
-                elif "file_path" in tool_args:
-                    tool_args["file_path"] = resolved_path
-                elif "directory" in tool_args:
-                    tool_args["directory"] = resolved_path
-                console.info(f"路径已解析: {resolved_path}")
-            else:
-                console.error(f"路径解析失败: {resolved_path}")
-                return {"result": None, "error": resolved_path}
-        elif tool_name in {"list_dir", "create_dir"}:
+            if target_path:
+                allowed, resolved_path = workspace_service.resolve_path(workspace_id, target_path)
+                if allowed:
+                    if "path" in tool_args:
+                        tool_args["path"] = resolved_path
+                    elif "file_path" in tool_args:
+                        tool_args["file_path"] = resolved_path
+                    elif "directory" in tool_args:
+                        tool_args["directory"] = resolved_path
+                    console.info(f"路径已解析: {resolved_path}")
+                else:
+                    console.error(f"路径解析失败: {resolved_path}")
+                    return _build_tool_failure_result(
+                        tool_name,
+                        resolved_path,
+                        message_context=message_context,
+                        conversation_id=conversation_id,
+                        task_description=task_description,
+                        tool_args=tool_args,
+                    )
+            elif tool_name in {"list_dir", "create_dir"}:
+                workspace_root = workspace_service.get_workspace_dir(workspace_id)
+                if not workspace_root:
+                    error_msg = f"工作区不存在: {workspace_id}"
+                    console.error(error_msg)
+                    return _build_tool_failure_result(
+                        tool_name,
+                        error_msg,
+                        message_context=message_context,
+                        conversation_id=conversation_id,
+                        task_description=task_description,
+                        tool_args=tool_args,
+                    )
+                tool_args["directory"] = workspace_root
+                console.info(f"目录工具默认使用工作区根目录: {workspace_root}")
+
+        if tool_name in EXPLORE_TOOLS and workspace_service:
             workspace_root = workspace_service.get_workspace_dir(workspace_id)
-            if not workspace_root:
-                error_msg = f"工作区不存在: {workspace_id}"
-                console.error(error_msg)
-                return {"result": None, "error": error_msg}
-            tool_args["directory"] = workspace_root
-            console.info(f"目录工具默认使用工作区根目录: {workspace_root}")
-    
-    if tool_name in EXPLORE_TOOLS and workspace_service:
-        workspace_root = workspace_service.get_workspace_dir(workspace_id)
-        if workspace_root:
-            tool_args["workspace_root"] = workspace_root
-            console.info(f"工作区根目录: {workspace_root}")
-    
-    if tool_name in SPECIAL_TOOLS:
-        tool_result = _execute_special_tool(
-            tool_name, tool_args, task_description, llm_service, message_context, token_callback
-        )
-        if tool_result.get("error") is None:
-            _write_tool_event(
-                conversation_id,
-                tool_name,
-                "completed",
-                result=tool_result.get("result") or "",
+            if workspace_root:
+                tool_args["workspace_root"] = workspace_root
+                console.info(f"工作区根目录: {workspace_root}")
+
+        if tool_name in SPECIAL_TOOLS:
+            tool_result = _execute_special_tool(
+                tool_name, tool_args, task_description, llm_service, message_context, token_callback
             )
-        else:
-            _write_tool_event(
-                conversation_id,
-                tool_name,
-                "failed",
-                error=str(tool_result.get("error")),
+            if tool_result.get("error") is None:
+                _write_tool_event(
+                    conversation_id,
+                    tool_name,
+                    "completed",
+                    result=tool_result.get("result") or "",
+                )
+            else:
+                _write_tool_event(
+                    conversation_id,
+                    tool_name,
+                    "failed",
+                    error=str(tool_result.get("error")),
+                )
+            return tool_result
+
+        if tool_name == "read_file":
+            tool_result = _execute_read_file(tool_args)
+        elif tool_name == "write_file":
+            tool_result = _execute_write_file(tool_args)
+        elif tool_name == "delete_file":
+            tool_result = _execute_delete_file(tool_args)
+        elif tool_name == "list_dir":
+            tool_result = _execute_list_dir(tool_args)
+        elif tool_name == "create_dir":
+            tool_result = _execute_create_dir(tool_args)
+        elif tool_name == "explore_code":
+            tool_result = _execute_explore_code(tool_args)
+        elif tool_name == "explore_internet":
+            tool_result = _execute_explore_internet(tool_args)
+        elif tool_name == "call_explore_agent":
+            tool_result = _execute_call_explore_agent(tool_args, llm_service, token_callback, message_context)
+        elif tool_name == "call_review_agent":
+            tool_result = _execute_call_review_agent(tool_args, llm_service, token_callback, message_context)
+        elif tool_name == "rag_search":
+            tool_result = execute_rag_search(tool_args)
+        elif tool_name == "read_document":
+            tool_result = execute_read_document(tool_args)
+        elif tool_name == "sql_query":
+            tool_result = execute_sql_query(tool_args)
+        elif tool_name == "update_todo":
+            tool_result = update_todo(
+                workspace_id=workspace_id,
+                todos=tool_args.get("todos") or [],
+                doingIdx=tool_args.get("doingIdx", 0),
             )
-        return tool_result
-    
-    if tool_name == "read_file":
-        tool_result = _execute_read_file(tool_args)
-    elif tool_name == "write_file":
-        tool_result = _execute_write_file(tool_args)
-    elif tool_name == "delete_file":
-        tool_result = _execute_delete_file(tool_args)
-    elif tool_name == "list_dir":
-        tool_result = _execute_list_dir(tool_args)
-    elif tool_name == "create_dir":
-        tool_result = _execute_create_dir(tool_args)
-    elif tool_name == "explore_code":
-        tool_result = _execute_explore_code(tool_args)
-    elif tool_name == "explore_internet":
-        tool_result = _execute_explore_internet(tool_args)
-    elif tool_name == "call_explore_agent":
-        tool_result = _execute_call_explore_agent(tool_args, llm_service, token_callback, message_context)
-    elif tool_name == "call_review_agent":
-        tool_result = _execute_call_review_agent(tool_args, llm_service, token_callback, message_context)
-    elif tool_name == "update_todo":
-        tool_result = update_todo(
-            workspace_id=workspace_id,
-            todos=tool_args.get("todos") or [],
-            doingIdx=tool_args.get("doingIdx", 0),
-        )
-    elif tool_name == "switch_execution_mode":
-        mode = (tool_args.get("mode") or "").upper()
-        reason = tool_args.get("reason") or "agent 决定切换执行模式"
-        if mode not in {"PLAN", "DIRECT"}:
-            tool_result = {"result": None, "error": f"无效的 mode: {mode}"}
+        elif tool_name == "switch_execution_mode":
+            mode = (tool_args.get("mode") or "").upper()
+            reason = tool_args.get("reason") or "agent 决定切换执行模式"
+            if mode not in {"PLAN", "DIRECT"}:
+                tool_result = {"result": None, "error": f"无效的 mode: {mode}"}
+            else:
+                tool_result = {
+                    "result": f"已切换执行模式为 {mode}",
+                    "error": None,
+                    "execution_mode": mode,
+                    "mode_reason": reason,
+                }
+        elif tool_name in WORKSPACE_TOOLS:
+            tool_result = _execute_workspace_tool(tool_name, tool_args, workspace_id, workspace_service)
         else:
-            tool_result = {
-                "result": f"已切换执行模式为 {mode}",
-                "error": None,
-                "execution_mode": mode,
-                "mode_reason": reason,
-            }
-    elif tool_name in WORKSPACE_TOOLS:
-        tool_result = _execute_workspace_tool(tool_name, tool_args, workspace_id, workspace_service)
-    else:
-        tool_result = {"result": f"工具 {tool_name} 执行成功", "error": None}
-        console.success(f"结果: {tool_result['result']}")
-    
-    if message_context:
-        send_message = message_context.get("send_message")
+            tool_result = {"result": f"工具 {tool_name} 执行成功", "error": None}
+            console.success(f"结果: {tool_result['result']}")
+
         if send_message and tool_name not in SPECIAL_TOOLS:
             result_content = tool_result.get("result")
             if result_content is None:
@@ -300,22 +353,32 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
                 "success": tool_result.get("error") is None
             })
 
-    if tool_result.get("error") is None:
-        _write_tool_event(
-            conversation_id,
-            tool_name,
-            "completed",
-            result=tool_result.get("result") or "",
-        )
-    else:
-        _write_tool_event(
-            conversation_id,
-            tool_name,
-            "failed",
-            error=str(tool_result.get("error")),
-        )
+        if tool_result.get("error") is None:
+            _write_tool_event(
+                conversation_id,
+                tool_name,
+                "completed",
+                result=tool_result.get("result") or "",
+            )
+        else:
+            _write_tool_event(
+                conversation_id,
+                tool_name,
+                "failed",
+                error=str(tool_result.get("error")),
+            )
 
-    return tool_result
+        return tool_result
+    except Exception as exc:
+        console.error(f"工具执行异常: {exc}")
+        return _build_tool_failure_result(
+            tool_name,
+            f"工具 {tool_name} 执行异常: {exc}",
+            message_context=message_context,
+            conversation_id=conversation_id,
+            task_description=task_description,
+            tool_args=tool_args,
+        )
 
 
 def _execute_special_tool(
@@ -1240,7 +1303,7 @@ def run_tool_execution(
 ) -> dict:
     """
     运行工具执行子图
-    
+
     Args:
         tool_name: 工具名称
         tool_args: 工具参数
@@ -1254,14 +1317,14 @@ def run_tool_execution(
         agent_type: Agent 类型
         settings_service: 设置服务实例
         message_context: 消息上下文，包含 send_message 等方法
-        
+
     Returns:
         执行结果
     """
     print("\n" + "="*60)
     print("[Subgraph] 工具执行子图启动")
     print("="*60)
-    
+
     initial_state: ToolExecutionState = {
         "tool_name": tool_name,
         "tool_args": tool_args,
@@ -1276,12 +1339,38 @@ def run_tool_execution(
         "agent_type": agent_type,
         "auto_approve": auto_approve,
     }
-    
+
     graph = create_tool_execution_subgraph(workspace_service, llm_service, token_callback, settings_service, message_context)
-    result = graph.invoke(initial_state)
-    
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(graph.invoke, initial_state)
+            result = future.result(timeout=TOOL_EXECUTION_TIMEOUT_SECONDS)
+    except FutureTimeoutError:
+        timeout_error = f"工具 {tool_name} 执行超时（{TOOL_EXECUTION_TIMEOUT_SECONDS}s）"
+        console.error(timeout_error)
+        result = _build_tool_failure_result(
+            tool_name,
+            timeout_error,
+            message_context=message_context,
+            conversation_id=message_context.get("conversation_id") if message_context else None,
+            task_description=task_description,
+            tool_args=tool_args,
+        )
+    except Exception as exc:
+        error_msg = f"工具 {tool_name} 执行异常: {exc}"
+        console.error(error_msg)
+        result = _build_tool_failure_result(
+            tool_name,
+            error_msg,
+            message_context=message_context,
+            conversation_id=message_context.get("conversation_id") if message_context else None,
+            task_description=task_description,
+            tool_args=tool_args,
+        )
+
     print("="*60)
     print("[Subgraph] 工具执行子图完成")
     print("="*60)
-    
+
     return result

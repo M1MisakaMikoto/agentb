@@ -138,6 +138,16 @@ ALL_TOOLS = {
         "name": "search_files",
         "description": "在工作区内搜索文件",
         "params": 'search_files:{"pattern":"(文件名模式，支持通配符*)"}'
+    },
+    "read_document": {
+        "name": "read_document",
+        "description": "读取PDF、Word、Excel文档内容，支持分页读取和元数据提取",
+        "params": 'read_document:{"file_path":"(文档路径)","start_idx":"(起始索引，从第几个字符开始读，默认0)","max_length":"(最大读取字符数，默认10000)","include_metadata":"(是否包含元数据，默认true)"}'
+    },
+    "sql_query": {
+        "name": "sql_query",
+        "description": "执行SQL SELECT查询，从业务数据库获取数据",
+        "params": 'sql_query:{"query":"(SQL SELECT语句)","database":"(数据库名称，可选)","limit":"(返回行数限制，默认100)"}'
     }
 }
 
@@ -148,3 +158,5 @@ SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent"}
 TODO_TOOLS = {"update_todo"}
 RAG_TOOLS = {"rag_search"}
 WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}
+DOCUMENT_TOOLS = {"read_document"}
+SQL_TOOLS = {"sql_query"}
