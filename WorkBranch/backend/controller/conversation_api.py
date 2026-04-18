@@ -120,7 +120,7 @@ async def stream_conversation_message(
                     try:
                         message = await asyncio.wait_for(
                             subscriber.get(),
-                            timeout=1.0,
+                            timeout=5.0,
                         )
 
                         event_data = message.to_dict()

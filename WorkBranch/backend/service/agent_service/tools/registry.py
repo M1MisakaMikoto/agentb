@@ -114,6 +114,11 @@ ALL_TOOLS = {
         "description": "用完整列表覆盖更新 TODO 状态",
         "params": 'update_todo:{"todos": ["(todo内容1)", "(todo内容2)"...],"doingIdx": (当前todo进行到第几项了，从0开始数)}'
     },
+    "switch_execution_mode": {
+        "name": "switch_execution_mode",
+        "description": "切换当前执行模式",
+        "params": 'switch_execution_mode:{"mode":"PLAN","reason":"(为什么需要切到PLAN)"}'
+    },
     "rag_search": {
         "name": "rag_search",
         "description": "在知识库中进行语义检索",

@@ -18,7 +18,7 @@ import re
 import shutil
 import fnmatch
 
-from .decision.complexity_analyzer import ExecutionMode, analyze_task_complexity, evaluate_task_complexity
+from .decision.complexity_analyzer import ExecutionMode
 from ..state import AgentState
 from .subgraphs.tool_registry import (
     is_tool_allowed, get_allowed_tools, _write_tool_event
@@ -176,47 +176,26 @@ def _load_plan_content_for_state(state: AgentState) -> tuple[Optional[str], Opti
 
 
 def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute", "plan", "done"]:
-    if "execution_mode" not in state:
-        return "analyze"
-
     if state.get("pending_tools"):
         return "execute"
 
     execution_mode = state.get("execution_mode")
-    if execution_mode is None:
-        return "done"
-
     if execution_mode == ExecutionMode.PLAN:
         if state.get("final_reply"):
             return "done"
         return "plan"
 
-    if execution_mode == ExecutionMode.DIRECT:
-        if state.get("final_reply"):
-            return "done"
-        if state.get("pending_tools"):
-            return "execute"
-        return "decide"
-
-    if state.get("has_tool_use", False):
-        return "execute"
-
     if state.get("final_reply"):
         return "done"
 
-    return "done"
+    return "decide"
 
 
-def route_after_analyze(state: dict) -> str:
-    mode = state.get("execution_mode")
-    if mode == ExecutionMode.PLAN:
-        return "plan"
-    elif mode == ExecutionMode.DIRECT:
-        return "decide"
-    return "done"
+def route_after_analyze(_state: dict) -> str:
+    return "decide"
 
 
-def create_analyze_node(llm_service=None, message_context=None, settings_service=None):
+def create_analyze_node(_llm_service=None, message_context=None, _settings_service=None):
     def analyze_node(state: AgentState) -> dict:
         user_message = state["messages"][-1] if state["messages"] else ""
         current_agent_type = state.get("agent_type") or "director_agent"
@@ -229,146 +208,51 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
                 "mode": forced_execution_mode,
                 "reason": f"使用预设执行模式: {forced_execution_mode.name}",
             }
-            intent_analysis = {
-                "intent_type": "other",
-                "summary": user_message[:100],
-                "key_points": [user_message],
-                "complexity": "medium",
-                "confidence": 1.0,
+        elif current_agent_type != "director_agent":
+            mode_decision = {
+                "mode": ExecutionMode.DIRECT,
+                "reason": f"{current_agent_type} 使用专属 graph，默认走 DIRECT 执行",
             }
-        elif llm_service:
-            system_prompt = """你是一个任务分析专家。请分析用户任务的复杂度，并决定执行模式。
-
-执行模式选项：
-1. DIRECT - 直接执行：适用于简单任务，如读取文件、查询信息等
-2. PLAN - 规划模式：适用于复杂开发任务，需要多步骤规划（仅 director_agent 可用）
-
-请以JSON格式返回分析结果：
-{
-    "complexity": "simple/medium/complex",
-    "intent_type": "develop/explore/review/question/debug/refactor/other",
-    "execution_mode": "DIRECT/PLAN",
-    "reason": "选择该模式的原因"
-}
-
-只返回JSON，不要其他内容。"""
-
-            parent_chain_messages = state.get("parent_chain_messages", [])
-            current_conversation_messages = state.get("current_conversation_messages", [])
-
-            full_prompt = build_context_prompt(
-                parent_chain_messages,
-                current_conversation_messages,
-                f"user: {user_message}"
-            )
-            messages = [{"role": "user", "content": full_prompt}]
-
-            try:
-                response = llm_service.chat(messages, system_prompt=system_prompt)
-
-                console.response_box(response)
-
-                import json
-                response_text = response.strip()
-                if response_text.startswith("```json"):
-                    response_text = response_text[7:]
-                if response_text.startswith("```"):
-                    response_text = response_text[3:]
-                if response_text.endswith("```"):
-                    response_text = response_text[:-3]
-                response_text = response_text.strip()
-
-                analysis_result = json.loads(response_text)
-
-                mode_str = analysis_result.get("execution_mode", "DIRECT")
-                if mode_str == "SUBAGENT":
-                    mode_str = "DIRECT"
-                execution_mode = ExecutionMode[mode_str]
-
-                mode_decision = {
-                    "mode": execution_mode,
-                    "reason": analysis_result.get("reason", ""),
-                }
-
-                if current_agent_type != "director_agent":
-                    mode_decision["mode"] = ExecutionMode.DIRECT
-                    mode_decision["reason"] = f"{current_agent_type} 使用专属 graph，固定走 DIRECT 执行"
-
-                intent_analysis = {
-                    "intent_type": analysis_result.get("intent_type", "other"),
-                    "summary": user_message[:100],
-                    "key_points": [user_message],
-                    "complexity": analysis_result.get("complexity", "medium"),
-                    "confidence": 0.9
-                }
-
-            except Exception as e:
-                console.warning(f"调用大模型失败: {e}，使用默认逻辑")
-                complexity = evaluate_task_complexity(user_message)
-                intent_analysis = {
-                    "intent_type": "other",
-                    "summary": user_message[:100],
-                    "key_points": [user_message],
-                    "complexity": complexity,
-                    "confidence": 0.7
-                }
-                mode_decision = analyze_task_complexity(user_message, intent_analysis)
         else:
-            complexity = evaluate_task_complexity(user_message)
-            intent_analysis = {
-                "intent_type": "other",
-                "summary": user_message[:100],
-                "key_points": [user_message],
-                "complexity": complexity,
-                "confidence": 0.7
+            mode_decision = {
+                "mode": ExecutionMode.DIRECT,
+                "reason": "director_agent 默认从 DIRECT 开始，由 agent 在需要时主动切到 PLAN",
             }
-            mode_decision = analyze_task_complexity(user_message, intent_analysis)
-        
+
+        intent_analysis = {
+            "intent_type": "other",
+            "summary": user_message[:100],
+            "key_points": [user_message] if user_message else [],
+            "complexity": "medium",
+            "confidence": 0.7,
+        }
+
         console.decision_box(
             route_after_analyze({'execution_mode': mode_decision['mode']}),
             f"执行模式: {mode_decision['mode']}\n原因: {mode_decision['reason']}"
         )
-        
+
         result = {
             "intent_analysis": intent_analysis,
             "execution_mode": mode_decision["mode"],
             "mode_reason": mode_decision["reason"],
             "suggested_tools": [],
-            "has_tool_use": mode_decision["mode"] == ExecutionMode.DIRECT,
+            "has_tool_use": False,
             "final_reply": None,
             "pending_tools": [],
             "next_action": None,
         }
 
-        if mode_decision["mode"] == ExecutionMode.DIRECT and current_agent_type != "director_agent":
-            suggested_tools = []
-            if current_agent_type == "explore_agent":
-                suggested_tools = ["thinking", "chat"]
-            elif current_agent_type == "review_agent":
-                suggested_tools = ["thinking", "chat"]
-            result["pending_tools"] = [
-                {"tool": tool, "args": {"description": user_message}}
-                for tool in suggested_tools
-            ]
-        
         if message_context:
             send_message = message_context.get("send_message")
             if send_message:
-                from service.session_service.canonical import MessageBuilder
                 state_metadata = {
                     "execution_mode": mode_decision["mode"].name,
                 }
-                state_msg = MessageBuilder.state_change(
-                    message_id=message_context.get("message_id", ""),
-                    conversation_id=message_context.get("conversation_id", ""),
-                    session_id=message_context.get("session_id", ""),
-                    workspace_id=message_context.get("workspace_id", ""),
-                    metadata=state_metadata
-                )
                 send_message("", SegmentType.STATE_CHANGE, state_metadata)
-        
+
         return result
-    
+
     return analyze_node
 
 
@@ -459,8 +343,9 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         if plan_content:
             plan_file_display = plan_file or "plan.md"
             plan_intro = (
-                f"\n\n当前可用计划文件: {plan_file_display}\n"
-                f"请遵照以下 plan.md 执行用户任务；如果发现计划不合理，可以先更新计划文件，再继续执行。\n"
+                f"\n\n当前工作区存在计划文件: {plan_file_display}\n"
+                "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，"
+                "那么你应主动阅读 plan.md，并严格遵守该计划执行；否则不要因为计划文件存在就默认按计划执行。\n"
                 f"[plan.md]\n{plan_content}\n[/plan.md]\n"
             )
         current_task = (
@@ -474,16 +359,19 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             f"最近工具历史:\n{history_block}\n\n"
             "注意：只有当 todo 列表非空时，你才应围绕 todo 执行；如果当前没有 todo 且任务明显多步骤/阶段化，可以先使用 update_todo 写入完整 todo 列表。"
             "如果 todo 列表非空，你应继续通过 update_todo 覆盖更新完整 todo 列表和 doingIdx；如果任务拆分发生变化，也应通过 update_todo 一次性重写。"
-            "如果当前上下文提供了 plan.md，你应把它视为执行约束，而不是忽略它重新自由规划。"
+            "默认按 DIRECT 执行；如果你在执行过程中发现任务明显复杂、多阶段、跨文件、需要先输出方案，才调用 switch_execution_mode 把模式切到 PLAN。"
+            "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应主动阅读 plan.md，并严格遵守该计划执行。"
             "除非用户明确要求查看计划文件，否则不要为了展示而读取 plan.md。"
             "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果当前 todo 已完成，返回 kind=step_done；如果全部 todo 都已完成，返回 kind=reply；如果无法继续，返回 kind=blocked。"
             "不要输出 chat 工具；最终回复请直接放在 reply 字段。"
         )
         system_prompt = """你现在的职责是作为 branch code，围绕当前用户任务做出下一步执行决策，并在需要时调用合适的工具完成工作。
 
+默认按 DIRECT 执行。只有当你在执行过程中发现任务明显复杂、多阶段、跨文件、需要先输出方案，或用户明确要求先给方案/计划再执行时，才调用 switch_execution_mode 把模式切到 PLAN。
+
 当任务明显是多步骤、存在阶段划分，或者执行中发现当前任务过大/过难时，你应该使用 todo 工具维护任务列表，而不是硬撑着一次做完。
 
-如果上下文中已经提供了 plan.md，则你是在执行一个已有计划：你应遵照该计划推进，而不是忽略计划重新自由规划；只有在发现计划不合理或与现实不符时，才调整计划后继续执行。
+如果历史对话中上一条提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应主动阅读 plan.md，并严格遵守该计划执行；否则不要因为工作区里存在 plan.md 就默认按计划执行。
 
 你必须且只能返回以下四种 JSON 结构之一，不要输出额外文本：
 
@@ -518,11 +406,12 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
 3. kind=tool 时，tool_name 必填，tool_args 必填，task_description 必填
 4. kind=tool 时，tool_name 必须来自工具协议里的工具名，tool_args 必须严格使用协议里的参数名
 5. kind=reply 或 kind=blocked 时，不要返回 tool_name 或 tool_args
-6. 如果当前任务是多步骤/有阶段或是任务执行过程中有不确定因素不能一口气完成的，使用 update_todo 写入完整 todo 列表
-7. 如果 todo 不为空，优先围绕完整 todo 列表继续执行，并通过 update_todo 覆盖更新完整列表与 doingIdx
-8. 如果任务拆分发生变化，直接用 update_todo 重写整个 todo 列表
-9. 只有当前工作真的完成时，才能返回 step_done；只有所有工作都完成时，才能返回 reply
-10. 如果拿不准下一步该用什么工具或缺少必填参数，返回 blocked，不要返回不完整的 tool JSON
+6. 如果任务明显复杂、多阶段、跨文件、需要先输出方案，或者用户明确要求先给方案/计划，优先调用 switch_execution_mode 把模式切到 PLAN
+7. 如果当前任务是多步骤/有阶段或是任务执行过程中有不确定因素不能一口气完成的，使用 update_todo 写入完整 todo 列表
+8. 如果 todo 不为空，优先围绕完整 todo 列表继续执行，并通过 update_todo 覆盖更新完整列表与 doingIdx
+9. 如果任务拆分发生变化，直接用 update_todo 重写整个 todo 列表
+10. 只有当前工作真的完成时，才能返回 step_done；只有所有工作都完成时，才能返回 reply
+11. 如果拿不准下一步该用什么工具或缺少必填参数，返回 blocked，不要返回不完整的 tool JSON
 """
 
         context_prompt = build_context_prompt(parent_chain_messages, current_conversation_messages, current_task)
@@ -758,8 +647,14 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
             plan_steps=plan,
             metadata={"task_description": user_message}
         )
+        plan_file_path = create_result.get("plan_file")
+        final_reply = (
+            f"已生成方案，计划文件为 {plan_file_path}。\n"
+            f"如果你同意方案，请直接回复“可以”或“同意方案”，我会读取 plan.md 并严格按照方案继续执行。\n\n"
+            f"{plan_content}"
+        )
 
-        console.box("计划文件已创建", create_result.get("plan_file"))
+        console.box("计划文件已创建", plan_file_path)
 
         if message_context:
             send_message = message_context.get("send_message")
@@ -767,17 +662,17 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
                 state_metadata = {
                     "execution_mode": "PLAN",
                     "plan_steps": len(plan),
-                    "plan_file": create_result.get("plan_file"),
+                    "plan_file": plan_file_path,
                 }
                 send_message("", SegmentType.STATE_CHANGE, state_metadata)
-                send_message(plan_content, SegmentType.TEXT_DELTA)
+                send_message(final_reply, SegmentType.TEXT_DELTA)
 
         console.decision_box("done", "计划已生成，结束当前 run")
         return {
             "plan": plan,
-            "plan_file": create_result.get("plan_file"),
+            "plan_file": plan_file_path,
             "plan_content": plan_content,
-            "final_reply": plan_content,
+            "final_reply": final_reply,
             "has_tool_use": False,
             "pending_tools": [],
         }
@@ -1638,6 +1533,20 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                         "current_todo_iteration_count": 0,
                         "todo_status": "pending",
                     })
+                if tool_success and tool_name == "switch_execution_mode":
+                    mode_value = tool_result.get("execution_mode")
+                    if mode_value == "PLAN":
+                        direct_update.update({
+                            "execution_mode": ExecutionMode.PLAN,
+                            "mode_reason": tool_result.get("mode_reason") or "agent 主动切换到 PLAN",
+                            "pending_tools": [],
+                            "has_tool_use": False,
+                        })
+                    elif mode_value == "DIRECT":
+                        direct_update.update({
+                            "execution_mode": ExecutionMode.DIRECT,
+                            "mode_reason": tool_result.get("mode_reason") or "agent 维持 DIRECT",
+                        })
                 return direct_update
 
             has_more_tools = len(pending_tools) > 1
@@ -1689,6 +1598,8 @@ def route_after_todo_review(_state: AgentState) -> str:
 
 
 def route_after_execute(state: AgentState) -> str:
+    if state.get("execution_mode") == ExecutionMode.PLAN and not state.get("pending_tools"):
+        return "plan"
     if state.get("execution_mode") == ExecutionMode.DIRECT and not state.get("pending_tools"):
         return "todo_review"
     return check_state_v3(state)
@@ -1743,40 +1654,6 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
     return graph.compile()
 
 
-def _start_fresh_direct_run_from_plan(
-    *,
-    user_message: str,
-    workspace_id: str,
-    llm_service=None,
-    token_callback=None,
-    memory_mode: str = "accumulate",
-    window_size: int = 3,
-    settings_service=None,
-    message_context: dict = None,
-    parent_chain_messages: List[dict] = None,
-    current_conversation_messages: List[dict] = None,
-) -> dict:
-    workspace_info = workspace_service.get_workspace_info(workspace_id)
-    session_id = workspace_info.get("session_id", "default") if workspace_info else "default"
-    plan_result = plan_file_service.read_plan(session_id=session_id, workspace_id=workspace_id)
-    plan_content = plan_result.get("content") if plan_result.get("success") else None
-    plan_file = plan_result.get("plan_file") if plan_result.get("success") else None
-
-    initial_state = build_initial_state(
-        user_message=user_message,
-        workspace_id=workspace_id,
-        parent_chain_messages=parent_chain_messages,
-        current_conversation_messages=current_conversation_messages,
-        is_root_graph=True,
-        forced_execution_mode=ExecutionMode.DIRECT,
-        plan_file=plan_file,
-        plan_content=plan_content,
-    )
-
-    graph = create_orchestrator_graph_v3(llm_service, token_callback, memory_mode, window_size, settings_service, message_context)
-    return graph.invoke(initial_state)
-
-
 def run_graph_v3(
     user_message: str,
     workspace_id: str,
@@ -1804,21 +1681,6 @@ def run_graph_v3(
 
     graph = create_orchestrator_graph_v3(llm_service, token_callback, memory_mode, window_size, settings_service, message_context)
     final_state = graph.invoke(initial_state)
-
-    if final_state.get("execution_mode") == ExecutionMode.PLAN and final_state.get("plan_file"):
-        print("[Director Agent] PLAN 已完成，基于 plan.md 启动 fresh DIRECT run")
-        final_state = _start_fresh_direct_run_from_plan(
-            user_message=user_message,
-            workspace_id=workspace_id,
-            llm_service=llm_service,
-            token_callback=token_callback,
-            memory_mode=memory_mode,
-            window_size=window_size,
-            settings_service=settings_service,
-            message_context=message_context,
-            parent_chain_messages=parent_chain_messages,
-            current_conversation_messages=current_conversation_messages,
-        )
 
     if final_state.get("is_root_graph") and message_context:
         send_message = message_context.get("send_message")

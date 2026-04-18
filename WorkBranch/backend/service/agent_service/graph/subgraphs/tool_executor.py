@@ -265,6 +265,18 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             todos=tool_args.get("todos") or [],
             doingIdx=tool_args.get("doingIdx", 0),
         )
+    elif tool_name == "switch_execution_mode":
+        mode = (tool_args.get("mode") or "").upper()
+        reason = tool_args.get("reason") or "agent 决定切换执行模式"
+        if mode not in {"PLAN", "DIRECT"}:
+            tool_result = {"result": None, "error": f"无效的 mode: {mode}"}
+        else:
+            tool_result = {
+                "result": f"已切换执行模式为 {mode}",
+                "error": None,
+                "execution_mode": mode,
+                "mode_reason": reason,
+            }
     elif tool_name in WORKSPACE_TOOLS:
         tool_result = _execute_workspace_tool(tool_name, tool_args, workspace_id, workspace_service)
     else:

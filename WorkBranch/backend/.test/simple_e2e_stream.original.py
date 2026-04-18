@@ -28,9 +28,7 @@ from urllib.request import urlopen
 
 import httpx
 
-BASE_HOST = os.environ.get("API_BASE_HOST", "127.0.0.1")
-BASE_PORT = int(os.environ.get("API_BASE_PORT", "8000"))
-BASE_URL = os.environ.get("API_BASE_URL", f"http://{BASE_HOST}:{BASE_PORT}")
+BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
 
 class Colors:
@@ -69,11 +67,11 @@ TEST_CASES: Dict[str, Dict[str, any]] = {
         "forbidden_reply_terms": ["ReAct", "todo", "工具", "执行代理", "状态机", "计划文件"],
     },
     "plan": {
-        "question": "请把“实现一个简单的用户登录功能（包含前端表单、后端验证、会话管理和错误提示）”当作复杂多阶段开发任务处理，先给出方案，不要开始执行。",
-        "approval_message": "可以",
-        "description": "PLAN 模式 - 计划后等待批准再执行",
+        "question": "请把“实现一个简单的用户登录功能（包含前端表单、后端验证、会话管理和错误提示）”当作复杂多阶段开发任务处理。先生成计划文件，然后只读取当前工作区文件结构，说明如果后续真的实现它，应该优先查看哪些文件。不要修改任何文件，不要创建新文件，也不要真正实现登录功能。",
+        "description": "PLAN 模式 - 先规划再轻量执行",
         "expected_modes": ["PLAN", "DIRECT"],
         "forbidden_tools": ["write_file", "delete_file", "create_dir"],
+        "stop_when_expected_modes_seen": True,
     },
     "search": {
         "question": "请使用 explore_internet 工具搜索市政设施管理规定的相关法规",
@@ -195,26 +193,16 @@ class TestResult:
         }
 
 
-async def collect_stream_output(api: APIClient, conversation_id: str, verbose: bool = False):
+async def collect_stream_output(api: APIClient, conversation_id: str):
     event_types: List[str] = []
     text_chunks: List[str] = []
     chat_chunks: List[str] = []
     errors: List[str] = []
     done = False
-    tool_calls: List[str] = []
-    detected_modes: List[str] = []
 
     async for item in api.stream_message(conversation_id):
         raw_line = item.get("raw_line", "")
-        if not raw_line.strip():
-            continue
-
-        if raw_line.startswith(": heartbeat"):
-            if verbose:
-                print(f"{Colors.DIM}[heartbeat]{Colors.ENDC}")
-            continue
-
-        if not raw_line.startswith("data: "):
+        if not raw_line.strip() or not raw_line.startswith("data: "):
             continue
 
         try:
@@ -226,37 +214,13 @@ async def collect_stream_output(api: APIClient, conversation_id: str, verbose: b
         event_types.append(event_type)
 
         if event_type == "text_delta":
-            content = data.get("content", "")
-            text_chunks.append(content)
-            if verbose:
-                safe_print(f"{Colors.CYAN}[text] {content}{Colors.ENDC}")
+            text_chunks.append(data.get("content", ""))
         elif event_type == "chat_delta":
-            content = data.get("content", "")
-            chat_chunks.append(content)
-            if verbose:
-                safe_print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
-        elif event_type == "tool_call":
-            metadata = data.get("metadata", {})
-            tool_name = metadata.get("tool_name", "unknown")
-            tool_calls.append(tool_name)
-            if verbose:
-                print(f"{Colors.MAGENTA}[tool_call] {tool_name}{Colors.ENDC}")
-        elif event_type == "state_change":
-            metadata = data.get("metadata", {})
-            execution_mode = metadata.get("execution_mode")
-            if execution_mode:
-                detected_modes.append(execution_mode)
-                if verbose:
-                    print(f"{Colors.YELLOW}[state] execution_mode: {execution_mode}{Colors.ENDC}")
+            chat_chunks.append(data.get("content", ""))
         elif event_type == "error":
-            error_content = data.get("content", "Unknown error")
-            errors.append(error_content)
-            if verbose:
-                safe_print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
+            errors.append(data.get("content", "Unknown error"))
         elif event_type == "done":
             done = True
-            if verbose:
-                print(f"{Colors.GREEN}[done] Stream completed{Colors.ENDC}")
 
     return {
         "event_types": event_types,
@@ -264,8 +228,6 @@ async def collect_stream_output(api: APIClient, conversation_id: str, verbose: b
         "chat": "".join(chat_chunks),
         "errors": errors,
         "done": done,
-        "tool_calls": tool_calls,
-        "detected_modes": detected_modes,
     }
 
 
@@ -383,142 +345,6 @@ async def run_serial_test(api: APIClient, output_file: str) -> TestResult:
     return result
 
 
-async def run_plan_approval_test(api: APIClient, output_file: str) -> TestResult:
-    test_case = TEST_CASES["plan"]
-    result = TestResult("plan", test_case)
-
-    print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
-    print(f"{Colors.HEADER}  {test_case.get('description')}{Colors.ENDC}")
-    print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
-
-    print(f"{Colors.CYAN}[1] Creating session...{Colors.ENDC}")
-    session_result = await api.create_session("Test PLAN")
-    if session_result.get("code") != 200:
-        error_msg = session_result.get("message", "Unknown error")
-        print(f"{Colors.RED}Failed: {error_msg}{Colors.ENDC}")
-        result.errors.append(f"Session creation failed: {error_msg}")
-        return result
-
-    session_id = session_result["data"]["id"]
-    print(f"{Colors.GREEN}    Session ID: {session_id}{Colors.ENDC}")
-
-    print(f"{Colors.CYAN}[2] Creating plan conversation...{Colors.ENDC}")
-    print(f"{Colors.DIM}    Question: {test_case['question']}{Colors.ENDC}")
-    first_conv_result = await api.create_conversation(session_id, test_case["question"])
-    if first_conv_result.get("code") != 200:
-        error_msg = first_conv_result.get("message", "Unknown error")
-        print(f"{Colors.RED}Failed: {error_msg}{Colors.ENDC}")
-        result.errors.append(f"Plan conversation creation failed: {error_msg}")
-        return result
-
-    first_conversation_id = first_conv_result["data"]["conversation_id"]
-    result.conversation_id = first_conversation_id
-    workspace_id = first_conv_result["data"].get("workspace_id")
-    result.workspace_id = workspace_id
-    print(f"{Colors.GREEN}    Conversation ID: {first_conversation_id}{Colors.ENDC}")
-
-    print(f"\n{Colors.CYAN}[3] Receiving plan stream...{Colors.ENDC}\n")
-    first_stream_result = await collect_stream_output(api, first_conversation_id, verbose=True)
-    result.event_count += len(first_stream_result["event_types"])
-    if first_stream_result["errors"]:
-        result.errors.extend(first_stream_result["errors"])
-    if not first_stream_result["done"]:
-        result.errors.append("Plan conversation stream did not complete with done event")
-
-    print(f"{Colors.CYAN}[4] Waiting for plan conversation completion...{Colors.ENDC}")
-    first_conversation_state = await wait_for_conversation_state(api, first_conversation_id, "completed")
-    first_response = extract_response_text(first_conversation_state)
-    print(f"{Colors.DIM}    Plan response: {first_response[:300]}{Colors.ENDC}")
-    if "plan.md" not in first_response:
-        result.errors.append(f"Plan response did not mention plan.md: {first_response}")
-
-    first_assistant_content = (first_conversation_state.get("data") or {}).get("assistant_content") or ""
-    try:
-        events = json.loads(first_assistant_content)
-        for event in events:
-            if event.get("type") == "state_change":
-                metadata = event.get("metadata") or {}
-                execution_mode = metadata.get("execution_mode")
-                if execution_mode and execution_mode not in result.detected_modes:
-                    result.detected_modes.append(execution_mode)
-                    result.detected_mode = execution_mode
-    except Exception:
-        pass
-
-    print(f"{Colors.CYAN}[5] Creating approval conversation...{Colors.ENDC}")
-    print(f"{Colors.DIM}    User: {test_case.get('approval_message', '可以')}{Colors.ENDC}")
-    second_conv_result = await api.create_conversation(session_id, test_case.get("approval_message", "可以"))
-    if second_conv_result.get("code") != 200:
-        error_msg = second_conv_result.get("message", "Unknown error")
-        print(f"{Colors.RED}Failed: {error_msg}{Colors.ENDC}")
-        result.errors.append(f"Approval conversation creation failed: {error_msg}")
-        return result
-
-    second_conversation_id = second_conv_result["data"]["conversation_id"]
-    print(f"{Colors.GREEN}    Conversation ID: {second_conversation_id}{Colors.ENDC}")
-
-    print(f"\n{Colors.CYAN}[6] Receiving approval stream...{Colors.ENDC}\n")
-    second_stream_result = await collect_stream_output(api, second_conversation_id, verbose=True)
-    result.event_count += len(second_stream_result["event_types"])
-    if second_stream_result["errors"]:
-        result.errors.extend(second_stream_result["errors"])
-    if not second_stream_result["done"]:
-        result.errors.append("Approval conversation stream did not complete with done event")
-
-    print(f"{Colors.CYAN}[7] Waiting for approval conversation completion...{Colors.ENDC}")
-    second_conversation_state = await wait_for_conversation_state(api, second_conversation_id, "completed")
-    second_response = extract_response_text(second_conversation_state)
-    result.text_content = second_response
-    print(f"{Colors.DIM}    Approval response: {second_response[:300]}{Colors.ENDC}")
-
-    second_assistant_content = (second_conversation_state.get("data") or {}).get("assistant_content") or ""
-    try:
-        events = json.loads(second_assistant_content)
-        for event in events:
-            if event.get("type") == "state_change":
-                metadata = event.get("metadata") or {}
-                execution_mode = metadata.get("execution_mode")
-                if execution_mode and execution_mode not in result.detected_modes:
-                    result.detected_modes.append(execution_mode)
-                    result.detected_mode = execution_mode
-            elif event.get("type") == "tool_call":
-                metadata = event.get("metadata") or {}
-                tool_name = metadata.get("tool_name")
-                if tool_name:
-                    result.tool_calls.append(tool_name)
-    except Exception:
-        pass
-
-    print(f"{Colors.CYAN}[8] Verification...{Colors.ENDC}")
-    print(f"{Colors.DIM}    Detected modes: {result.detected_modes}{Colors.ENDC}")
-    print(f"{Colors.DIM}    Tool calls: {result.tool_calls}{Colors.ENDC}")
-
-    if "PLAN" not in result.detected_modes:
-        result.errors.append(f"Plan conversation did not enter PLAN: {result.detected_modes}")
-    if "DIRECT" not in result.detected_modes:
-        result.errors.append(f"Approval conversation did not enter DIRECT: {result.detected_modes}")
-
-    if "read_file" not in result.tool_calls:
-        result.errors.append(f"Approval conversation did not read plan.md or files: tools={result.tool_calls}")
-
-    forbidden_tools = test_case.get("forbidden_tools", [])
-    for forbidden_tool in forbidden_tools:
-        if forbidden_tool in result.tool_calls:
-            result.errors.append(f"Forbidden tool was used: {forbidden_tool}")
-
-    with open(output_file, "a", encoding="utf-8") as f:
-        f.write("# PLAN Approval Test\n")
-        f.write(f"- session_id: {session_id}\n")
-        f.write(f"- first_conversation_id: {first_conversation_id}\n")
-        f.write(f"- second_conversation_id: {second_conversation_id}\n")
-        f.write(f"- first_response: {first_response}\n")
-        f.write(f"- second_response: {second_response}\n")
-        f.write(f"- detected_modes: {result.detected_modes}\n")
-        f.write(f"- tool_calls: {result.tool_calls}\n\n")
-
-    return result
-
-
 async def run_single_test(
     api: APIClient,
     mode: str,
@@ -583,7 +409,7 @@ async def run_single_test(
 
     async for item in api.stream_message(conversation_id):
         raw_line = item.get("raw_line", "")
-        
+
         if not raw_line.strip():
             continue
 
@@ -596,32 +422,32 @@ async def run_single_test(
         if raw_line.startswith("data: "):
             result.event_count += 1
             json_str = raw_line[6:]
-            
+
             try:
                 data = json.loads(json_str)
                 event_type = data.get("type", "unknown")
-                
+
                 if event_type == "thinking_delta":
                     content = data.get("content", "")
                     result.thinking_content += content
                     safe_print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
-                
+
                 elif event_type == "chat_delta":
                     content = data.get("content", "")
                     result.chat_content += content
                     safe_print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
-                
+
                 elif event_type == "text_delta":
                     content = data.get("content", "")
                     result.text_content += content
                     safe_print(f"{Colors.CYAN}[text] {content}{Colors.ENDC}")
-                
+
                 elif event_type == "tool_call":
                     metadata = data.get("metadata", {})
                     tool_name = metadata.get("tool_name", "unknown")
                     result.tool_calls.append(tool_name)
                     print(f"{Colors.MAGENTA}[tool_call] {tool_name}{Colors.ENDC}")
-                
+
                 elif event_type == "state_change":
                     metadata = data.get("metadata", {})
                     execution_mode = metadata.get("execution_mode")
@@ -638,25 +464,25 @@ async def run_single_test(
                     if plan_status:
                         result.plan_status = plan_status
                         print(f"{Colors.YELLOW}[state] plan_status: {plan_status}{Colors.ENDC}")
-                
+
                 elif event_type == "plan_start":
                     print(f"{Colors.YELLOW}[plan_start] Plan generation started{Colors.ENDC}")
-                
+
                 elif event_type == "plan_delta":
                     content = data.get("content", "")
                     print(f"{Colors.YELLOW}[plan] {content[:50]}...{Colors.ENDC}")
-                
+
                 elif event_type == "plan_end":
                     print(f"{Colors.YELLOW}[plan_end] Plan generation completed{Colors.ENDC}")
-                
+
                 elif event_type == "done":
                     print(f"{Colors.GREEN}[done] Stream completed{Colors.ENDC}")
-                
+
                 elif event_type == "error":
                     error_content = data.get("content", "Unknown error")
                     result.errors.append(error_content)
                     safe_print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
-                
+
                 else:
                     print(f"{Colors.BLUE}[{event_type}] {json.dumps(data, ensure_ascii=False)[:100]}...{Colors.ENDC}")
 
@@ -722,7 +548,7 @@ def print_summary(results: List[TestResult]):
         tools_str = ", ".join(r.tool_calls[:3]) + ("..." if len(r.tool_calls) > 3 else "")
 
         print(f"| {r.mode:<10} | {expected_display:<10} | {detected:<10} | {r.event_count:<8} | {tools_str:<30} | {status} |")
-        
+
         if r.errors:
             print(f"  {Colors.RED}Errors: {r.errors}{Colors.ENDC}")
         if r.chat_content:
@@ -733,11 +559,11 @@ def print_summary(results: List[TestResult]):
         print(f"{Colors.GREEN}All tests passed!{Colors.ENDC}")
     else:
         print(f"{Colors.RED}Some tests failed.{Colors.ENDC}")
-    
+
     return all_passed
 
 
-def wait_for_backend(host: str = BASE_HOST, port: int = BASE_PORT, timeout: float = 30.0) -> bool:
+def wait_for_backend(host: str = "127.0.0.1", port: int = 8000, timeout: float = 30.0) -> bool:
     url = f"http://{host}:{port}/health"
     deadline = time.time() + timeout
 
@@ -757,7 +583,7 @@ def wait_for_backend(host: str = BASE_HOST, port: int = BASE_PORT, timeout: floa
     return False
 
 
-def start_backend(host: str = BASE_HOST, port: int = BASE_PORT) -> Optional[subprocess.Popen]:
+def start_backend() -> Optional[subprocess.Popen]:
     backend_dir = Path(__file__).parent.parent
     python_executable = sys.executable
 
@@ -767,9 +593,9 @@ def start_backend(host: str = BASE_HOST, port: int = BASE_PORT) -> Optional[subp
         "uvicorn",
         "app:app",
         "--host",
-        host,
+        "127.0.0.1",
         "--port",
-        str(port),
+        "8000",
     ]
 
     print(f"{Colors.CYAN}Starting backend...{Colors.ENDC}")
@@ -836,8 +662,6 @@ async def main():
     parser.add_argument("--expected-mode", choices=["DIRECT", "PLAN"], default=None,
                         help="Expected execution mode for custom question")
     parser.add_argument("--user-id", "-u", type=int, default=99999, help="User ID")
-    parser.add_argument("--host", default=BASE_HOST, help="Backend host")
-    parser.add_argument("--port", type=int, default=BASE_PORT, help="Backend port")
     parser.add_argument("--output", "-o", default=None, help="Output file path")
     parser.add_argument("--auto-approve", action="store_true", default=True,
                         help="Auto-approve plans in PLAN mode")
@@ -857,14 +681,11 @@ async def main():
 
     try:
         if args.no_server:
-            if not wait_for_backend(host=args.host, port=args.port, timeout=2):
-                print(f"{Colors.RED}Backend not running at http://{args.host}:{args.port}, please start it or remove --no-server{Colors.ENDC}")
+            if not wait_for_backend(timeout=2):
+                print(f"{Colors.RED}Backend not running, please start or remove --no-server{Colors.ENDC}")
                 return 1
-            print(f"{Colors.YELLOW}Using existing backend process at http://{args.host}:{args.port}; backend stdout will not be mirrored by this test script{Colors.ENDC}")
         else:
-            if wait_for_backend(host=args.host, port=args.port, timeout=2):
-                print(f"{Colors.YELLOW}Using existing backend process at http://{args.host}:{args.port}; backend stdout will not be mirrored by this test script{Colors.ENDC}")
-            else:
+            if not wait_for_backend(timeout=2):
                 print(f"{Colors.CYAN}Initializing database...{Colors.ENDC}")
                 backend_dir = Path(__file__).parent.parent
                 if str(backend_dir) not in sys.path:
@@ -874,14 +695,14 @@ async def main():
                 await db.init_tables()
                 print(f"{Colors.GREEN}Database initialized{Colors.ENDC}")
 
-                backend_process = start_backend(host=args.host, port=args.port)
+                backend_process = start_backend()
                 started_backend = True
 
-                if not wait_for_backend(host=args.host, port=args.port, timeout=120):
-                    print(f"{Colors.RED}Cannot start backend at http://{args.host}:{args.port}{Colors.ENDC}")
+                if not wait_for_backend(timeout=120):
+                    print(f"{Colors.RED}Cannot start backend{Colors.ENDC}")
                     return 1
 
-        api = APIClient(f"http://{args.host}:{args.port}", args.user_id)
+        api = APIClient(BASE_URL, args.user_id)
         results: List[TestResult] = []
 
         if args.question:
@@ -900,9 +721,6 @@ async def main():
             for mode in modes_to_test:
                 if mode == "serial":
                     result = await run_serial_test(api, output_file)
-                    results.append(result)
-                elif mode == "plan":
-                    result = await run_plan_approval_test(api, output_file)
                     results.append(result)
                 elif mode in TEST_CASES:
                     result = await run_single_test(
