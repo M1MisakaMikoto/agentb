@@ -26,6 +26,7 @@ from .subgraphs.tool_registry import (
 from .subgraphs.tool_executor import run_tool_execution
 from service.agent_service.prompts.graph_prompts import (
     THINK_SYSTEM_PROMPT,
+    PLAN_MODE_SYSTEM_PROMPT,
     build_chat_system_prompt as _graph_build_chat_system_prompt,
     build_context_prompt as _graph_build_context_prompt,
     build_direct_chat_messages as _graph_build_direct_chat_messages,
@@ -226,15 +227,9 @@ def _mode_name(value) -> Optional[str]:
     return str(value).split(".")[-1].upper()
 
 
-def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute", "plan", "done"]:
+def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute", "done"]:
     if state.get("pending_tools"):
         return "execute"
-
-    execution_mode = state.get("execution_mode")
-    if _mode_name(execution_mode) == "PLAN":
-        if state.get("final_reply"):
-            return "done"
-        return "plan"
 
     if state.get("final_reply"):
         return "done"
@@ -253,10 +248,16 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
         user_message = get_last_user_message_text(state)
         current_agent_type = state.get("agent_type") or "director_agent"
         forced_execution_mode = state.get("forced_execution_mode")
+        existing_execution_mode = state.get("execution_mode")
 
         console.step("分析节点", "入口", user_message)
 
-        if forced_execution_mode is not None:
+        if existing_execution_mode is not None:
+            mode_decision = {
+                "mode": existing_execution_mode,
+                "reason": f"保持已有执行模式: {_mode_name(existing_execution_mode)}",
+            }
+        elif forced_execution_mode is not None:
             mode_decision = {
                 "mode": forced_execution_mode,
                 "reason": f"使用预设执行模式: {forced_execution_mode.name}",
@@ -323,15 +324,25 @@ def _format_todo_prompt_block(todos: List[str], current_todo_index: int) -> str:
 def create_decide_tool_action_node(llm_service=None, settings_service=None, message_context=None):
     def decide_tool_action_node(state: AgentState) -> dict:
         user_message = get_last_user_message_text(state)
-        current_agent_type = state.get("agent_type") or "director_agent"
+        
+        execution_mode = state.get("execution_mode")
+        is_plan_mode = _mode_name(execution_mode) == "PLAN"
+        
+        if is_plan_mode:
+            current_agent_type = "plan_agent"
+            title = "决策节点"
+            subtitle = "PLAN"
+        else:
+            current_agent_type = state.get("agent_type") or "director_agent"
+            title = "决策节点"
+            subtitle = "DIRECT"
+        
         tool_history = state.get("tool_history", []) or []
         last_tool_result = state.get("last_tool_result")
         parent_chain_messages = state.get("parent_chain_messages", []) or []
         current_conversation_messages = state.get("current_conversation_messages", []) or []
         iteration_count = state.get("iteration_count", 0) or 0
         max_iterations = state.get("max_iterations", MAX_DIRECT_ITERATIONS) or MAX_DIRECT_ITERATIONS
-        title = "决策节点"
-        subtitle = "DIRECT"
 
         console.step(title, subtitle, f"第 {iteration_count + 1}/{max_iterations} 轮")
 
@@ -375,15 +386,18 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         current_todo_index = state.get("current_todo_index", 0) or 0
         todo_block = _format_todo_prompt_block(todos, current_todo_index)
         todo_intro = f"\n\n{todo_block}\n\n" if todo_block else ""
-        plan_content, _ = _load_plan_content_for_state(state)
+        
         plan_intro = ""
-        if plan_content:
-            plan_file_display = "plan.md"
-            plan_intro = (
-                f"\n\n当前工作区存在计划文件: {plan_file_display}\n"
-                "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，"
-                "那么你应主动使用 read_file 读取该 plan.md，再严格遵守该计划执行；否则不要因为计划文件存在就默认按计划执行。\n"
-            )
+        if not is_plan_mode:
+            plan_content, _ = _load_plan_content_for_state(state)
+            if plan_content:
+                plan_file_display = "plan.md"
+                plan_intro = (
+                    f"\n\n当前工作区存在计划文件: {plan_file_display}\n"
+                    "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，"
+                    "那么你应主动使用 read_file 读取该 plan.md，再严格遵守该计划执行；否则不要因为计划文件存在就默认按计划执行。\n"
+                )
+        
         current_task = (
             f"原始用户请求: {user_message}\n\n"
             f"当前工作区ID: {state['workspace_id']}\n"
@@ -393,14 +407,26 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             f"{todo_intro}"
             f"最近工具结果:\n{last_result_block}\n\n"
             f"最近工具历史:\n{history_block}\n\n"
-            "注意：只有当 todo 列表非空时，你才应围绕 todo 执行；如果当前没有 todo 且任务明显多步骤/阶段化，可以先使用 update_todo 写入完整 todo 列表。"
-            "如果 todo 列表非空，你应继续通过 update_todo 覆盖更新完整 todo 列表和 doingIdx；如果任务拆分发生变化，也应通过 update_todo 一次性重写。"
-            "默认按 DIRECT 执行；如果你在执行过程中发现任务明显复杂、多阶段、跨文件、需要先输出方案，才调用 switch_execution_mode 把模式切到 PLAN。"
-            "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应先使用 read_file 读取该 plan.md，再严格遵守该计划执行。"
-            "除非用户明确要求查看计划文件，否则不要为了展示而读取 plan.md。"
-            "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果当前 todo 已完成，返回 kind=step_done；如果需要向用户输出最终回复，使用 chat 工具；如果无法继续，返回 kind=blocked。"
         )
-        system_prompt = """你现在的职责是作为 branch code，围绕当前用户任务做出下一步执行决策，并在需要时调用合适的工具完成工作。
+        
+        if is_plan_mode:
+            current_task += (
+                "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果计划已完成，返回 kind=step_done；如果需要向用户输出回复，使用 chat 工具；如果无法继续，返回 kind=blocked。"
+            )
+        else:
+            current_task += (
+                "注意：只有当 todo 列表非空时，你才应围绕 todo 执行；如果当前没有 todo 且任务明显多步骤/阶段化，可以先使用 update_todo 写入完整 todo 列表。"
+                "如果 todo 列表非空，你应继续通过 update_todo 覆盖更新完整 todo 列表和 doingIdx；如果任务拆分发生变化，也应通过 update_todo 一次性重写。"
+                "默认按 DIRECT 执行；如果你在执行过程中发现任务明显复杂、多阶段、跨文件、需要先输出方案，才调用 switch_execution_mode 把模式切到 PLAN。"
+                "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应先使用 read_file 读取该 plan.md，再严格遵守该计划执行。"
+                "除非用户明确要求查看计划文件，否则不要为了展示而读取 plan.md。"
+                "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果当前 todo 已完成，返回 kind=step_done；如果需要向用户输出最终回复，使用 chat 工具；如果无法继续，返回 kind=blocked。"
+            )
+        
+        if is_plan_mode:
+            system_prompt = PLAN_MODE_SYSTEM_PROMPT
+        else:
+            system_prompt = """你现在的职责是作为 branch code，围绕当前用户任务做出下一步执行决策，并在需要时调用合适的工具完成工作。
 
 如果历史对话中上一条提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应先使用 read_file 读取该 plan.md，再严格遵守该计划执行；否则不要因为工作区里存在 plan.md 就默认按计划执行。
 
@@ -1622,13 +1648,12 @@ def route_after_execute(state: AgentState) -> str:
         return "done"
 
     next_action = state.get("next_action") or {}
-    mode_name = _mode_name(state.get("execution_mode"))
     if next_action.get("kind") == "enter_plan":
-        return "plan"
+        return "analyze"
 
-    if mode_name == "PLAN" and not state.get("pending_tools"):
-        return "plan"
-    if mode_name == "DIRECT" and not state.get("pending_tools"):
+    if state.get("pending_tools"):
+        return "execute"
+    if _mode_name(state.get("execution_mode")) == "DIRECT" and not state.get("pending_tools"):
         return "todo_review"
     return check_state_v3(state)
 
@@ -1638,14 +1663,12 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
 
     graph.add_node("analyze", create_analyze_node(llm_service, message_context, settings_service))
     graph.add_node("decide", create_decide_next_action_node(llm_service, settings_service, message_context))
-    graph.add_node("plan", create_plan_node(llm_service, token_callback, settings_service, message_context))
     graph.add_node("todo_review", create_step_review_node(llm_service, message_context))
     graph.add_node("execute", create_execute_node(llm_service, token_callback, settings_service, message_context))
 
     graph.set_entry_point("analyze")
 
     graph.add_conditional_edges("analyze", route_after_analyze, {
-        "plan": "plan",
         "decide": "decide",
         "execute": "execute",
         "done": END
@@ -1655,15 +1678,6 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         "analyze": "analyze",
         "decide": "decide",
         "execute": "execute",
-        "plan": "plan",
-        "done": END
-    })
-
-    graph.add_conditional_edges("plan", check_state_v3, {
-        "analyze": "analyze",
-        "decide": "decide",
-        "execute": "execute",
-        "plan": "plan",
         "done": END
     })
 
@@ -1672,7 +1686,6 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         "decide": "decide",
         "todo_review": "todo_review",
         "execute": "execute",
-        "plan": "plan",
         "done": END
     })
 
