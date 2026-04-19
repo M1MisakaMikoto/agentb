@@ -5,8 +5,10 @@ import json
 import re
 
 from ...state import AgentState, Task, IntentAnalysis
+from ..director_agent import get_last_user_message_text
 from .tool_registry import generate_tool_prompt
 from service.session_service.canonical import SegmentType
+from service.session_service.message_content import build_prompt_safe_text
 
 
 def _send_plan_start(send_message, metadata: dict = None):
@@ -208,7 +210,7 @@ def _format_parent_chain_block(parent_chain_messages: List[dict]) -> str:
     
     for msg in parent_chain_messages:
         role = msg.get("role", "unknown")
-        content = msg.get("content", "")
+        content = build_prompt_safe_text(msg)
         role_label = "用户" if role == "user" else "助手" if role == "assistant" else role
         lines.append(f"**{role_label}**: {content}")
     
@@ -230,7 +232,7 @@ def _format_current_conversation_block(current_conversation_messages: List[dict]
     
     for msg in current_conversation_messages:
         role = msg.get("role", "unknown")
-        content = msg.get("content", "")
+        content = build_prompt_safe_text(msg)
         role_label = "用户" if role == "user" else "助手" if role == "assistant" else role
         lines.append(f"**{role_label}**: {content}")
     
@@ -262,7 +264,7 @@ def phase1_understand(state: AgentState, llm_service=None, token_callback: Optio
     _phase_start(send_message, "understand")
     _log(send_message, "## Phase 1: 理解需求")
     
-    user_message = state["messages"][-1] if state["messages"] else ""
+    user_message = get_last_user_message_text(state)
     parent_chain_messages = state.get("parent_chain_messages", [])
     current_conversation_messages = state.get("current_conversation_messages", [])
     agent_type = state.get("agent_type", "director_agent")
@@ -348,7 +350,7 @@ def phase2_design(state: AgentState, llm_service=None, token_callback: Optional[
     _phase_start(send_message, "design")
     _log(send_message, "## Phase 2: 生成计划")
     
-    user_message = state["messages"][-1] if state["messages"] else ""
+    user_message = get_last_user_message_text(state)
     agent_type = state.get("agent_type", "director_agent")
     intent_analysis = state.get("intent_analysis")
     parent_chain_messages = state.get("parent_chain_messages", [])

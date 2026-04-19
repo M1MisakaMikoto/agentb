@@ -18,6 +18,7 @@ from service.session_service.canonical import (
     Message,
     MessageBuilder,
 )
+from service.session_service.message_content import build_user_message, get_message_text, normalize_user_content
 
 
 class ConversationStatus(Enum):
@@ -38,7 +39,7 @@ class Conversation:
     task: Optional[asyncio.Task] = None
     result: Optional[dict] = None
     error: Optional[str] = None
-    messages: List[str] = field(default_factory=list)
+    messages: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class _CancellableLLMServiceProxy:
@@ -46,12 +47,12 @@ class _CancellableLLMServiceProxy:
         self._llm_service = llm_service
         self._http_client = http_client
 
-    def chat(self, messages: List[Dict[str, str]], system_prompt: Optional[str] = None, **kwargs: Any) -> str:
+    def chat(self, messages: List[Dict[str, Any]], system_prompt: Optional[str] = None, **kwargs: Any) -> str:
         return self._llm_service.chat(messages, system_prompt, http_client=self._http_client, **kwargs)
 
     def chat_stream(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
         **kwargs: Any,
@@ -66,8 +67,8 @@ class _CancellableLLMServiceProxy:
 
     def chat_with_history(
         self,
-        user_message: str,
-        history: List[Dict[str, str]],
+        user_message: Any,
+        history: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         **kwargs: Any,
     ) -> str:
@@ -79,7 +80,7 @@ class _CancellableLLMServiceProxy:
             **kwargs,
         )
 
-    def structured_output(self, messages: List[Dict[str, str]], schema: Any, system_prompt: Optional[str] = None, **kwargs: Any) -> Any:
+    def structured_output(self, messages: List[Dict[str, Any]], schema: Any, system_prompt: Optional[str] = None, **kwargs: Any) -> Any:
         return self._llm_service.structured_output(
             messages,
             schema,
@@ -289,7 +290,7 @@ class AgentService:
     async def send_message(
         self,
         conversation_id: str,
-        message: str,
+        message: Any,
         message_id: str = None,
         stream_callback=None,
         parent_chain_messages: List[Dict] = None,
@@ -314,20 +315,22 @@ class AgentService:
             if not conv:
                 raise ValueError(f"对话 {conversation_id} 不存在")
         
-        conv.messages.append(message)
+        normalized_message = build_user_message("user", normalize_user_content(message))
+        conv.messages.append(normalized_message)
+        message_text = get_message_text(normalized_message)
         self._log_agent_event(
             "INFO",
             "message.sent",
             "message sent to conversation",
             conversation_id=conversation_id,
             workspace_id=conv.workspace_id,
-            extra={"message_length": len(message), "message_id": message_id, "context_enabled": bool(parent_chain_messages or current_conversation_messages)},
+            extra={"message_length": len(message_text), "message_id": message_id, "context_enabled": bool(parent_chain_messages or current_conversation_messages)},
         )
 
         task = asyncio.create_task(
             self._run_agent_async(
                 conv.workspace_id,
-                message,
+                normalized_message,
                 conversation_id,
                 message_id,
                 stream_callback,
@@ -349,7 +352,7 @@ class AgentService:
     async def _run_agent_async(
         self,
         workspace_id: str,
-        message: str,
+        message: Dict[str, Any],
         conversation_id: str,
         message_id: str = None,
         stream_callback=None,
@@ -621,7 +624,7 @@ class AgentService:
     async def send_message_and_wait(
         self,
         conversation_id: str,
-        message: str
+        message: Any
     ) -> dict:
         """
         发送消息并等待完成（阻塞式，用于简单场景）
@@ -638,7 +641,7 @@ class AgentService:
 
     def new_agent(
         self,
-        user_message: str,
+        user_message: Any,
         workspace_id: Optional[str] = None,
         session_id: Optional[str] = None
     ):
@@ -697,7 +700,7 @@ class AgentService:
 
     async def new_agent_async(
         self,
-        user_message: str,
+        user_message: Any,
         workspace_id: Optional[str] = None,
         session_id: Optional[str] = None
     ) -> asyncio.Task:

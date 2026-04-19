@@ -7,10 +7,11 @@ from enum import Enum
 from datetime import datetime, timezone
 
 from core.logging import bind_ctx
-from singleton import get_agent_service, get_conversation_dao, get_logging_runtime, get_message_queue
+from singleton import get_agent_service, get_conversation_dao, get_logging_runtime, get_message_queue, get_workspace_service
 from service.agent_service.agent_service import AgentService
 from data.conversation_dao import ConversationDAO
 from service.session_service.canonical import Message, SegmentType
+from service.session_service.message_content import deserialize_parts, normalize_user_content, parts_to_plain_text, resolve_runtime_parts, serialize_parts
 
 
 class ConversationState(Enum):
@@ -50,6 +51,7 @@ class ConversationService:
         self._dao: ConversationDAO = get_conversation_dao()
         self._mq = None
         self._runtime = None
+        self._workspace_service = get_workspace_service()
         self._conversations: Dict[str, ConversationInfo] = {}
         self._lock = asyncio.Lock()
 
@@ -78,7 +80,7 @@ class ConversationService:
     async def create_conversation(
         self,
         session_id: int,
-        user_content: str,
+        user_content: Any,
     ) -> str:
         conversation_id = str(uuid.uuid4())
         
@@ -92,10 +94,11 @@ class ConversationService:
 
         workspace_id = session.workspace_id
 
+        normalized_parts = normalize_user_content(user_content)
         await self._dao.create_conversation(
             conversation_id=conversation_id,
             session_id=session_id,
-            user_content=user_content,
+            user_content=serialize_parts(normalized_parts),
         )
 
         async with self._lock:
@@ -127,7 +130,7 @@ class ConversationService:
     async def prepare_message(
         self,
         conversation_id: str,
-        user_message: str,
+        user_message: Any,
     ) -> Dict[str, Any]:
         """准备消息 - 更新用户消息内容但不执行 Agent
         
@@ -160,9 +163,10 @@ class ConversationService:
             if conv_info.state == ConversationState.RUNNING:
                 raise RuntimeError(f"Conversation {conversation_id} is already running")
 
+        normalized_parts = normalize_user_content(user_message)
         await self._dao.update_conversation(
             conversation_id,
-            user_content=user_message,
+            user_content=serialize_parts(normalized_parts),
         )
 
         message_id = f"msg-{conversation_id}-{int(datetime.now().timestamp() * 1000)}"
@@ -203,10 +207,22 @@ class ConversationService:
         context = await self._dao.get_session_context(
             conv_info.session_id, conversation_id
         )
+        workspace_dir = self._workspace_service.get_workspace_dir(conv_info.workspace_id)
 
         persisted_conv = await self._dao.get_conversation_by_id(conversation_id)
-        user_message = persisted_conv.user_content if persisted_conv else ""
-        history_context = context if context else []
+        user_message_parts = resolve_runtime_parts(
+            deserialize_parts(persisted_conv.user_content) if persisted_conv else [],
+            workspace_dir,
+        )
+        history_context = []
+        for item in context if context else []:
+            role = item.get("role", "user")
+            parts = item.get("parts") if isinstance(item, dict) else item
+            history_context.append({
+                "role": role,
+                "parts": resolve_runtime_parts(parts, workspace_dir),
+                "content": item.get("content", "") if isinstance(item, dict) else "",
+            })
 
         message_id = f"msg-{conversation_id}-{int(datetime.now().timestamp() * 1000)}"
 
@@ -234,7 +250,7 @@ class ConversationService:
         try:
             task = await self._agent.send_message(
                 conversation_id=conv_info.conversation_id,
-                message=user_message,
+                message=user_message_parts,
                 message_id=message_id,
                 stream_callback=None,
                 parent_chain_messages=history_context,
@@ -325,10 +341,13 @@ class ConversationService:
         conv = await self._dao.get_conversation_by_id(conversation_id)
         if not conv:
             return None
+        user_parts = deserialize_parts(conv.user_content)
+        user_text = parts_to_plain_text(user_parts)
         return {
             "id": conv.id,
             "session_id": conv.session_id,
-            "user_content": conv.user_content,
+            "user_content": user_text,
+            "user_content_parts": user_parts,
             "assistant_content": conv.assistant_content,
             "thinking_content": conv.thinking_content,
             "state": conv.state,
@@ -343,7 +362,8 @@ class ConversationService:
             {
                 "id": conv.id,
                 "session_id": conv.session_id,
-                "user_content": conv.user_content,
+                "user_content": parts_to_plain_text(deserialize_parts(conv.user_content)),
+                "user_content_parts": deserialize_parts(conv.user_content),
                 "assistant_content": conv.assistant_content,
                 "thinking_content": conv.thinking_content,
                 "state": conv.state,

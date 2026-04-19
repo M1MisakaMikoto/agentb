@@ -22,6 +22,7 @@ from .tool_registry import (
     generate_tool_prompt, is_tool_allowed, get_allowed_tools, _write_tool_event
 )
 from service.session_service.canonical import SegmentType
+from service.session_service.message_content import build_user_message
 from core.logging import console
 
 
@@ -448,7 +449,7 @@ def _execute_thinking_tool(
         context_parts.append("请思考并执行当前任务。")
         prompt = "\n".join(context_parts)
         messages = list(parent_chain_messages)
-        messages.append({"role": "user", "content": prompt})
+        messages.append(build_user_message("user", prompt))
 
         def thinking_token_callback(token: str):
             if send_message:
@@ -522,7 +523,7 @@ def _execute_chat_tool(
         context_parts.append("请向用户输出回复。")
         prompt = "\n".join(context_parts)
         messages = list(parent_chain_messages)
-        messages.append({"role": "user", "content": prompt})
+        messages.append(build_user_message("user", prompt))
 
         def chat_token_callback(token: str):
             if send_message:

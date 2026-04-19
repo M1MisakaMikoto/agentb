@@ -182,17 +182,40 @@ class ConsoleFormatter:
         print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
     
     @classmethod
+    def _stringify_message_content(cls, content) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            rendered = []
+            for item in content:
+                if isinstance(item, dict):
+                    item_type = item.get("type")
+                    if item_type == "text":
+                        rendered.append(str(item.get("text", "")))
+                    elif item_type == "image_url":
+                        image_url = item.get("image_url") or {}
+                        url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
+                        rendered.append(f"[image_url] {url[:120]}{'...' if len(url) > 120 else ''}")
+                    else:
+                        rendered.append(str(item))
+                else:
+                    rendered.append(str(item))
+            return "\n".join(rendered)
+        return str(content)
+
+    @classmethod
     def messages_box(cls, title: str, messages: list, width: int = 80) -> None:
         print()
         print(cls.BOX_CHARS["top_left"] + "─" + f" {title} " + "─" * (width - len(title) - 5) + cls.BOX_CHARS["top_right"])
         print(cls.BOX_CHARS["vertical"])
-        
+
         for msg in messages:
-            lines = msg.content.split("\n")
+            content = cls._stringify_message_content(getattr(msg, "content", msg))
+            lines = content.split("\n")
             for line in lines:
                 print(cls.BOX_CHARS["vertical"] + "  " + line)
             print(cls.BOX_CHARS["vertical"])
-        
+
         print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
     
     @classmethod

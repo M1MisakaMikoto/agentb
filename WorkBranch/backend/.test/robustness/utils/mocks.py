@@ -62,7 +62,7 @@ class MockLLMService:
             ]
         })
     
-    def chat(self, messages: List[Dict[str, str]], system_prompt: Optional[str] = None, **kwargs) -> str:
+    def chat(self, messages: List[Dict[str, Any]], system_prompt: Optional[str] = None, **kwargs) -> str:
         self._current_call += 1
         self.call_history.append({
             "messages": messages,
@@ -79,7 +79,7 @@ class MockLLMService:
         
         return self._generate_response(messages)
     
-    def chat_stream(self, messages: List[Dict[str, str]], system_prompt: Optional[str] = None, 
+    def chat_stream(self, messages: List[Dict[str, Any]], system_prompt: Optional[str] = None,
                     stream_callback: Optional[Callable[[str], None]] = None, **kwargs):
         self._current_call += 1
         self.call_history.append({
@@ -102,7 +102,7 @@ class MockLLMService:
                 stream_callback(char)
             yield char
     
-    def structured_output(self, messages: List[Dict[str, str]], schema: Any, 
+    def structured_output(self, messages: List[Dict[str, Any]], schema: Any,
                           system_prompt: Optional[str] = None, **kwargs) -> Any:
         self._current_call += 1
         self.call_history.append({

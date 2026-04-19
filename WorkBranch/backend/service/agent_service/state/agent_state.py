@@ -90,6 +90,8 @@ class TodoItem(TypedDict, total=False):
 class AgentState(TypedDict):
     """Agent 状态定义"""
     messages: List[Any]
+    current_user_message_text: Optional[str]
+    current_user_message_parts: Optional[List[dict]]
     workspace_id: str
     plan: List[Task]
     results: List[Any]

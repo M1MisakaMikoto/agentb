@@ -52,7 +52,10 @@ DEFAULT_SETTINGS = {
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-4o-mini",
         "temperature": 0.7,
-        "max_tokens": 4096
+        "max_tokens": 4096,
+        "supports_vision": False,
+        "vision_input_mode": "url",
+        "reject_image_when_unsupported": False
     },
     "workspace": {
         "base_dir": "workspaces"

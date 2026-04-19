@@ -4,7 +4,7 @@ from langgraph.graph import StateGraph, END
 
 from singleton import get_workspace_service
 
-from .director_agent import build_initial_state, create_orchestrator_graph_v3
+from .director_agent import build_initial_state, create_orchestrator_graph_v3, get_last_user_message_text
 from .decision.complexity_analyzer import ExecutionMode
 from .subgraphs import run_tool_execution
 from ..persistence import PersistenceService
@@ -53,7 +53,7 @@ def build_agent_outcome(agent_type: str, final_state: dict) -> dict:
     }
 
 
-def _build_default_tools(agent_type: str, user_message: str) -> list[dict]:
+def _build_default_tools(agent_type: str, user_message: Any) -> list[dict]:
     if agent_type == "explore_agent":
         return [
             {"tool": "thinking", "args": {"description": user_message}},
@@ -126,7 +126,7 @@ def create_child_agent_graph(
         if tool_name == "thinking":
             remaining = pending_tools[1:]
             if not remaining:
-                remaining = [{"tool": "chat", "args": {"description": state["messages"][-1] if state.get("messages") else ""}}]
+                remaining = [{"tool": "chat", "args": {"description": get_last_user_message_text(state)}}]
             return {
                 "tool_history": new_history,
                 "pending_tools": remaining,
@@ -198,7 +198,7 @@ def create_agent_graph(
 
 def run_agent_graph(
     agent_type: str,
-    user_message: str,
+    user_message: Any,
     workspace_id: str,
     llm_service=None,
     token_callback=None,
@@ -226,6 +226,7 @@ def run_agent_graph(
     if saved_state:
         initial_state = saved_state
         initial_state["messages"] = initial_state.get("messages", []) + [user_message]
+        initial_state["current_user_message_text"] = get_last_user_message_text(initial_state)
     else:
         initial_state = build_initial_state(
             user_message=user_message,
@@ -241,7 +242,7 @@ def run_agent_graph(
         initial_state["execution_mode"] = config["execution_mode"]
         initial_state["has_tool_use"] = bool(initial_state.get("pending_tools"))
         if not initial_state.get("pending_tools"):
-            initial_state["pending_tools"] = _build_default_tools(agent_type, user_message)
+            initial_state["pending_tools"] = _build_default_tools(agent_type, get_last_user_message_text(initial_state))
             initial_state["has_tool_use"] = bool(initial_state.get("pending_tools"))
 
     graph = create_agent_graph(

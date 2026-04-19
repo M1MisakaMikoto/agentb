@@ -2,6 +2,8 @@ from typing import List, Optional
 from dataclasses import dataclass
 import json
 
+from service.session_service.message_content import build_user_message, deserialize_parts, get_message_text, serialize_parts, try_deserialize_parts
+
 
 @dataclass
 class Session:
@@ -78,6 +80,8 @@ class ConversationDAO:
         session_id: int,
         user_content: str,
     ) -> None:
+        if not isinstance(user_content, str):
+            user_content = serialize_parts(user_content)
         sql = '''
             INSERT INTO conversations (id, session_id, user_content, state)
             VALUES (%s, %s, %s, 'pending')
@@ -98,6 +102,8 @@ class ConversationDAO:
         params = []
 
         if user_content is not None:
+            if not isinstance(user_content, str):
+                user_content = serialize_parts(user_content)
             updates.append('user_content = %s')
             params.append(user_content)
         if assistant_content is not None:
@@ -178,7 +184,8 @@ class ConversationDAO:
         context = []
         for row in rows:
             row_dict = dict(row)
-            context.append({"role": "user", "content": row_dict["user_content"]})
+            user_parts = deserialize_parts(row_dict["user_content"])
+            context.append(build_user_message("user", user_parts))
             if row_dict["assistant_content"]:
                 assistant_content = row_dict["assistant_content"]
                 try:
@@ -195,8 +202,12 @@ class ConversationDAO:
                     assistant_content = "".join(parts) if parts else assistant_content
                 except Exception:
                     pass
-                context.append({"role": "assistant", "content": assistant_content})
-        
+                context.append({
+                    "role": "assistant",
+                    "parts": [{"type": "text", "text": assistant_content}],
+                    "content": assistant_content,
+                })
+
         return context
 
     async def delete_conversations_after(self, conversation_id: str) -> int:

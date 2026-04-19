@@ -1,10 +1,11 @@
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from singleton import get_conversation_dao, get_conversation_service, get_session_history
 from controller.VO.result import Result
+from service.session_service.message_content import MessageContentError, normalize_user_content
 
 router = APIRouter(prefix="/session", tags=["session"])
 
@@ -14,7 +15,8 @@ class CreateSessionBody(BaseModel):
 
 
 class CreateConversationBody(BaseModel):
-    user_content: str
+    user_content: str = ""
+    user_content_parts: Optional[list[dict[str, Any]]] = None
 
 
 @router.get("/sessions")
@@ -107,10 +109,14 @@ async def create_conversation(session_id: int, body: CreateConversationBody) -> 
     
     service = get_conversation_service()
     try:
+        raw_content = body.user_content_parts if body.user_content_parts is not None else body.user_content
+        normalized_parts = normalize_user_content(raw_content)
         conversation_id = await service.create_conversation(
             session_id=session_id,
-            user_content=body.user_content,
+            user_content=normalized_parts,
         )
+    except MessageContentError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
         if "already has a running conversation" in str(e):
             raise HTTPException(status_code=409, detail="当前会话已有正在执行的对话，无法创建新对话") from e

@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 import traceback
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -13,6 +13,7 @@ from core.logging import bind_ctx, get_ctx
 from singleton import get_logging_runtime, get_message_queue, get_conversation_service
 from service.session_service.mq import MessageQueue
 from service.session_service.canonical import SegmentType
+from service.session_service.message_content import MessageContentError, normalize_user_content
 
 router = APIRouter(prefix="/session/conversations", tags=["conversations"])
 STREAM_MAX_TIMEOUT_TICKS = 300
@@ -20,6 +21,7 @@ STREAM_MAX_TIMEOUT_TICKS = 300
 
 class SendConversationMessageBody(BaseModel):
     message: str = ""
+    message_parts: Optional[list[dict[str, Any]]] = None
     enable_context: bool = False
 
 
@@ -71,7 +73,13 @@ async def prepare_conversation_message(
     if conversation.get("state") == "running":
         raise HTTPException(status_code=400, detail="对话正在运行中")
 
-    result = await service.prepare_message(conversation_id, body.message)
+    try:
+        raw_message = body.message_parts if body.message_parts is not None else body.message
+        normalized_parts = normalize_user_content(raw_message)
+    except MessageContentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    result = await service.prepare_message(conversation_id, normalized_parts)
     return Result.success(data=result)
 
 

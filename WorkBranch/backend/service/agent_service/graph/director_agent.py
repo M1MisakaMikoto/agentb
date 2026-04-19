@@ -27,6 +27,7 @@ from .subgraphs.tool_executor import run_tool_execution
 from service.session_service.canonical import SegmentType
 from service.agent_service.service.plan_file_service import plan_file_service
 from service.agent_service.service.workspace_service import WorkspaceService
+from service.session_service.message_content import build_prompt_safe_text, get_message_parts, get_message_text, has_image_parts, resolve_runtime_parts
 from core.logging import console
 from singleton import get_workspace_service
 
@@ -85,6 +86,103 @@ CHAT_SYSTEM_PROMPT = """你是一个专业的软件工程师助手。当前需�
 - 使用友好、专业的语气"""
 
 
+def _build_chat_system_prompt(settings_service=None) -> str:
+    prompt = CHAT_SYSTEM_PROMPT
+    if settings_service is None:
+        return prompt
+
+    try:
+        supports_vision = bool(settings_service.get("llm:supports_vision"))
+    except Exception:
+        supports_vision = False
+
+    if supports_vision:
+        prompt += "\n\n你使用的大模型是原生多模态模型，支持图像理解。"
+        prompt += "\n如果当前消息中已经提供图片，请直接基于图片内容进行分析并回答，不要声称缺少图像工具或要求用户再把图片转成文字。"
+    return prompt
+
+
+def _supports_native_multimodal(settings_service=None) -> bool:
+    if settings_service is None:
+        return False
+    try:
+        return bool(settings_service.get("llm:supports_vision"))
+    except Exception:
+        return False
+
+
+def _should_use_native_multimodal_chat(state: AgentState, settings_service=None) -> bool:
+    current_agent_type = state.get("agent_type") or "director_agent"
+    if current_agent_type != "director_agent":
+        return False
+    user_message_parts = state.get("current_user_message_parts") or get_last_user_message_parts(state)
+    return _supports_native_multimodal(settings_service) and has_image_parts(user_message_parts)
+
+
+def _build_native_multimodal_chat_task(state: AgentState) -> dict:
+    user_message = state.get("current_user_message_text") or get_last_user_message_text(state)
+    user_message_parts = state.get("current_user_message_parts") or get_last_user_message_parts(state)
+    chat_task = user_message or "请直接分析这张图片并回答用户。"
+    tool_args = {
+        "description": chat_task,
+        "multimodal_parts": user_message_parts,
+    }
+    return {
+        "pending_tools": [{"tool": "chat", "args": tool_args}],
+        "has_tool_use": True,
+        "next_action": {
+            "kind": "tool",
+            "tool_name": "chat",
+            "tool_args": tool_args,
+            "task_description": chat_task,
+        },
+        "mode_reason": "检测到图片输入，DIRECT 模式直接走原生多模态 chat",
+    }
+
+
+def _build_direct_chat_messages(
+    task_description: str,
+    parent_chain_messages: List[dict],
+    current_conversation_messages: List[dict],
+    multimodal_parts: Optional[List[dict]] = None,
+    message_context: Optional[dict] = None,
+) -> List[dict]:
+    if multimodal_parts:
+        workspace_dir = None
+        if message_context and message_context.get("workspace_id"):
+            workspace_dir = workspace_service.get_workspace_dir(message_context.get("workspace_id"))
+        resolved_parts = resolve_runtime_parts(multimodal_parts, workspace_dir)
+        messages = list(parent_chain_messages)
+        messages.extend(current_conversation_messages)
+        messages.append({
+            "role": "user",
+            "parts": resolved_parts,
+            "content": build_prompt_safe_text(resolved_parts),
+        })
+        return messages
+
+    full_prompt = build_context_prompt(
+        parent_chain_messages,
+        current_conversation_messages,
+        f"请向用户输出回复: {task_description}"
+    )
+    return [{"role": "user", "content": full_prompt}]
+
+
+def get_last_user_message_text(state: AgentState) -> str:
+    messages = state.get("messages") or []
+    if not messages:
+        return ""
+    return get_message_text(messages[-1])
+
+
+def get_last_user_message_parts(state: AgentState) -> list[dict]:
+    messages = state.get("messages") or []
+    if not messages:
+        return []
+    return get_message_parts(messages[-1])
+
+
 def build_context_prompt(
     parent_chain_messages: List[dict],
     current_conversation_messages: List[dict],
@@ -96,7 +194,7 @@ def build_context_prompt(
         prompt_parts.append("[历史对话]")
         for msg in parent_chain_messages:
             role = msg.get("role", "user")
-            content = msg.get("content", "")
+            content = build_prompt_safe_text(msg)
             prompt_parts.append(f"{role}: {content}")
         prompt_parts.append("")
     
@@ -104,7 +202,7 @@ def build_context_prompt(
         prompt_parts.append("[当前对话内历史]")
         for msg in current_conversation_messages:
             role = msg.get("role", "user")
-            content = msg.get("content", "")
+            content = build_prompt_safe_text(msg)
             prompt_parts.append(f"{role}: {content}")
         prompt_parts.append("")
     
@@ -115,7 +213,7 @@ def build_context_prompt(
 
 
 def build_initial_state(
-    user_message: str,
+    user_message: Any,
     workspace_id: str,
     parent_chain_messages: List[dict] = None,
     current_conversation_messages: List[dict] = None,
@@ -127,6 +225,8 @@ def build_initial_state(
 ) -> dict:
     return {
         "messages": [user_message],
+        "current_user_message_text": build_prompt_safe_text(user_message),
+        "current_user_message_parts": get_message_parts(user_message) if isinstance(user_message, dict) else get_message_parts({"role": "user", "content": user_message}),
         "workspace_id": workspace_id,
         "plan": [],
         "results": [],
@@ -201,13 +301,15 @@ def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute",
     return "decide"
 
 
-def route_after_analyze(_state: dict) -> str:
+def route_after_analyze(state: dict) -> str:
+    if state.get("pending_tools"):
+        return "execute"
     return "decide"
 
 
 def create_analyze_node(_llm_service=None, message_context=None, _settings_service=None):
     def analyze_node(state: AgentState) -> dict:
-        user_message = state["messages"][-1] if state["messages"] else ""
+        user_message = get_last_user_message_text(state)
         current_agent_type = state.get("agent_type") or "director_agent"
         forced_execution_mode = state.get("forced_execution_mode")
 
@@ -237,11 +339,6 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
             "confidence": 0.7,
         }
 
-        console.decision_box(
-            route_after_analyze({'execution_mode': mode_decision['mode']}),
-            f"执行模式: {mode_decision['mode']}\n原因: {mode_decision['reason']}"
-        )
-
         result = {
             "intent_analysis": intent_analysis,
             "execution_mode": mode_decision["mode"],
@@ -252,6 +349,14 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
             "pending_tools": [],
             "next_action": None,
         }
+
+        if _should_use_native_multimodal_chat(state, _settings_service):
+            result.update(_build_native_multimodal_chat_task(state))
+
+        console.decision_box(
+            route_after_analyze({'execution_mode': mode_decision['mode']}),
+            f"执行模式: {result['execution_mode']}\n原因: {result['mode_reason']}"
+        )
 
         if message_context:
             send_message = message_context.get("send_message")
@@ -295,7 +400,7 @@ def _format_todo_prompt_block(todos: List[str], current_todo_index: int) -> str:
 
 def create_decide_tool_action_node(llm_service=None, settings_service=None, message_context=None):
     def decide_tool_action_node(state: AgentState) -> dict:
-        user_message = state["messages"][-1] if state["messages"] else ""
+        user_message = get_last_user_message_text(state)
         current_agent_type = state.get("agent_type") or "director_agent"
         tool_history = state.get("tool_history", []) or []
         last_tool_result = state.get("last_tool_result")
@@ -417,6 +522,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
 9. 如果任务拆分发生变化，直接用 update_todo 重写整个 todo 列表
 10. 只有当前工作真的完成时，才能返回 step_done；只有所有工作都完成时，才能返回 reply
 11. 如果拿不准下一步该用什么工具或缺少必填参数，返回 blocked，不要返回不完整的 tool JSON
+12. 如果发现现有工具无法解决用户的问题，例如读取二进制文件、处理特定格式文件，但你刚好没有能处理这类文件的工具时，可以直接reply向用户说明情况。
 """
 
         context_prompt = build_context_prompt(parent_chain_messages, current_conversation_messages, current_task)
@@ -560,7 +666,7 @@ def create_step_review_node(llm_service=None, message_context=None):
 
 def create_plan_node(llm_service=None, token_callback=None, settings_service=None, message_context=None):
     def plan_node(state: AgentState) -> dict:
-        user_message = state["messages"][-1] if state["messages"] else ""
+        user_message = get_last_user_message_text(state)
         workspace_id = state["workspace_id"]
 
         console.step("规划节点", "分析节点", user_message)
@@ -1394,6 +1500,7 @@ def _execute_chat_tool_direct(
     message_context: dict,
     parent_chain_messages: List[dict],
     current_conversation_messages: List[dict],
+    multimodal_parts: Optional[List[dict]] = None,
 ) -> dict:
     if not llm_service:
         result = f"回复任务: {task_description} (LLM 服务未配置)"
@@ -1410,12 +1517,13 @@ def _execute_chat_tool_direct(
         })
 
     try:
-        full_prompt = build_context_prompt(
-            parent_chain_messages,
-            current_conversation_messages,
-            f"请向用户输出回复: {task_description}"
+        messages = _build_direct_chat_messages(
+            task_description=task_description,
+            parent_chain_messages=parent_chain_messages,
+            current_conversation_messages=current_conversation_messages,
+            multimodal_parts=multimodal_parts,
+            message_context=message_context,
         )
-        messages = [{"role": "user", "content": full_prompt}]
 
         def chat_token_callback(token: str):
             if send_message:
@@ -1425,7 +1533,8 @@ def _execute_chat_tool_direct(
                 })
 
         result = ""
-        for chunk in llm_service.chat_stream(messages, CHAT_SYSTEM_PROMPT, chat_token_callback):
+        chat_system_prompt = _build_chat_system_prompt(message_context.get("settings_service") if message_context else None)
+        for chunk in llm_service.chat_stream(messages, chat_system_prompt, chat_token_callback):
             result += chunk
 
         console.success("对话回复完成")
@@ -1479,20 +1588,30 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                 "工具参数": tool_args
             })
 
-            tool_result = run_tool_execution(
-                tool_name=tool_name,
-                tool_args=tool_args,
-                workspace_id=workspace_id,
-                previous_calls=state.get("tool_history", []),
-                workspace_service=workspace_service,
-                llm_service=llm_service,
-                token_callback=token_callback,
-                task_description=task_description,
-                previous_results=[item.get("result") for item in state.get("tool_history", []) if item.get("result")],
-                agent_type=current_agent_type,
-                settings_service=settings_service,
-                message_context=message_context,
-            )
+            if tool_name == "chat":
+                tool_result = _execute_chat_tool_direct(
+                    task_description=task_description,
+                    llm_service=llm_service,
+                    message_context=message_context,
+                    parent_chain_messages=parent_chain_messages,
+                    current_conversation_messages=current_conversation_messages,
+                    multimodal_parts=tool_args.get("multimodal_parts"),
+                )
+            else:
+                tool_result = run_tool_execution(
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    workspace_id=workspace_id,
+                    previous_calls=state.get("tool_history", []),
+                    workspace_service=workspace_service,
+                    llm_service=llm_service,
+                    token_callback=token_callback,
+                    task_description=task_description,
+                    previous_results=[item.get("result") for item in state.get("tool_history", []) if item.get("result")],
+                    agent_type=current_agent_type,
+                    settings_service=settings_service,
+                    message_context=message_context,
+                )
 
             result_str = str(tool_result.get("result", "")) if tool_result.get("result") is not None else ""
             if len(result_str) > 4000:
@@ -1610,6 +1729,9 @@ def route_after_todo_review(_state: AgentState) -> str:
 
 
 def route_after_execute(state: AgentState) -> str:
+    if state.get("final_reply"):
+        return "done"
+
     next_action = state.get("next_action") or {}
     mode_name = _mode_name(state.get("execution_mode"))
     if next_action.get("kind") == "enter_plan":
@@ -1636,6 +1758,7 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
     graph.add_conditional_edges("analyze", route_after_analyze, {
         "plan": "plan",
         "decide": "decide",
+        "execute": "execute",
         "done": END
     })
 
@@ -1672,7 +1795,7 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
 
 
 def run_graph_v3(
-    user_message: str,
+    user_message: Any,
     workspace_id: str,
     llm_service=None,
     token_callback=None,
