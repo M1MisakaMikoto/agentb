@@ -21,35 +21,13 @@ from .tool_registry import (
     FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS, SQL_TOOLS,
     generate_tool_prompt, is_tool_allowed, get_allowed_tools, _write_tool_event
 )
+from service.agent_service.prompts.graph_prompts import (
+    CHAT_SYSTEM_PROMPT,
+    THINK_SYSTEM_PROMPT,
+    build_special_tool_messages,
+)
 from service.session_service.canonical import SegmentType
-from service.session_service.message_content import build_user_message
 from core.logging import console
-
-
-THINK_SYSTEM_PROMPT = """你是一个专业的软件工程师助手。当前正在执行一个任务计划中的某个步骤。
-
-你会收到：
-1. 当前任务描述
-2. 之前任务的执行结果（如果有）
-
-请针对当前任务进行思考：
-1. 分析任务目标
-2. 结合之前的执行结果（如果有）
-3. 给出你的思考过程和结论
-
-请简洁清晰地回答，不要过于冗长。"""
-
-CHAT_SYSTEM_PROMPT = """你是一个专业的软件工程师助手。当前需要向用户输出回复。
-
-你会收到：
-1. 当前任务描述
-2. 之前任务的执行结果（如果有）
-
-请直接向用户输出回复内容：
-- 语言简洁清晰
-- 直接回答用户问题
-- 不要输出思考过程，只输出最终回复
-- 使用友好、专业的语气"""
 
 TOOL_EXECUTION_TIMEOUT_SECONDS = 30
 
@@ -437,19 +415,12 @@ def _execute_thinking_tool(
         })
 
     try:
-        context_parts = [f"当前任务: {task_description}"]
-
-        if previous_results:
-            context_parts.append("\n--- 之前任务的执行结果 ---")
-            for i, prev_result in enumerate(previous_results, 1):
-                truncated = prev_result[:500] + "..." if len(prev_result) > 500 else prev_result
-                context_parts.append(f"任务{i}结果:\n{truncated}")
-            context_parts.append("---\n")
-
-        context_parts.append("请思考并执行当前任务。")
-        prompt = "\n".join(context_parts)
-        messages = list(parent_chain_messages)
-        messages.append(build_user_message("user", prompt))
+        messages = build_special_tool_messages(
+            task_description=task_description,
+            previous_results=previous_results,
+            final_instruction="请思考并执行当前任务。",
+            parent_chain_messages=parent_chain_messages,
+        )
 
         def thinking_token_callback(token: str):
             if send_message:
@@ -511,19 +482,12 @@ def _execute_chat_tool(
         })
 
     try:
-        context_parts = [f"当前任务: {task_description}"]
-
-        if previous_results:
-            context_parts.append("\n--- 之前任务的执行结果 ---")
-            for i, prev_result in enumerate(previous_results, 1):
-                truncated = prev_result[:500] + "..." if len(prev_result) > 500 else prev_result
-                context_parts.append(f"任务{i}结果:\n{truncated}")
-            context_parts.append("---\n")
-
-        context_parts.append("请向用户输出回复。")
-        prompt = "\n".join(context_parts)
-        messages = list(parent_chain_messages)
-        messages.append(build_user_message("user", prompt))
+        messages = build_special_tool_messages(
+            task_description=task_description,
+            previous_results=previous_results,
+            final_instruction="请向用户输出回复。",
+            parent_chain_messages=parent_chain_messages,
+        )
 
         def chat_token_callback(token: str):
             if send_message:

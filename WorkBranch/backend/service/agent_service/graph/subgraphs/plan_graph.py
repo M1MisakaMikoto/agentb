@@ -6,9 +6,12 @@ import re
 
 from ...state import AgentState, Task, IntentAnalysis
 from ..director_agent import get_last_user_message_text
-from .tool_registry import generate_tool_prompt
+from service.agent_service.prompts.graph_prompts import (
+    build_intent_analysis_messages,
+    build_plan_generation_messages,
+    get_plan_system_prompt as _graph_get_plan_system_prompt,
+)
 from service.session_service.canonical import SegmentType
-from service.session_service.message_content import build_prompt_safe_text
 
 
 def _send_plan_start(send_message, metadata: dict = None):
@@ -59,99 +62,15 @@ class TaskPlan(BaseModel):
     tasks: List[TaskItem] = Field(description="任务列表")
 
 
-INTENT_ANALYSIS_PROMPT = """你是一个专业的需求分析专家。请分析用户的输入，识别其真实意图和需求。
-
-{tool_prompt}
-
-## 意图类型说明
-- develop: 开发新功能、编写代码、创建文件
-- explore: 探索代码库、查找文件、理解项目结构
-- review: 代码审查、检查问题、优化建议
-- question: 问答、咨询、解释说明
-- debug: 调试问题、修复错误、排查故障
-- refactor: 重构代码、优化结构、改进设计
-- other: 其他类型
-
-## 输出格式要求
-请严格按照以下 JSON 格式输出：
-
-```json
-{
-  "intent_type": "意图类型",
-  "summary": "需求摘要（一句话描述核心需求）",
-  "key_points": ["关键点1", "关键点2"],
-  "suggested_tools": ["建议使用的工具1", "建议使用的工具2"],
-  "complexity": "simple/medium/complex",
-  "confidence": 0.95
-}
-```
-
-## 分析要点
-1. 准确识别用户的主要意图
-2. 提取核心需求点
-3. 判断任务复杂度
-4. 给出置信度（0-1之间）
-5. 只输出 JSON，不要有其他文字
-6. suggested_tools 只能从上面的可用工具列表中选择，不要使用列表中不存在的工具"""
-
-
-PLAN_SYSTEM_PROMPT_BASE = """你是一个专业的软件工程师助手。你的任务是根据用户需求生成一个清晰的执行计划。
-
-{tool_prompt}
-
-## 任务阶段说明
-每个任务必须属于以下四个阶段之一：
-1. **research** - 研究阶段：探索代码库，理解问题，收集信息
-2. **synthesis** - 综合阶段：综合研究结果，制定实现规范，设计解决方案
-3. **implementation** - 实现阶段：实现代码，执行工具，应用更改
-4. **verification** - 验证阶段：运行测试，验证功能，检查质量
-
-## 输出格式要求
-你必须严格按照以下 JSON 格式输出，不要有任何其他文字：
-
-```json
-{{
-  "tasks": [
-    {{
-      "id": 1,
-      "description": "任务描述",
-      "phase": "research/synthesis/implementation/verification",
-      "tool": "工具名称或null",
-      "args": {{"参数名": "参数值"}}或null
-    }}
-  ]
-}}
-```
-
-## 注意事项
-1. 每个任务必须包含 id, description, phase, tool, args 五个字段
-2. phase 必须是 research, synthesis, implementation, verification 之一
-3. tool 如果不需要使用工具，设为 null
-4. args 如果没有参数，设为 null
-5. 只输出 JSON，不要有任何解释或额外文字
-6. 任务应该按照阶段顺序排列：research -> synthesis -> implementation -> verification
-7. 每个阶段可以有多个任务，但必须保持阶段顺序"""
-
 
 def get_plan_system_prompt(agent_type: str = "director_agent", settings_service=None) -> str:
-    """
-    获取包含工具列表的系统 prompt
-    
-    Args:
-        agent_type: Agent 类型
-        settings_service: 设置服务实例
-        
-    Returns:
-        完整的系统 prompt
-    """
-    tool_prompt = generate_tool_prompt(agent_type, settings_service)
-    return PLAN_SYSTEM_PROMPT_BASE.format(tool_prompt=tool_prompt)
+    return _graph_get_plan_system_prompt(agent_type, settings_service)
 
 
 def parse_intent_from_text(text: str) -> IntentAnalysis:
     """从 LLM 响应中解析意图分析结果"""
     text = text.strip()
-    
+
     json_match = re.search(r'```json\s*([\s\S]*?)\s*```', text)
     if json_match:
         json_str = json_match.group(1)
@@ -161,7 +80,7 @@ def parse_intent_from_text(text: str) -> IntentAnalysis:
             json_str = json_match2.group(0)
         else:
             json_str = text
-    
+
     try:
         data = json.loads(json_str)
         return {
@@ -197,59 +116,6 @@ def _phase_start(send_message, phase: str):
 def _phase_stop(send_message):
     print(f"[Plan] Phase end")
     _send_plan_end(send_message)
-
-
-def _format_parent_chain_block(parent_chain_messages: List[dict]) -> str:
-    """将父节点链消息格式化为历史对话记录版块"""
-    if not parent_chain_messages:
-        return ""
-    
-    lines = ["## 历史对话记录", ""]
-    lines.append("以下是之前对话分支的历史记录，供参考：")
-    lines.append("")
-    
-    for msg in parent_chain_messages:
-        role = msg.get("role", "unknown")
-        content = build_prompt_safe_text(msg)
-        role_label = "用户" if role == "user" else "助手" if role == "assistant" else role
-        lines.append(f"**{role_label}**: {content}")
-    
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    
-    return "\n".join(lines)
-
-
-def _format_current_conversation_block(current_conversation_messages: List[dict]) -> str:
-    """将当前对话内的历史消息格式化为版块"""
-    if not current_conversation_messages:
-        return ""
-    
-    lines = ["## 当前对话内历史内容", ""]
-    lines.append("以下是当前对话内之前的交互记录：")
-    lines.append("")
-    
-    for msg in current_conversation_messages:
-        role = msg.get("role", "unknown")
-        content = build_prompt_safe_text(msg)
-        role_label = "用户" if role == "user" else "助手" if role == "assistant" else role
-        lines.append(f"**{role_label}**: {content}")
-    
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    
-    return "\n".join(lines)
-
-
-def _format_current_question(user_message: str) -> str:
-    """格式化当前用户问题"""
-    return f"""## 当前用户问题
-
-**用户**: {user_message}
-
-"""
 
 
 def phase1_understand(state: AgentState, llm_service=None, token_callback: Optional[Callable[[str], None]] = None, message_context: dict = None, settings_service=None) -> dict:
@@ -289,15 +155,14 @@ def phase1_understand(state: AgentState, llm_service=None, token_callback: Optio
     else:
         try:
             _log(send_message, "正在分析用户意图...")
-            
-            tool_prompt = generate_tool_prompt(agent_type, settings_service)
-            system_prompt = INTENT_ANALYSIS_PROMPT.format(tool_prompt=tool_prompt)
-            
-            parent_chain_block = _format_parent_chain_block(parent_chain_messages)
-            current_conv_block = _format_current_conversation_block(current_conversation_messages)
-            current_question_block = _format_current_question(user_message)
-            prompt = f"{parent_chain_block}{current_conv_block}{current_question_block}请分析以上用户当前问题的意图。"
-            messages = [{"role": "user", "content": prompt}]
+
+            system_prompt, messages = build_intent_analysis_messages(
+                user_message=user_message,
+                parent_chain_messages=parent_chain_messages,
+                current_conversation_messages=current_conversation_messages,
+                agent_type=agent_type,
+                settings_service=settings_service,
+            )
             
             _send_thinking_start(send_message, {"phase": "understand"})
             
@@ -380,26 +245,15 @@ def phase2_design(state: AgentState, llm_service=None, token_callback: Optional[
     else:
         try:
             _log(send_message, "正在生成任务计划...")
-            
-            system_prompt = get_plan_system_prompt(agent_type, settings_service)
-            
-            intent_context = ""
-            if intent_analysis:
-                intent_context = f"""
-## 意图分析结果
-- 意图类型: {intent_analysis.get('intent_type', 'unknown')}
-- 需求摘要: {intent_analysis.get('summary', '')}
-- 关键点: {', '.join(intent_analysis.get('key_points', []))}
-- 建议工具: {', '.join(intent_analysis.get('suggested_tools', []))}
-- 复杂度: {intent_analysis.get('complexity', 'medium')}
-"""
-            
-            context_block = _format_parent_chain_block(parent_chain_messages)
-            current_conv_block = _format_current_conversation_block(current_conversation_messages)
-            current_question_block = _format_current_question(user_message)
-            prompt = f"""{context_block}{current_conv_block}{current_question_block}{intent_context}请根据以上用户当前问题生成执行计划，包含 2-5 个任务，严格按照 JSON 格式输出。"""
-            
-            messages = [{"role": "user", "content": prompt}]
+
+            system_prompt, messages = build_plan_generation_messages(
+                user_message=user_message,
+                parent_chain_messages=parent_chain_messages,
+                current_conversation_messages=current_conversation_messages,
+                intent_analysis=intent_analysis,
+                agent_type=agent_type,
+                settings_service=settings_service,
+            )
             
             _send_thinking_start(send_message, {"phase": "design"})
             

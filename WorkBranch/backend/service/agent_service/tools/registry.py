@@ -146,8 +146,8 @@ ALL_TOOLS = {
     },
     "sql_query": {
         "name": "sql_query",
-        "description": "执行SQL SELECT查询，从业务数据库获取数据",
-        "params": 'sql_query:{"query":"(SQL SELECT语句)","database":"(数据库名称，可选)","limit":"(返回行数限制，默认100)"}'
+        "description": "执行SQL查询，支持多种模式：query(SELECT查询)、show_databases(列出数据库)、show_tables(列出表)、describe(查看表结构)、show_create(查看建表语句)",
+        "params": 'sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create)","query":"(SQL语句，query模式必填)","database":"(数据库名称，可选)","table":"(表名，describe/show_create模式必填)","limit":"(返回行数限制，默认100)"}'
     }
 }
 

@@ -24,10 +24,19 @@ from .subgraphs.tool_registry import (
     is_tool_allowed, get_allowed_tools, _write_tool_event
 )
 from .subgraphs.tool_executor import run_tool_execution
+from service.agent_service.prompts.graph_prompts import (
+    THINK_SYSTEM_PROMPT,
+    build_chat_system_prompt as _graph_build_chat_system_prompt,
+    build_context_prompt as _graph_build_context_prompt,
+    build_direct_chat_messages as _graph_build_direct_chat_messages,
+    build_director_plan_messages,
+    build_tool_schema_prompt as _graph_build_tool_schema_prompt,
+    format_todo_prompt_block as _graph_format_todo_prompt_block,
+)
 from service.session_service.canonical import SegmentType
 from service.agent_service.service.plan_file_service import plan_file_service
 from service.agent_service.service.workspace_service import WorkspaceService
-from service.session_service.message_content import build_prompt_safe_text, get_message_parts, get_message_text, has_image_parts, resolve_runtime_parts
+from service.session_service.message_content import build_prompt_safe_text, get_message_parts, get_message_text, has_image_parts
 from core.logging import console
 from singleton import get_workspace_service
 
@@ -60,46 +69,8 @@ def _emit_final_reply(reply: str, message_context: dict = None) -> None:
     })
 
 
-THINK_SYSTEM_PROMPT = """你是一个专业的软件工程师助手。当前正在执行一个任务计划中的某个步骤。
-
-你会收到：
-1. 当前任务描述
-2. 之前任务的执行结果（如果有）
-
-请针对当前任务进行思考：
-1. 分析任务目标
-2. 结合之前的执行结果（如果有）
-3. 给出你的思考过程和结论
-
-请简洁清晰地回答，不要过于冗长。"""
-
-CHAT_SYSTEM_PROMPT = """你是一个专业的软件工程师助手。当前需要向用户输出回复。
-
-你会收到：
-1. 当前任务描述
-2. 之前任务的执行结果（如果有）
-
-请直接向用户输出回复内容：
-- 语言简洁清晰
-- 直接回答用户问题
-- 不要输出思考过程，只输出最终回复
-- 使用友好、专业的语气"""
-
-
 def _build_chat_system_prompt(settings_service=None) -> str:
-    prompt = CHAT_SYSTEM_PROMPT
-    if settings_service is None:
-        return prompt
-
-    try:
-        supports_vision = bool(settings_service.get("llm:supports_vision"))
-    except Exception:
-        supports_vision = False
-
-    if supports_vision:
-        prompt += "\n\n你使用的大模型是原生多模态模型，支持图像理解。"
-        prompt += "\n如果当前消息中已经提供图片，请直接基于图片内容进行分析并回答，不要声称缺少图像工具或要求用户再把图片转成文字。"
-    return prompt
+    return _graph_build_chat_system_prompt(settings_service)
 
 
 def _supports_native_multimodal(settings_service=None) -> bool:
@@ -147,26 +118,13 @@ def _build_direct_chat_messages(
     multimodal_parts: Optional[List[dict]] = None,
     message_context: Optional[dict] = None,
 ) -> List[dict]:
-    if multimodal_parts:
-        workspace_dir = None
-        if message_context and message_context.get("workspace_id"):
-            workspace_dir = workspace_service.get_workspace_dir(message_context.get("workspace_id"))
-        resolved_parts = resolve_runtime_parts(multimodal_parts, workspace_dir)
-        messages = list(parent_chain_messages)
-        messages.extend(current_conversation_messages)
-        messages.append({
-            "role": "user",
-            "parts": resolved_parts,
-            "content": build_prompt_safe_text(resolved_parts),
-        })
-        return messages
-
-    full_prompt = build_context_prompt(
-        parent_chain_messages,
-        current_conversation_messages,
-        f"请向用户输出回复: {task_description}"
+    return _graph_build_direct_chat_messages(
+        task_description=task_description,
+        parent_chain_messages=parent_chain_messages,
+        current_conversation_messages=current_conversation_messages,
+        multimodal_parts=multimodal_parts,
+        message_context=message_context,
     )
-    return [{"role": "user", "content": full_prompt}]
 
 
 def get_last_user_message_text(state: AgentState) -> str:
@@ -188,28 +146,11 @@ def build_context_prompt(
     current_conversation_messages: List[dict],
     current_task: str
 ) -> str:
-    prompt_parts = []
-    
-    if parent_chain_messages:
-        prompt_parts.append("[历史对话]")
-        for msg in parent_chain_messages:
-            role = msg.get("role", "user")
-            content = build_prompt_safe_text(msg)
-            prompt_parts.append(f"{role}: {content}")
-        prompt_parts.append("")
-    
-    if current_conversation_messages:
-        prompt_parts.append("[当前对话内历史]")
-        for msg in current_conversation_messages:
-            role = msg.get("role", "user")
-            content = build_prompt_safe_text(msg)
-            prompt_parts.append(f"{role}: {content}")
-        prompt_parts.append("")
-    
-    prompt_parts.append("[当前任务]")
-    prompt_parts.append(current_task)
-    
-    return "\n".join(prompt_parts)
+    return _graph_build_context_prompt(
+        parent_chain_messages=parent_chain_messages,
+        current_conversation_messages=current_conversation_messages,
+        current_task=current_task,
+    )
 
 
 def build_initial_state(
@@ -372,30 +313,11 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
 
 
 def _build_tool_schema_prompt(tool_names: List[str]) -> str:
-    from service.agent_service.tools import ALL_TOOLS
-
-    schema_lines = ["工具列表："]
-    for tool_name in tool_names:
-        tool_meta = ALL_TOOLS.get(tool_name)
-        if not tool_meta:
-            continue
-        params = tool_meta.get("params", "")
-        if params:
-            schema_lines.append(params)
-    return "\n".join(schema_lines)
+    return _graph_build_tool_schema_prompt(tool_names)
 
 
 def _format_todo_prompt_block(todos: List[str], current_todo_index: int) -> str:
-    if not todos:
-        return ""
-
-    lines = ["当前 TODO 列表（完整状态）:"]
-    for idx, todo in enumerate(todos):
-        marker = " <= 当前执行项" if idx == current_todo_index else ""
-        lines.append(f"- [{idx}] {todo}{marker}")
-    lines.append(f"doingIdx={current_todo_index}")
-    lines.append("如果任务明显是多步骤、阶段化，或执行中发现当前任务过大/过难，应使用 update_todo 一次性写入或重写完整 todo 列表；如果任务本身是单步骤且简单，则不要使用 todo 工具。")
-    return "\n".join(lines)
+    return _graph_format_todo_prompt_block(todos, current_todo_index)
 
 
 def create_decide_tool_action_node(llm_service=None, settings_service=None, message_context=None):
@@ -675,28 +597,7 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
         session_id = workspace_info.get("session_id", "default") if workspace_info else "default"
 
         if llm_service:
-            system_prompt = """你是一个软件工程任务规划器。
-
-请只输出高层计划纲要，严格使用 JSON：
-{
-  "tasks": [
-    {
-      "description": "步骤描述",
-      "goal": "该步骤要达成的目标",
-      "done_when": "满足什么条件说明该步骤完成",
-      "phase": "research|synthesis|implementation|verification"
-    }
-  ]
-}
-
-要求：
-1. 只输出 2-5 个高层步骤
-2. 不要在这里生成 tool 或具体 args
-3. description 要描述做什么，goal 要描述为什么做，done_when 要描述完成判定
-4. 输出必须是 JSON
-"""
-
-            messages = [{"role": "user", "content": f"请为以下任务生成高层执行计划：\n\n{user_message}"}]
+            system_prompt, messages = build_director_plan_messages(user_message)
 
             try:
                 response = llm_service.chat(messages, system_prompt=system_prompt)

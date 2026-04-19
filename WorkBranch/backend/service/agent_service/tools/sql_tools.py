@@ -2,11 +2,14 @@ import re
 import json
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 from dataclasses import dataclass
 from pathlib import Path
 
 from .registry import ToolDefinition, ToolRegistry
+
+
+QueryMode = Literal["query", "show_databases", "show_tables", "describe", "show_create"]
 
 
 @dataclass
@@ -77,11 +80,19 @@ DANGEROUS_KEYWORDS = [
 ]
 
 SELECT_PATTERN = re.compile(r"^\s*SELECT\s", re.IGNORECASE)
+SHOW_DATABASES_PATTERN = re.compile(r"^\s*SHOW\s+DATABASES\s*$", re.IGNORECASE)
+SHOW_TABLES_PATTERN = re.compile(r"^\s*SHOW\s+TABLES(\s+FROM\s+\S+)?\s*$", re.IGNORECASE)
+DESCRIBE_PATTERN = re.compile(r"^\s*(DESCRIBE|DESC)\s+\S+\s*$", re.IGNORECASE)
+SHOW_CREATE_TABLE_PATTERN = re.compile(r"^\s*SHOW\s+CREATE\s+TABLE\s+\S+\s*$", re.IGNORECASE)
 
 
-def validate_sql(query: str) -> tuple[bool, str]:
+def validate_sql(query: str, mode: QueryMode = "query") -> tuple[bool, str]:
     """
     验证SQL语句安全性
+    
+    Args:
+        query: SQL语句
+        mode: 查询模式
     
     Returns:
         (is_valid, error_message)
@@ -91,8 +102,21 @@ def validate_sql(query: str) -> tuple[bool, str]:
     
     query_upper = query.upper().strip()
     
-    if not SELECT_PATTERN.match(query):
-        return False, "仅支持SELECT查询语句"
+    if mode == "query":
+        if not SELECT_PATTERN.match(query):
+            return False, "query模式仅支持SELECT查询语句"
+    elif mode == "show_databases":
+        if not SHOW_DATABASES_PATTERN.match(query):
+            return False, "show_databases模式仅支持 SHOW DATABASES 语句"
+    elif mode == "show_tables":
+        if not SHOW_TABLES_PATTERN.match(query):
+            return False, "show_tables模式仅支持 SHOW TABLES [FROM db] 语句"
+    elif mode == "describe":
+        if not DESCRIBE_PATTERN.match(query):
+            return False, "describe模式仅支持 DESCRIBE/DESC table 语句"
+    elif mode == "show_create":
+        if not SHOW_CREATE_TABLE_PATTERN.match(query):
+            return False, "show_create模式仅支持 SHOW CREATE TABLE 语句"
     
     for keyword in DANGEROUS_KEYWORDS:
         if re.search(rf"\b{keyword}\b", query_upper):
@@ -118,42 +142,20 @@ def _parse_limit(limit_value: Any) -> int:
     return limit
 
 
-def _run_async_in_thread(query: str, database: str | None, limit: int) -> dict:
+def _run_async_in_thread(coro) -> dict:
     with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(asyncio.run, execute_sql_query_async(query, database, limit))
+        future = pool.submit(asyncio.run, coro)
         return future.result()
 
 
-async def execute_sql_query_async(
+async def _execute_query_async(
     query: str,
-    database: str = None,
-    limit: int = 100,
-    timeout: int = 30
+    database: str,
+    db_config: DatabaseConfig,
+    limit: int,
+    timeout: int
 ) -> dict:
-    """
-    异步执行SQL查询
-    
-    Args:
-        query: SQL查询语句
-        database: 数据库名称/连接名
-        limit: 返回行数限制
-        timeout: 查询超时时间（秒）
-    
-    Returns:
-        {"result": str, "error": str or None}
-    """
-    is_valid, error_msg = validate_sql(query)
-    if not is_valid:
-        return {"result": None, "error": error_msg}
-    
-    config_manager = SQLToolsConfig()
-    try:
-        db_name, db_config = config_manager.get_config(database)
-    except KeyError as e:
-        return {"result": None, "error": str(e)}
-    
-    limit = _parse_limit(limit)
-    
+    """执行SELECT查询"""
     try:
         import aiomysql
     except ImportError:
@@ -167,7 +169,7 @@ async def execute_sql_query_async(
                 port=db_config.port,
                 user=db_config.user,
                 password=db_config.password,
-                db=db_name,
+                db=database,
                 charset=db_config.charset,
                 connect_timeout=10,
             ),
@@ -175,28 +177,16 @@ async def execute_sql_query_async(
         )
         
         async with conn.cursor(aiomysql.DictCursor) as cursor:
-            await asyncio.wait_for(
-                cursor.execute(query),
-                timeout=timeout
-            )
-            
-            rows = await asyncio.wait_for(
-                cursor.fetchmany(limit),
-                timeout=timeout
-            )
+            await asyncio.wait_for(cursor.execute(query), timeout=timeout)
+            rows = await asyncio.wait_for(cursor.fetchmany(limit), timeout=timeout)
             
             total_rows = len(rows)
-            
             if not rows:
-                return {
-                    "result": f"查询执行成功，数据库 [{db_name}] 返回 0 行数据。",
-                    "error": None
-                }
+                return {"result": f"查询执行成功，数据库 [{database}] 返回 0 行数据。", "error": None}
             
             columns = list(rows[0].keys()) if rows else []
-            
             result_lines = [
-                f"SQL查询结果（数据库: {db_name}，返回 {total_rows} 行）：",
+                f"SQL查询结果（数据库: {database}，返回 {total_rows} 行）：",
                 "",
                 "字段: " + " | ".join(columns),
                 "-" * 80
@@ -213,16 +203,12 @@ async def execute_sql_query_async(
                     else:
                         val_str = str(val)[:100]
                     row_values.append(val_str)
-                
                 result_lines.append(f"{i}. " + " | ".join(row_values))
             
             result_lines.append("")
             result_lines.append(f"--- 共 {total_rows} 行 ---")
             
-            return {
-                "result": "\n".join(result_lines),
-                "error": None
-            }
+            return {"result": "\n".join(result_lines), "error": None}
     
     except asyncio.TimeoutError:
         return {"result": None, "error": f"查询超时（超过 {timeout} 秒）"}
@@ -235,36 +221,322 @@ async def execute_sql_query_async(
             conn.close()
 
 
+async def _execute_show_databases_async(
+    db_config: DatabaseConfig,
+    timeout: int
+) -> dict:
+    """执行 SHOW DATABASES"""
+    try:
+        import aiomysql
+    except ImportError:
+        return {"result": None, "error": "aiomysql库未安装，请运行: pip install aiomysql"}
+    
+    conn = None
+    try:
+        conn = await asyncio.wait_for(
+            aiomysql.connect(
+                host=db_config.host,
+                port=db_config.port,
+                user=db_config.user,
+                password=db_config.password,
+                charset=db_config.charset,
+                connect_timeout=10,
+            ),
+            timeout=timeout
+        )
+        
+        async with conn.cursor(aiomysql.DictCursor) as cursor:
+            await cursor.execute("SHOW DATABASES")
+            rows = await cursor.fetchall()
+            
+            if not rows:
+                return {"result": "未找到任何数据库。", "error": None}
+            
+            result_lines = ["数据库列表：", "-" * 40]
+            for i, row in enumerate(rows, 1):
+                db_name = list(row.values())[0] if row else "未知"
+                result_lines.append(f"{i}. {db_name}")
+            
+            result_lines.append("")
+            result_lines.append(f"--- 共 {len(rows)} 个数据库 ---")
+            
+            return {"result": "\n".join(result_lines), "error": None}
+    
+    except asyncio.TimeoutError:
+        return {"result": None, "error": f"查询超时（超过 {timeout} 秒）"}
+    except aiomysql.Error as e:
+        return {"result": None, "error": f"数据库错误: {str(e)}"}
+    except Exception as e:
+        return {"result": None, "error": f"查询执行失败: {str(e)}"}
+    finally:
+        if conn:
+            conn.close()
+
+
+async def _execute_show_tables_async(
+    database: str,
+    db_config: DatabaseConfig,
+    timeout: int
+) -> dict:
+    """执行 SHOW TABLES"""
+    try:
+        import aiomysql
+    except ImportError:
+        return {"result": None, "error": "aiomysql库未安装，请运行: pip install aiomysql"}
+    
+    conn = None
+    try:
+        conn = await asyncio.wait_for(
+            aiomysql.connect(
+                host=db_config.host,
+                port=db_config.port,
+                user=db_config.user,
+                password=db_config.password,
+                db=database,
+                charset=db_config.charset,
+                connect_timeout=10,
+            ),
+            timeout=timeout
+        )
+        
+        async with conn.cursor(aiomysql.DictCursor) as cursor:
+            await cursor.execute("SHOW TABLES")
+            rows = await cursor.fetchall()
+            
+            if not rows:
+                return {"result": f"数据库 [{database}] 中未找到任何表。", "error": None}
+            
+            result_lines = [f"数据库 [{database}] 表列表：", "-" * 40]
+            for i, row in enumerate(rows, 1):
+                table_name = list(row.values())[0] if row else "未知"
+                result_lines.append(f"{i}. {table_name}")
+            
+            result_lines.append("")
+            result_lines.append(f"--- 共 {len(rows)} 个表 ---")
+            
+            return {"result": "\n".join(result_lines), "error": None}
+    
+    except asyncio.TimeoutError:
+        return {"result": None, "error": f"查询超时（超过 {timeout} 秒）"}
+    except aiomysql.Error as e:
+        return {"result": None, "error": f"数据库错误: {str(e)}"}
+    except Exception as e:
+        return {"result": None, "error": f"查询执行失败: {str(e)}"}
+    finally:
+        if conn:
+            conn.close()
+
+
+async def _execute_describe_async(
+    table: str,
+    database: str,
+    db_config: DatabaseConfig,
+    timeout: int
+) -> dict:
+    """执行 DESCRIBE table"""
+    try:
+        import aiomysql
+    except ImportError:
+        return {"result": None, "error": "aiomysql库未安装，请运行: pip install aiomysql"}
+    
+    conn = None
+    try:
+        conn = await asyncio.wait_for(
+            aiomysql.connect(
+                host=db_config.host,
+                port=db_config.port,
+                user=db_config.user,
+                password=db_config.password,
+                db=database,
+                charset=db_config.charset,
+                connect_timeout=10,
+            ),
+            timeout=timeout
+        )
+        
+        async with conn.cursor(aiomysql.DictCursor) as cursor:
+            await cursor.execute(f"DESCRIBE `{table}`")
+            rows = await cursor.fetchall()
+            
+            if not rows:
+                return {"result": None, "error": f"表 [{table}] 不存在或无权限访问"}
+            
+            result_lines = [f"表 [{table}] 结构：", ""]
+            result_lines.append(f"{'字段':<25} {'类型':<20} {'允许空':<8} {'键':<8} {'默认值':<15} {'额外'}")
+            result_lines.append("-" * 100)
+            
+            for row in rows:
+                field = str(row.get("Field", ""))[:24]
+                type_ = str(row.get("Type", ""))[:19]
+                null = str(row.get("Null", ""))[:7]
+                key = str(row.get("Key", ""))[:7]
+                default = str(row.get("Default", "") or "")[:14]
+                extra = str(row.get("Extra", ""))
+                result_lines.append(f"{field:<25} {type_:<20} {null:<8} {key:<8} {default:<15} {extra}")
+            
+            result_lines.append("")
+            result_lines.append(f"--- 共 {len(rows)} 个字段 ---")
+            
+            return {"result": "\n".join(result_lines), "error": None}
+    
+    except asyncio.TimeoutError:
+        return {"result": None, "error": f"查询超时（超过 {timeout} 秒）"}
+    except aiomysql.Error as e:
+        return {"result": None, "error": f"数据库错误: {str(e)}"}
+    except Exception as e:
+        return {"result": None, "error": f"查询执行失败: {str(e)}"}
+    finally:
+        if conn:
+            conn.close()
+
+
+async def _execute_show_create_async(
+    table: str,
+    database: str,
+    db_config: DatabaseConfig,
+    timeout: int
+) -> dict:
+    """执行 SHOW CREATE TABLE"""
+    try:
+        import aiomysql
+    except ImportError:
+        return {"result": None, "error": "aiomysql库未安装，请运行: pip install aiomysql"}
+    
+    conn = None
+    try:
+        conn = await asyncio.wait_for(
+            aiomysql.connect(
+                host=db_config.host,
+                port=db_config.port,
+                user=db_config.user,
+                password=db_config.password,
+                db=database,
+                charset=db_config.charset,
+                connect_timeout=10,
+            ),
+            timeout=timeout
+        )
+        
+        async with conn.cursor(aiomysql.DictCursor) as cursor:
+            await cursor.execute(f"SHOW CREATE TABLE `{table}`")
+            row = await cursor.fetchone()
+            
+            if not row:
+                return {"result": None, "error": f"表 [{table}] 不存在或无权限访问"}
+            
+            create_sql = list(row.values())[1] if len(row) >= 2 else ""
+            
+            result_lines = [f"表 [{table}] 建表语句：", ""]
+            result_lines.append(create_sql)
+            
+            return {"result": "\n".join(result_lines), "error": None}
+    
+    except asyncio.TimeoutError:
+        return {"result": None, "error": f"查询超时（超过 {timeout} 秒）"}
+    except aiomysql.Error as e:
+        return {"result": None, "error": f"数据库错误: {str(e)}"}
+    except Exception as e:
+        return {"result": None, "error": f"查询执行失败: {str(e)}"}
+    finally:
+        if conn:
+            conn.close()
+
+
+async def execute_sql_query_async(
+    mode: QueryMode,
+    query: str,
+    database: str,
+    table: str,
+    limit: int,
+    timeout: int
+) -> dict:
+    """
+    异步执行SQL查询
+    
+    Args:
+        mode: 查询模式
+        query: SQL查询语句（query模式使用）
+        database: 数据库名称
+        table: 表名（describe/show_create模式使用）
+        limit: 返回行数限制
+        timeout: 查询超时时间（秒）
+    
+    Returns:
+        {"result": str, "error": str or None}
+    """
+    config_manager = SQLToolsConfig()
+    
+    try:
+        db_name, db_config = config_manager.get_config(database)
+    except KeyError as e:
+        return {"result": None, "error": str(e)}
+    
+    if mode == "query":
+        is_valid, error_msg = validate_sql(query, mode)
+        if not is_valid:
+            return {"result": None, "error": error_msg}
+        return await _execute_query_async(query, db_name, db_config, limit, timeout)
+    
+    elif mode == "show_databases":
+        return await _execute_show_databases_async(db_config, timeout)
+    
+    elif mode == "show_tables":
+        return await _execute_show_tables_async(db_name, db_config, timeout)
+    
+    elif mode == "describe":
+        if not table:
+            return {"result": None, "error": "describe模式需要 table 参数"}
+        return await _execute_describe_async(table, db_name, db_config, timeout)
+    
+    elif mode == "show_create":
+        if not table:
+            return {"result": None, "error": "show_create模式需要 table 参数"}
+        return await _execute_show_create_async(table, db_name, db_config, timeout)
+    
+    else:
+        return {"result": None, "error": f"未知的查询模式: {mode}"}
+
+
 def execute_sql_query(tool_args: dict) -> dict:
     """
-    执行SQL查询工具（同步包装）
+    执行SQL查询工具（统一入口）
     
     Args:
         tool_args: {
-            "query": SQL查询语句,
-            "database": 数据库名称（可选）,
-            "limit": 返回行数限制（可选，默认100）
+            "mode": "query|show_databases|show_tables|describe|show_create",
+            "query": "SQL语句（query模式必填）",
+            "database": "数据库名称（可选）",
+            "table": "表名（describe/show_create模式必填）",
+            "limit": "返回行数限制（query模式可选，默认100）"
         }
     
     Returns:
         {"result": str, "error": str or None}
     """
-    query = tool_args.get("query")
-    if not query:
-        return {"result": None, "error": "缺少 query 参数"}
-    
+    mode: QueryMode = tool_args.get("mode", "query")
+    query = tool_args.get("query", "")
     database = tool_args.get("database")
+    table = tool_args.get("table")
     limit = _parse_limit(tool_args.get("limit", 100))
-
-    print(f"[Tool] sql_query: database={database}, limit={limit}")
-    print(f"[Tool] SQL: {query[:100]}...")
-
+    timeout = 30
+    
+    valid_modes = {"query", "show_databases", "show_tables", "describe", "show_create"}
+    if mode not in valid_modes:
+        return {"result": None, "error": f"无效的 mode 参数: {mode}，有效值: {', '.join(valid_modes)}"}
+    
+    if mode == "query" and not query:
+        return {"result": None, "error": "query模式需要 query 参数"}
+    
+    print(f"[Tool] sql_query: mode={mode}, database={database}, table={table}, limit={limit}")
+    if query:
+        print(f"[Tool] SQL: {query[:100]}...")
+    
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(execute_sql_query_async(query, database, limit))
-
-    return _run_async_in_thread(query, database, limit)
+        return asyncio.run(execute_sql_query_async(mode, query, database, table, limit, timeout))
+    
+    return _run_async_in_thread(execute_sql_query_async(mode, query, database, table, limit, timeout))
 
 
 SQL_TOOLS = {"sql_query"}
@@ -275,8 +547,8 @@ def register_sql_tools() -> None:
     ToolRegistry.register(
         ToolDefinition(
             name="sql_query",
-            description="执行SQL SELECT查询，从业务数据库获取数据。支持多数据库配置。",
-            params='sql_query:{"query":"(SQL SELECT语句)","database":"(数据库名称，可选)","limit":"(返回行数限制，默认100)"}',
+            description="执行SQL查询，支持多种模式：query(SELECT查询)、show_databases(列出数据库)、show_tables(列出表)、describe(查看表结构)、show_create(查看建表语句)",
+            params='sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create)","query":"(SQL语句，query模式必填)","database":"(数据库名称，可选)","table":"(表名，describe/show_create模式必填)","limit":"(返回行数限制，默认100)"}',
             category="sql",
             executor=execute_sql_query,
         )
