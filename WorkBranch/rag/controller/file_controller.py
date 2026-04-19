@@ -56,7 +56,7 @@ INGEST_JOB_ASSEMBLER = IngestJobAssembler()
 KNOWLEDGE_BASE_ASSEMBLER = KnowledgeBaseAssembler()
 LOGGER = get_logger(__name__)
 
-# --- IngestionService 妯″潡绾у崟渚嬶紙妯″瀷鍙姞杞戒竴娆★紝閬垮厤姣忔璇锋眰閲嶅缓锛?--
+# --- IngestionService 单例模式（类型只加载一次，避免每次请求重建）---
 _INGESTION_SERVICE: Optional[IngestionService] = None
 
 
@@ -103,7 +103,7 @@ def ui() -> FileResponse:
 
 
 # ------------------------
-# Knowledge Bases锛堢煡璇嗗簱 CRUD锛?# ------------------------
+# Knowledge Bases（知识库 CRUD）# ------------------------
 @router.get("/api/knowledge-bases")
 def list_knowledge_bases() -> dict:
     items = KNOWLEDGE_BASE_DAO.list_all()
@@ -252,8 +252,8 @@ async def upload_document(
         )
         raise HTTPException(status_code=500, detail=f"Failed to persist uploaded file: {exc}")
 
-    # collection_name 鐢?IngestionService 鏍规嵁 doc ctx 涓殑 kb_id 鑷姩鎺ㄥ锛屾棤闇€澶栦紶
-    # 鍚屾 CPU 瀵嗛泦鍨嬫帹鐞嗘斁鍏ョ嚎绋嬫睜锛岄伩鍏嶉樆濉?asyncio event loop
+    # collection_name 由 IngestionService 根据 doc ctx 中的 kb_id 自动推导，无需外显
+    # 同步 CPU 密集型处理放入线程池，避免阻塞 asyncio event loop
     ingest_result = await asyncio.get_running_loop().run_in_executor(
         None, lambda: _get_ingestion_service().ingest_document(document_id=doc_id)
     )
@@ -312,7 +312,7 @@ def update_document(document_id: int, payload: DocumentUpdateRequestDTO) -> dict
 
 @router.delete("/api/documents/{document_id}")
 def delete_document(document_id: int) -> dict:
-    # 鐭ヨ瘑搴撻殧绂伙細浠庢枃妗ｅ厓鏁版嵁涓锟?kb_id 鎺ㄥ collection_name
+    # 知识库隔离：从文档元数据中查找 kb_id 推导 collection_name
     try:
         detail = FILE_META_DAO.get_document_detail(document_id)
     except ValueError:
