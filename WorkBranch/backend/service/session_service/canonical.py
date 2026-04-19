@@ -27,6 +27,7 @@ class SegmentType(Enum):
     TOOL_RES = "tool_res"
     ERROR = "error"
     DONE = "done"
+    CONVERSATION_HANDOFF = "conversation_handoff"
 
 
 @dataclass
@@ -418,6 +419,25 @@ class MessageBuilder:
             session_id=session_id,
             workspace_id=workspace_id,
             msg_type=SegmentType.DONE,
+            content="",
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def conversation_handoff(
+        message_id: str,
+        conversation_id: str,
+        session_id: str,
+        workspace_id: str,
+        metadata: dict = None
+    ) -> Message:
+        return MessageBuilder.build(
+            role="assistant",
+            message_id=message_id,
+            conversation_id=conversation_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            msg_type=SegmentType.CONVERSATION_HANDOFF,
             content="",
             metadata=metadata,
         )

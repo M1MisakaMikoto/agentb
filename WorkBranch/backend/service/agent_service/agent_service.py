@@ -510,13 +510,26 @@ class AgentService:
                     conversation_service = get_conversation_service()
                     final_handoff_metadata = await conversation_service._create_auto_approved_followup_conversation(
                         conversation_id,
-                        final_reply=result.get("final_reply"),
+                        execution_mode=result.get("execution_mode"),
                         session_id=session_id,
                     )
                 except Exception:
                     final_handoff_metadata = None
 
             if final_handoff_metadata and final_handoff_metadata.get("next_conversation_id"):
+                handoff_event = MessageBuilder.conversation_handoff(
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    metadata={
+                        "message_id": message_id,
+                        "auto_approved": True,
+                        "next_conversation_id": final_handoff_metadata.get("next_conversation_id"),
+                    },
+                )
+                mq.publish_sync(handoff_event)
+
                 handoff_msg = MessageBuilder.state_change(
                     message_id=message_id,
                     conversation_id=conversation_id,

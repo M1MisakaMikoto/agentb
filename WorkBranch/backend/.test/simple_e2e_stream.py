@@ -206,6 +206,7 @@ async def collect_stream_output(api: APIClient, conversation_id: str, verbose: b
     done = False
     tool_calls: List[str] = []
     detected_modes: List[str] = []
+    conversation_handoff: Optional[Dict] = None
 
     async for item in api.stream_message(conversation_id):
         raw_line = item.get("raw_line", "")
@@ -251,6 +252,17 @@ async def collect_stream_output(api: APIClient, conversation_id: str, verbose: b
                 detected_modes.append(execution_mode)
                 if verbose:
                     print(f"{Colors.YELLOW}[state] execution_mode: {execution_mode}{Colors.ENDC}")
+        elif event_type == "conversation_handoff":
+            metadata = data.get("metadata", {})
+            conversation_handoff = {
+                "auto_approved": metadata.get("auto_approved"),
+                "next_conversation_id": metadata.get("next_conversation_id"),
+            }
+            print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
+            print(f"{Colors.GREEN}  🚀 [CONVERSATION_HANDOFF] 收到对话切换事件!{Colors.ENDC}")
+            print(f"{Colors.GREEN}     auto_approved: {metadata.get('auto_approved')}{Colors.ENDC}")
+            print(f"{Colors.GREEN}     next_conversation_id: {metadata.get('next_conversation_id')}{Colors.ENDC}")
+            print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
         elif event_type == "error":
             error_content = data.get("content", "Unknown error")
             errors.append(error_content)
@@ -269,6 +281,7 @@ async def collect_stream_output(api: APIClient, conversation_id: str, verbose: b
         "done": done,
         "tool_calls": tool_calls,
         "detected_modes": detected_modes,
+        "conversation_handoff": conversation_handoff,
     }
 
 
@@ -386,12 +399,14 @@ async def run_serial_test(api: APIClient, output_file: str) -> TestResult:
     return result
 
 
-async def run_plan_approval_test(api: APIClient, output_file: str) -> TestResult:
+async def run_plan_approval_test(api: APIClient, output_file: str, auto_approve_enabled: bool = False) -> TestResult:
     test_case = TEST_CASES["plan"]
     result = TestResult("plan", test_case)
 
     print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
     print(f"{Colors.HEADER}  {test_case.get('description')}{Colors.ENDC}")
+    if auto_approve_enabled:
+        print(f"{Colors.HEADER}  [AUTO_APPROVE ENABLED]{Colors.ENDC}")
     print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
 
     print(f"{Colors.CYAN}[1] Creating session...{Colors.ENDC}")
@@ -428,6 +443,15 @@ async def run_plan_approval_test(api: APIClient, output_file: str) -> TestResult
     if not first_stream_result["done"]:
         result.errors.append("Plan conversation stream did not complete with done event")
 
+    first_handoff = first_stream_result.get("conversation_handoff")
+    if auto_approve_enabled:
+        if not first_handoff:
+            result.errors.append("Expected conversation_handoff event but not received")
+        elif not first_handoff.get("auto_approved"):
+            result.errors.append(f"Expected auto_approved=True but got: {first_handoff}")
+        elif not first_handoff.get("next_conversation_id"):
+            result.errors.append(f"Expected next_conversation_id but got: {first_handoff}")
+
     print(f"{Colors.CYAN}[4] Waiting for plan conversation completion...{Colors.ENDC}")
     first_conversation_state = await wait_for_conversation_state(api, first_conversation_id, "completed")
     first_response = extract_response_text(first_conversation_state)
@@ -447,6 +471,73 @@ async def run_plan_approval_test(api: APIClient, output_file: str) -> TestResult
                     result.detected_mode = execution_mode
     except Exception:
         pass
+
+    if auto_approve_enabled and first_handoff and first_handoff.get("next_conversation_id"):
+        next_conversation_id = first_handoff.get("next_conversation_id")
+        print(f"\n{Colors.CYAN}[5-AUTO] Auto-approve: connecting to next conversation stream...{Colors.ENDC}")
+        print(f"{Colors.GREEN}    Next Conversation ID: {next_conversation_id}{Colors.ENDC}")
+
+        print(f"\n{Colors.CYAN}[6-AUTO] Receiving auto-approved stream...{Colors.ENDC}\n")
+        auto_stream_result = await collect_stream_output(api, next_conversation_id, verbose=True)
+        result.event_count += len(auto_stream_result["event_types"])
+        if auto_stream_result["errors"]:
+            result.errors.extend(auto_stream_result["errors"])
+        if not auto_stream_result["done"]:
+            result.errors.append("Auto-approved conversation stream did not complete with done event")
+
+        print(f"{Colors.CYAN}[7-AUTO] Waiting for auto-approved conversation completion...{Colors.ENDC}")
+        auto_conversation_state = await wait_for_conversation_state(api, next_conversation_id, "completed")
+        auto_response = extract_response_text(auto_conversation_state)
+        print(f"{Colors.DIM}    Auto-approved response: {auto_response[:300]}{Colors.ENDC}")
+
+        auto_assistant_content = (auto_conversation_state.get("data") or {}).get("assistant_content") or ""
+        try:
+            events = json.loads(auto_assistant_content)
+            for event in events:
+                if event.get("type") == "state_change":
+                    metadata = event.get("metadata") or {}
+                    execution_mode = metadata.get("execution_mode")
+                    if execution_mode and execution_mode not in result.detected_modes:
+                        result.detected_modes.append(execution_mode)
+                        result.detected_mode = execution_mode
+                elif event.get("type") == "tool_call":
+                    metadata = event.get("metadata") or {}
+                    tool_name = metadata.get("tool_name")
+                    if tool_name:
+                        result.tool_calls.append(tool_name)
+        except Exception:
+            pass
+
+        result.text_content = auto_response
+
+        print(f"{Colors.CYAN}[8-AUTO] Verification...{Colors.ENDC}")
+        print(f"{Colors.DIM}    Detected modes: {result.detected_modes}{Colors.ENDC}")
+        print(f"{Colors.DIM}    Tool calls: {result.tool_calls}{Colors.ENDC}")
+
+        if "PLAN" not in result.detected_modes:
+            result.errors.append(f"Plan conversation did not enter PLAN: {result.detected_modes}")
+        if "DIRECT" not in result.detected_modes:
+            result.errors.append(f"Auto-approved conversation did not enter DIRECT: {result.detected_modes}")
+
+        if "read_file" not in result.tool_calls:
+            result.errors.append(f"Auto-approved conversation did not read plan.md or files: tools={result.tool_calls}")
+
+        forbidden_tools = test_case.get("forbidden_tools", [])
+        for forbidden_tool in forbidden_tools:
+            if forbidden_tool in result.tool_calls:
+                result.errors.append(f"Forbidden tool was used: {forbidden_tool}")
+
+        with open(output_file, "a", encoding="utf-8") as f:
+            f.write("# PLAN Auto-Approve Test\n")
+            f.write(f"- session_id: {session_id}\n")
+            f.write(f"- first_conversation_id: {first_conversation_id}\n")
+            f.write(f"- next_conversation_id: {next_conversation_id}\n")
+            f.write(f"- first_response: {first_response}\n")
+            f.write(f"- auto_response: {auto_response}\n")
+            f.write(f"- detected_modes: {result.detected_modes}\n")
+            f.write(f"- tool_calls: {result.tool_calls}\n\n")
+
+        return result
 
     print(f"{Colors.CYAN}[5] Creating approval conversation...{Colors.ENDC}")
     print(f"{Colors.DIM}    User: {test_case.get('approval_message', '可以')}{Colors.ENDC}")
@@ -857,6 +948,8 @@ async def main():
     parser.add_argument("--output", "-o", default=None, help="Output file path")
     parser.add_argument("--auto-approve", action="store_true", default=True,
                         help="Auto-approve plans in PLAN mode")
+    parser.add_argument("--plan-auto-approve", action="store_true", default=False,
+                        help="Enable plan auto-approve feature to test conversation_handoff event")
     args = parser.parse_args()
 
     timestamp = get_timestamp()
@@ -918,7 +1011,7 @@ async def main():
                     result = await run_serial_test(api, output_file)
                     results.append(result)
                 elif mode == "plan":
-                    result = await run_plan_approval_test(api, output_file)
+                    result = await run_plan_approval_test(api, output_file, auto_approve_enabled=args.plan_auto_approve)
                     results.append(result)
                 elif mode in TEST_CASES:
                     result = await run_single_test(

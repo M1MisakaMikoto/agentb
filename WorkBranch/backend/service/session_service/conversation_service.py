@@ -89,40 +89,14 @@ class ConversationService:
         self,
         conversation_id: str,
         *,
-        final_reply: Optional[str] = None,
+        execution_mode = None,
         session_id: Optional[int | str] = None,
     ) -> Optional[Dict[str, Any]]:
-        if not self._is_plan_auto_approve_enabled():
+        mode_str = str(execution_mode).split(".")[-1] if execution_mode else None
+        if mode_str != "PLAN":
             return None
 
-        saw_plan = False
-        plan_prompt_present = False
-
-        if final_reply is not None:
-            saw_plan = bool(final_reply)
-            plan_prompt_present = "如果你同意方案，请直接回复“可以”或“同意方案”" in final_reply
-        else:
-            conversation = await self.get_conversation(conversation_id)
-            if not conversation:
-                return None
-
-            assistant_content = conversation.get("assistant_content")
-            if not assistant_content:
-                return None
-
-            try:
-                events = json.loads(assistant_content)
-            except Exception:
-                return None
-
-            for event in events:
-                event_type = event.get("type")
-                if event_type in {"plan_start", "plan_delta", "plan_end"}:
-                    saw_plan = True
-                if event_type == SegmentType.TEXT_DELTA.value and "如果你同意方案，请直接回复“可以”或“同意方案”" in str(event.get("content", "")):
-                    plan_prompt_present = True
-
-        if not saw_plan or not plan_prompt_present:
+        if not self._is_plan_auto_approve_enabled():
             return None
 
         if session_id is None:
