@@ -70,15 +70,12 @@ def _build_default_tools(agent_type: str, user_message: str) -> list[dict]:
 AGENT_GRAPH_CONFIG = {
     "director_agent": {
         "execution_mode": None,
-        "allowed_subagents": True,
     },
     "explore_agent": {
         "execution_mode": ExecutionMode.DIRECT,
-        "allowed_subagents": False,
     },
     "review_agent": {
         "execution_mode": ExecutionMode.DIRECT,
-        "allowed_subagents": False,
     },
 }
 

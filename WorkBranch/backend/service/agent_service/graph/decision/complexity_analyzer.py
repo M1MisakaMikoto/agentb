@@ -6,7 +6,6 @@ class ExecutionMode(str, Enum):
     """执行模式"""
     DIRECT = "direct"          # 直接执行
     PLAN = "plan"              # 规划模式
-    SUBAGENT = "subagent"      # 子 Agent 模式
 
 
 def analyze_task_complexity(user_message: str, intent_analysis: dict) -> dict:
@@ -34,22 +33,22 @@ def analyze_task_complexity(user_message: str, intent_analysis: dict) -> dict:
             "suggested_agent": None
         }
     
-    # 探索类任务：委托 Explore Agent Graph
+    # 探索类任务：保留为 DIRECT，由主循环自主决定是否调用探索工具
     if intent_type == "explore":
         return {
-            "mode": ExecutionMode.SUBAGENT,
-            "reason": "探索任务，切换到 Explore Agent Graph",
-            "suggested_tools": [],
-            "suggested_agent": "explore_agent"
+            "mode": ExecutionMode.DIRECT,
+            "reason": "探索任务，保留在 DIRECT 模式，由主循环决定是否调用探索能力",
+            "suggested_tools": suggested_tools,
+            "suggested_agent": None
         }
 
-    # 审查类任务：委托 Review Agent Graph
+    # 审查类任务：保留为 DIRECT，由主循环自主决定是否调用审查工具
     if intent_type == "review":
         return {
-            "mode": ExecutionMode.SUBAGENT,
-            "reason": "审查任务，切换到 Review Agent Graph",
-            "suggested_tools": [],
-            "suggested_agent": "review_agent"
+            "mode": ExecutionMode.DIRECT,
+            "reason": "审查任务，保留在 DIRECT 模式，由主循环决定是否调用审查能力",
+            "suggested_tools": suggested_tools,
+            "suggested_agent": None
         }
     
     # 复杂开发任务：进入规划模式

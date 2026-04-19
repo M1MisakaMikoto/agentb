@@ -48,6 +48,26 @@ async def create_session(request: Request, body: CreateSessionBody = None) -> Re
     })
 
 
+@router.post("/sessions/{session_id}/title:generate")
+async def generate_session_title(session_id: int, request: Request) -> Result:
+    user = request.state.user
+    session_history = get_session_history()
+
+    try:
+        session = await session_history.generate_session_title_async(session_id, user["id"])
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return Result.success(data={
+        "session_id": session.id,
+        "title": session.title,
+    })
+
+
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: int) -> Result:
     dao = get_conversation_dao()

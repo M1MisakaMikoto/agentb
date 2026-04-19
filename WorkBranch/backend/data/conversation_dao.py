@@ -54,6 +54,14 @@ class ConversationDAO:
             return Session(**dict(row))
         return None
 
+    async def update_session_title(self, session_id: int, title: str) -> None:
+        sql = '''
+            UPDATE sessions
+            SET title = %s
+            WHERE id = %s
+        '''
+        await self._db.execute(sql, (title, session_id))
+
     async def list_sessions_by_user(self, user_id: int) -> List[Session]:
         sql = '''
             SELECT id, user_id, title, workspace_id, created_at, updated_at

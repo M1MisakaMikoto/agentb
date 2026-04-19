@@ -12,14 +12,15 @@ Director Agent - 统一编排图
 from typing import Literal, Optional, Dict, Any, List, Callable
 from langgraph.graph import StateGraph, END
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import json
 import os
+import re
 import shutil
 import fnmatch
 
-from .decision.complexity_analyzer import ExecutionMode, analyze_task_complexity, evaluate_task_complexity
+from .decision.complexity_analyzer import ExecutionMode
 from ..state import AgentState
 from .subgraphs.tool_registry import (
-    FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS,
     is_tool_allowed, get_allowed_tools, _write_tool_event
 )
 from .subgraphs.tool_executor import run_tool_execution
@@ -31,8 +32,32 @@ from singleton import get_workspace_service
 
 MAX_REPLAN_COUNT = 3
 MAX_MESSAGES = 10
+MAX_DIRECT_ITERATIONS = 8
 
 workspace_service = get_workspace_service()
+
+
+def _emit_final_reply(reply: str, message_context: dict = None) -> None:
+    if not message_context:
+        return
+    send_message = message_context.get("send_message")
+    if not send_message:
+        return
+    send_message("", SegmentType.CHAT_START, {
+        "task_description": "输出最终回复",
+        "is_start": True,
+    })
+    if reply:
+        send_message(reply, SegmentType.CHAT_DELTA, {
+            "task_description": "输出最终回复",
+            "is_delta": True,
+        })
+    send_message("", SegmentType.CHAT_END, {
+        "task_description": "输出最终回复",
+        "is_end": True,
+        "result": reply,
+    })
+
 
 THINK_SYSTEM_PROMPT = """你是一个专业的软件工程师助手。当前正在执行一个任务计划中的某个步骤。
 
@@ -96,113 +121,482 @@ def build_initial_state(
     current_conversation_messages: List[dict] = None,
     agent_type: Optional[str] = None,
     is_root_graph: bool = False,
+    forced_execution_mode: Optional[ExecutionMode] = None,
+    plan_file: Optional[str] = None,
+    plan_content: Optional[str] = None,
 ) -> dict:
     return {
         "messages": [user_message],
         "workspace_id": workspace_id,
         "plan": [],
-        "current_step": 0,
         "results": [],
-        "plan_failed": False,
         "explore_result": None,
         "tool_history": [],
-        "replan_count": 0,
         "agent_type": agent_type,
         "is_root_graph": is_root_graph,
         "parent_chain_messages": parent_chain_messages or [],
         "current_conversation_messages": current_conversation_messages or [],
         "has_tool_use": False,
         "final_reply": None,
-        "plan_file": None
+        "plan_file": plan_file,
+        "plan_content": plan_content,
+        "forced_execution_mode": forced_execution_mode,
+        "last_tool_result": None,
+        "iteration_count": 0,
+        "max_iterations": MAX_DIRECT_ITERATIONS,
+        "next_action": None,
+        "last_tool_name": None,
+        "last_tool_success": None,
+        "last_tool_error": None,
+        "invalid_tool_retry_count": 0,
+        "todos": [],
+        "current_todo_index": 0,
+        "current_todo_goal": None,
+        "current_todo_done_when": None,
+        "current_todo_iteration_count": 0,
+        "todo_max_iterations": MAX_DIRECT_ITERATIONS,
+        "todo_status": None,
     }
 
 
-def check_state_v3(state: AgentState) -> Literal["analyze", "execute", "plan", "subagent", "done"]:
-    if "execution_mode" not in state:
-        return "analyze"
+def _load_plan_content_for_state(state: AgentState) -> tuple[Optional[str], Optional[str]]:
+    existing_content = state.get("plan_content")
+    existing_plan_file = state.get("plan_file")
+    if existing_content:
+        return existing_content, existing_plan_file
 
-    if state.get("active_subagent"):
-        return "subagent"
+    workspace_id = state["workspace_id"]
+    workspace_info = workspace_service.get_workspace_info(workspace_id)
+    session_id = workspace_info.get("session_id", "default") if workspace_info else "default"
+    plan_result = plan_file_service.read_plan(session_id=session_id, workspace_id=workspace_id)
+    if not plan_result.get("success"):
+        return None, existing_plan_file
 
+    return plan_result.get("content"), plan_result.get("plan_file")
+
+
+def _mode_name(value) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, ExecutionMode):
+        return value.name
+    if hasattr(value, "name"):
+        return getattr(value, "name")
+    return str(value).split(".")[-1].upper()
+
+
+def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute", "plan", "done"]:
     if state.get("pending_tools"):
         return "execute"
 
     execution_mode = state.get("execution_mode")
-    if execution_mode is None:
-        return "done"
-
-    if execution_mode == ExecutionMode.PLAN:
-        plan = state.get("plan") or []
-        current_step = state.get("current_step", 0)
-        if not plan:
-            return "plan"
-        if current_step < len(plan):
-            return "execute"
+    if _mode_name(execution_mode) == "PLAN":
         if state.get("final_reply"):
             return "done"
-        return "done"
-
-    if state.get("has_tool_use", False):
-        return "execute"
+        return "plan"
 
     if state.get("final_reply"):
         return "done"
 
-    return "done"
+    return "decide"
 
 
-def route_after_analyze(state: dict) -> str:
-    mode = state.get("execution_mode")
-    if mode == ExecutionMode.PLAN:
-        return "plan"
-    elif mode == ExecutionMode.SUBAGENT:
-        return "subagent"
-    elif mode == ExecutionMode.DIRECT:
-        return "execute"
-    return "done"
+def route_after_analyze(_state: dict) -> str:
+    return "decide"
 
 
-def create_analyze_node(llm_service=None, message_context=None, settings_service=None):
+def create_analyze_node(_llm_service=None, message_context=None, _settings_service=None):
     def analyze_node(state: AgentState) -> dict:
         user_message = state["messages"][-1] if state["messages"] else ""
         current_agent_type = state.get("agent_type") or "director_agent"
+        forced_execution_mode = state.get("forced_execution_mode")
 
         console.step("分析节点", "入口", user_message)
-        
-        if llm_service:
-            system_prompt = """你是一个任务分析专家。请分析用户任务的复杂度，并决定执行模式。
 
-执行模式选项：
-1. DIRECT - 直接执行：适用于简单任务，如读取文件、查询信息等
-2. PLAN - 规划模式：适用于复杂开发任务，需要多步骤规划（仅 director_agent 可用）
-3. SUBAGENT - 子Agent模式：适用于特定类型任务，如探索、审查等（仅 director_agent 可用）
+        if forced_execution_mode is not None:
+            mode_decision = {
+                "mode": forced_execution_mode,
+                "reason": f"使用预设执行模式: {forced_execution_mode.name}",
+            }
+        elif current_agent_type != "director_agent":
+            mode_decision = {
+                "mode": ExecutionMode.DIRECT,
+                "reason": f"{current_agent_type} 使用专属 graph，默认走 DIRECT 执行",
+            }
+        else:
+            mode_decision = {
+                "mode": ExecutionMode.DIRECT,
+                "reason": "director_agent 默认从 DIRECT 开始，由 agent 在需要时主动切到 PLAN",
+            }
 
-请以JSON格式返回分析结果：
+        intent_analysis = {
+            "intent_type": "other",
+            "summary": user_message[:100],
+            "key_points": [user_message] if user_message else [],
+            "complexity": "medium",
+            "confidence": 0.7,
+        }
+
+        console.decision_box(
+            route_after_analyze({'execution_mode': mode_decision['mode']}),
+            f"执行模式: {mode_decision['mode']}\n原因: {mode_decision['reason']}"
+        )
+
+        result = {
+            "intent_analysis": intent_analysis,
+            "execution_mode": mode_decision["mode"],
+            "mode_reason": mode_decision["reason"],
+            "suggested_tools": [],
+            "has_tool_use": False,
+            "final_reply": None,
+            "pending_tools": [],
+            "next_action": None,
+        }
+
+        if message_context:
+            send_message = message_context.get("send_message")
+            if send_message:
+                state_metadata = {
+                    "execution_mode": mode_decision["mode"].name,
+                }
+                send_message("", SegmentType.STATE_CHANGE, state_metadata)
+
+        return result
+
+    return analyze_node
+
+
+def _build_tool_schema_prompt(tool_names: List[str]) -> str:
+    from service.agent_service.tools import ALL_TOOLS
+
+    schema_lines = ["工具列表："]
+    for tool_name in tool_names:
+        tool_meta = ALL_TOOLS.get(tool_name)
+        if not tool_meta:
+            continue
+        params = tool_meta.get("params", "")
+        if params:
+            schema_lines.append(params)
+    return "\n".join(schema_lines)
+
+
+def _format_todo_prompt_block(todos: List[str], current_todo_index: int) -> str:
+    if not todos:
+        return ""
+
+    lines = ["当前 TODO 列表（完整状态）:"]
+    for idx, todo in enumerate(todos):
+        marker = " <= 当前执行项" if idx == current_todo_index else ""
+        lines.append(f"- [{idx}] {todo}{marker}")
+    lines.append(f"doingIdx={current_todo_index}")
+    lines.append("如果任务明显是多步骤、阶段化，或执行中发现当前任务过大/过难，应使用 update_todo 一次性写入或重写完整 todo 列表；如果任务本身是单步骤且简单，则不要使用 todo 工具。")
+    return "\n".join(lines)
+
+
+def create_decide_tool_action_node(llm_service=None, settings_service=None, message_context=None):
+    def decide_tool_action_node(state: AgentState) -> dict:
+        user_message = state["messages"][-1] if state["messages"] else ""
+        current_agent_type = state.get("agent_type") or "director_agent"
+        tool_history = state.get("tool_history", []) or []
+        last_tool_result = state.get("last_tool_result")
+        parent_chain_messages = state.get("parent_chain_messages", []) or []
+        current_conversation_messages = state.get("current_conversation_messages", []) or []
+        iteration_count = state.get("iteration_count", 0) or 0
+        max_iterations = state.get("max_iterations", MAX_DIRECT_ITERATIONS) or MAX_DIRECT_ITERATIONS
+        title = "决策节点"
+        subtitle = "DIRECT"
+
+        console.step(title, subtitle, f"第 {iteration_count + 1}/{max_iterations} 轮")
+
+        if iteration_count >= max_iterations:
+            reply = "抱歉，当前任务在限定步骤内未完成。我已经停止继续调用工具，请你细化要求或分步执行。"
+            _emit_final_reply(reply, message_context)
+            return {
+                "next_action": {"kind": "reply", "reply": reply, "task_description": "达到最大迭代次数，向用户说明"},
+                "final_reply": reply,
+                "has_tool_use": False,
+                "pending_tools": [],
+                "iteration_count": iteration_count,
+            }
+
+        if llm_service is None:
+            reply = f"无法为任务自动决策下一步：{user_message}"
+            _emit_final_reply(reply, message_context)
+            return {
+                "next_action": {"kind": "reply", "reply": reply, "task_description": user_message},
+                "final_reply": reply,
+                "has_tool_use": False,
+                "pending_tools": [],
+            }
+
+        allowed_tools = [tool for tool in get_allowed_tools(current_agent_type, settings_service) if tool != "chat"]
+        tool_schema_prompt = _build_tool_schema_prompt(allowed_tools)
+
+        history_lines = []
+        for idx, item in enumerate(tool_history[-5:], 1):
+            result_text = str(item.get("result") or "")
+            if len(result_text) > 500:
+                result_text = result_text[:500] + "..."
+            history_lines.append(f"{idx}. tool={item.get('tool')} args={item.get('args')} result={result_text}")
+        history_block = "\n".join(history_lines) if history_lines else "(暂无工具执行历史)"
+
+        last_result_block = "(无)"
+        if last_tool_result:
+            last_result_block = last_tool_result if len(last_tool_result) <= 1000 else last_tool_result[:1000] + "..."
+
+        todos = state.get("todos") or []
+        current_todo_index = state.get("current_todo_index", 0) or 0
+        todo_block = _format_todo_prompt_block(todos, current_todo_index)
+        todo_intro = f"\n\n{todo_block}\n\n" if todo_block else ""
+        plan_content, _ = _load_plan_content_for_state(state)
+        plan_intro = ""
+        if plan_content:
+            plan_file_display = "plan.md"
+            plan_intro = (
+                f"\n\n当前工作区存在计划文件: {plan_file_display}\n"
+                "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，"
+                "那么你应主动使用 read_file 读取该 plan.md，再严格遵守该计划执行；否则不要因为计划文件存在就默认按计划执行。\n"
+            )
+        current_task = (
+            f"原始用户请求: {user_message}\n\n"
+            f"当前工作区ID: {state['workspace_id']}\n"
+            f"已执行轮次: {iteration_count}/{max_iterations}\n"
+            f"{plan_intro}\n"
+            f"{tool_schema_prompt}\n"
+            f"{todo_intro}"
+            f"最近工具结果:\n{last_result_block}\n\n"
+            f"最近工具历史:\n{history_block}\n\n"
+            "注意：只有当 todo 列表非空时，你才应围绕 todo 执行；如果当前没有 todo 且任务明显多步骤/阶段化，可以先使用 update_todo 写入完整 todo 列表。"
+            "如果 todo 列表非空，你应继续通过 update_todo 覆盖更新完整 todo 列表和 doingIdx；如果任务拆分发生变化，也应通过 update_todo 一次性重写。"
+            "默认按 DIRECT 执行；如果你在执行过程中发现任务明显复杂、多阶段、跨文件、需要先输出方案，才调用 switch_execution_mode 把模式切到 PLAN。"
+            "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应先使用 read_file 读取该 plan.md，再严格遵守该计划执行。"
+            "除非用户明确要求查看计划文件，否则不要为了展示而读取 plan.md。"
+            "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果当前 todo 已完成，返回 kind=step_done；如果全部 todo 都已完成，返回 kind=reply；如果无法继续，返回 kind=blocked。"
+            "不要输出 chat 工具；最终回复请直接放在 reply 字段。"
+        )
+        system_prompt = """你现在的职责是作为 branch code，围绕当前用户任务做出下一步执行决策，并在需要时调用合适的工具完成工作。
+
+如果历史对话中上一条提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应先使用 read_file 读取该 plan.md，再严格遵守该计划执行；否则不要因为工作区里存在 plan.md 就默认按计划执行。
+
+你必须且只能返回以下四种 JSON 结构之一，不要输出额外文本：
+
+1. 调用工具：
 {
-    "complexity": "simple/medium/complex",
-    "intent_type": "develop/explore/review/question/debug/refactor/other",
-    "execution_mode": "DIRECT/PLAN/SUBAGENT",
-    "reason": "选择该模式的原因",
-    "suggested_agent": "explore/review/None"
+  "kind": "tool",
+  "tool_name": "工具名",
+  "tool_args": {"参数名": "参数值"},
+  "task_description": "这一步要做什么"
 }
 
-只返回JSON，不要其他内容。"""
-            
-            parent_chain_messages = state.get("parent_chain_messages", [])
-            current_conversation_messages = state.get("current_conversation_messages", [])
-            
-            full_prompt = build_context_prompt(
-                parent_chain_messages,
-                current_conversation_messages,
-                f"user: {user_message}"
+2. 当前 todo 已完成：
+{
+  "kind": "step_done"
+}
+
+3. 所有工作已完成，直接回复用户：
+{
+  "kind": "reply",
+  "reply": "给用户的最终回复"
+}
+
+4. 当前无法继续：
+{
+  "kind": "blocked",
+  "reply": "阻塞原因"
+}
+
+规则：
+1. 一次只能决定一步，不要输出多步计划
+2. 如果用户的问题里提到了文件路径，且该文件存在，优先使用工具读取文件内容并根据内容决策下一步
+3. kind=tool 时，tool_name 必填，tool_args 必填，task_description 必填
+4. kind=tool 时，tool_name 必须来自工具协议里的工具名，tool_args 必须严格使用协议里的参数名
+5. kind=reply 或 kind=blocked 时，不要返回 tool_name 或 tool_args
+6. 如果任务明显复杂、多阶段、跨文件、需要先输出方案，或者用户明确要求先给方案/计划，优先调用 switch_execution_mode 把模式切到 PLAN
+7. 如果当前任务是多步骤/有阶段或是任务执行过程中有不确定因素不能一口气完成的，使用 update_todo 写入完整 todo 列表
+8. 如果 todo 不为空，优先围绕完整 todo 列表继续执行，并通过 update_todo 覆盖更新完整列表与 doingIdx
+9. 如果任务拆分发生变化，直接用 update_todo 重写整个 todo 列表
+10. 只有当前工作真的完成时，才能返回 step_done；只有所有工作都完成时，才能返回 reply
+11. 如果拿不准下一步该用什么工具或缺少必填参数，返回 blocked，不要返回不完整的 tool JSON
+"""
+
+        context_prompt = build_context_prompt(parent_chain_messages, current_conversation_messages, current_task)
+
+        try:
+            response = llm_service.chat(
+                messages=[{"role": "user", "content": context_prompt}],
+                system_prompt=system_prompt,
             )
-            messages = [{"role": "user", "content": full_prompt}]
-            
+            console.response_box(response)
+            response_text = response.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+            decision_data = json.loads(response_text)
+        except Exception as e:
+            console.box("决策解析失败", response_text if 'response_text' in locals() else str(response))
+            reply = f"当前无法自动决策下一步：{e}；原始回复：{response_text if 'response_text' in locals() else response}"
+            _emit_final_reply(reply, message_context)
+            return {
+                "next_action": {"kind": "reply", "reply": reply, "task_description": user_message},
+                "final_reply": reply,
+                "has_tool_use": False,
+                "pending_tools": [],
+            }
+
+        kind = decision_data.get("kind")
+        if kind == "step_done":
+            return {
+                "todo_status": "step_done",
+                "has_tool_use": False,
+                "pending_tools": [],
+            }
+        if kind == "blocked":
+            reply = decision_data.get("reply") or "当前 todo 被阻塞"
+            _emit_final_reply(reply, message_context)
+            return {
+                "todo_status": "blocked",
+                "final_reply": reply,
+                "has_tool_use": False,
+                "pending_tools": [],
+            }
+        if kind == "reply":
+            reply = decision_data.get("reply") or "任务已完成。"
+            _emit_final_reply(reply, message_context)
+            return {
+                "next_action": {
+                    "kind": "reply",
+                    "reply": reply,
+                    "task_description": decision_data.get("task_description") or "向用户输出最终回复",
+                },
+                "final_reply": reply,
+                "has_tool_use": False,
+                "pending_tools": [],
+            }
+
+        tool_name = decision_data.get("tool_name")
+        tool_args = decision_data.get("tool_args") or {}
+        task_description = decision_data.get("task_description") or user_message
+
+        if not tool_name or not is_tool_allowed(tool_name, current_agent_type, settings_service):
+            console.box("无效工具决策原始回复", json.dumps(decision_data, ensure_ascii=False, indent=2))
+            retry_count = (state.get("invalid_tool_retry_count", 0) or 0) + 1
+            if retry_count <= 3:
+                console.decision_box("decide", f"工具决策无效，使用相同提示词重试第 {retry_count}/3 次")
+                return {
+                    "pending_tools": [],
+                    "has_tool_use": False,
+                    "final_reply": None,
+                    "next_action": None,
+                    "invalid_tool_retry_count": retry_count,
+                }
+
+            reply = f"工具决策无效，无法继续执行：{tool_name}；原始回复：{json.dumps(decision_data, ensure_ascii=False)}"
+            _emit_final_reply(reply, message_context)
+            return {
+                "next_action": {"kind": "reply", "reply": reply, "task_description": task_description},
+                "final_reply": reply,
+                "has_tool_use": False,
+                "pending_tools": [],
+                "invalid_tool_retry_count": retry_count,
+            }
+
+        pending = [{"tool": tool_name, "args": dict(tool_args)}]
+        return {
+            "next_action": {
+                "kind": "tool",
+                "tool_name": tool_name,
+                "tool_args": tool_args,
+                "task_description": task_description,
+            },
+            "pending_tools": pending,
+            "has_tool_use": True,
+            "final_reply": None,
+            "invalid_tool_retry_count": 0,
+        }
+
+    return decide_tool_action_node
+
+
+def create_decide_next_action_node(llm_service=None, settings_service=None, message_context=None):
+    return create_decide_tool_action_node(llm_service, settings_service, message_context)
+
+
+def create_step_review_node(llm_service=None, message_context=None):
+    def step_review_node(state: AgentState) -> dict:
+        todos = state.get("todos") or []
+        current_todo_index = state.get("current_todo_index", 0) or 0
+        if not todos:
+            return {
+                "todo_status": "continue",
+                "has_tool_use": False,
+                "pending_tools": [],
+                "todos": todos,
+            }
+
+        if current_todo_index >= len(todos):
+            return {"final_reply": "任务已完成。", "has_tool_use": False}
+
+        if state.get("last_tool_success") is False:
+            return {
+                "todo_status": "blocked",
+                "has_tool_use": False,
+                "pending_tools": [],
+                "todos": todos,
+            }
+
+        return {
+            "todo_status": state.get("todo_status") or "continue",
+            "has_tool_use": False,
+            "pending_tools": [],
+            "todos": todos,
+        }
+
+    return step_review_node
+
+
+def create_plan_node(llm_service=None, token_callback=None, settings_service=None, message_context=None):
+    def plan_node(state: AgentState) -> dict:
+        user_message = state["messages"][-1] if state["messages"] else ""
+        workspace_id = state["workspace_id"]
+
+        console.step("规划节点", "分析节点", user_message)
+
+        workspace_info = workspace_service.get_workspace_info(workspace_id)
+        session_id = workspace_info.get("session_id", "default") if workspace_info else "default"
+
+        if llm_service:
+            system_prompt = """你是一个软件工程任务规划器。
+
+请只输出高层计划纲要，严格使用 JSON：
+{
+  "tasks": [
+    {
+      "description": "步骤描述",
+      "goal": "该步骤要达成的目标",
+      "done_when": "满足什么条件说明该步骤完成",
+      "phase": "research|synthesis|implementation|verification"
+    }
+  ]
+}
+
+要求：
+1. 只输出 2-5 个高层步骤
+2. 不要在这里生成 tool 或具体 args
+3. description 要描述做什么，goal 要描述为什么做，done_when 要描述完成判定
+4. 输出必须是 JSON
+"""
+
+            messages = [{"role": "user", "content": f"请为以下任务生成高层执行计划：\n\n{user_message}"}]
+
             try:
                 response = llm_service.chat(messages, system_prompt=system_prompt)
-                
+
                 console.response_box(response)
-                
+
                 import json
                 response_text = response.strip()
                 if response_text.startswith("```json"):
@@ -212,163 +606,45 @@ def create_analyze_node(llm_service=None, message_context=None, settings_service
                 if response_text.endswith("```"):
                     response_text = response_text[:-3]
                 response_text = response_text.strip()
-                
-                analysis_result = json.loads(response_text)
-                
-                mode_str = analysis_result.get("execution_mode", "DIRECT")
-                execution_mode = ExecutionMode[mode_str]
-                
-                mode_decision = {
-                    "mode": execution_mode,
-                    "reason": analysis_result.get("reason", ""),
-                    "suggested_agent": analysis_result.get("suggested_agent")
-                }
 
-                if current_agent_type != "director_agent":
-                    mode_decision["mode"] = ExecutionMode.DIRECT
-                    mode_decision["suggested_agent"] = None
-                    mode_decision["reason"] = f"{current_agent_type} 使用专属 graph，固定走 DIRECT 执行"
+                data = json.loads(response_text)
+                raw_tasks = data.get("tasks") if isinstance(data, dict) else None
+                if not raw_tasks:
+                    raise ValueError("计划结果缺少 tasks")
 
-                intent_analysis = {
-                    "intent_type": analysis_result.get("intent_type", "other"),
-                    "summary": user_message[:100],
-                    "key_points": [user_message],
-                    "complexity": analysis_result.get("complexity", "medium"),
-                    "confidence": 0.9
-                }
-                
-            except Exception as e:
-                console.warning(f"调用大模型失败: {e}，使用默认逻辑")
-                complexity = evaluate_task_complexity(user_message)
-                intent_analysis = {
-                    "intent_type": "other",
-                    "summary": user_message[:100],
-                    "key_points": [user_message],
-                    "complexity": complexity,
-                    "confidence": 0.7
-                }
-                mode_decision = analyze_task_complexity(user_message, intent_analysis)
-        else:
-            complexity = evaluate_task_complexity(user_message)
-            intent_analysis = {
-                "intent_type": "other",
-                "summary": user_message[:100],
-                "key_points": [user_message],
-                "complexity": complexity,
-                "confidence": 0.7
-            }
-            mode_decision = analyze_task_complexity(user_message, intent_analysis)
-        
-        console.decision_box(
-            route_after_analyze({'execution_mode': mode_decision['mode']}),
-            f"执行模式: {mode_decision['mode']}\n原因: {mode_decision['reason']}"
-        )
-        
-        result = {
-            "intent_analysis": intent_analysis,
-            "execution_mode": mode_decision["mode"],
-            "mode_reason": mode_decision["reason"],
-            "suggested_tools": [],
-            "suggested_subagent": mode_decision["suggested_agent"],
-            "active_subagent": mode_decision["mode"] == ExecutionMode.SUBAGENT,
-            "has_tool_use": False,
-            "final_reply": None
-        }
-
-        if mode_decision["mode"] == ExecutionMode.DIRECT and current_agent_type == "director_agent":
-            result["pending_tools"] = [
-                {"tool": "thinking", "args": {"description": user_message}},
-                {"tool": "chat", "args": {"description": user_message}},
-            ]
-        elif mode_decision["mode"] == ExecutionMode.DIRECT:
-            suggested_tools = []
-            if current_agent_type == "explore_agent":
-                suggested_tools = ["thinking", "chat"]
-            elif current_agent_type == "review_agent":
-                suggested_tools = ["thinking", "chat"]
-            result["pending_tools"] = [
-                {"tool": tool, "args": {"description": user_message}}
-                for tool in suggested_tools
-            ]
-        
-        if message_context:
-            send_message = message_context.get("send_message")
-            if send_message:
-                from service.session_service.canonical import MessageBuilder
-                state_metadata = {
-                    "execution_mode": mode_decision["mode"].name,
-                    "active_subagent": result.get("active_subagent")
-                }
-                state_msg = MessageBuilder.state_change(
-                    message_id=message_context.get("message_id", ""),
-                    conversation_id=message_context.get("conversation_id", ""),
-                    session_id=message_context.get("session_id", ""),
-                    workspace_id=message_context.get("workspace_id", ""),
-                    metadata=state_metadata
-                )
-                send_message("", SegmentType.STATE_CHANGE, state_metadata)
-        
-        return result
-    
-    return analyze_node
-
-
-def create_plan_node(llm_service=None, token_callback=None, settings_service=None, message_context=None):
-    def plan_node(state: AgentState) -> dict:
-        user_message = state["messages"][-1] if state["messages"] else ""
-        workspace_id = state["workspace_id"]
-        plan_auto_approve = True
-        if settings_service is not None:
-            try:
-                plan_auto_approve = bool(settings_service.get("agent:plan_auto_approve"))
-            except KeyError:
-                plan_auto_approve = True
-
-        console.step("规划节点", "分析节点", user_message)
-
-        workspace_info = workspace_service.get_workspace_info(workspace_id)
-        session_id = workspace_info.get("session_id", "default") if workspace_info else "default"
-
-        if llm_service:
-            from .subgraphs.plan_graph import get_plan_system_prompt, parse_plan_from_text
-
-            system_prompt = get_plan_system_prompt("director_agent", settings_service)
-
-            messages = [{"role": "user", "content": f"请为以下任务生成详细的执行计划，包含2-5个步骤：\n\n{user_message}"}]
-
-            try:
-                response = llm_service.chat(messages, system_prompt=system_prompt)
-
-                console.response_box(response)
-
-                plan = parse_plan_from_text(response)
-
-                for i, task in enumerate(plan):
-                    task["id"] = i + 1
+                plan = []
+                for i, task in enumerate(raw_tasks, 1):
+                    plan.append({
+                        "id": i,
+                        "description": task.get("description") or f"步骤 {i}",
+                        "goal": task.get("goal") or task.get("description") or f"完成步骤 {i}",
+                        "done_when": task.get("done_when") or "该步骤目标达成",
+                        "phase": task.get("phase") or "implementation",
+                        "status": "pending",
+                        "tool": None,
+                        "args": None,
+                        "result": None,
+                        "feedback": None,
+                    })
 
                 console.task_list_box(plan)
 
             except Exception as e:
                 console.warning(f"调用大模型失败: {e}，使用默认计划")
                 plan = [
-                    {"id": 1, "description": f"分析需求: {user_message[:30]}...", "phase": "research", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
-                    {"id": 2, "description": "设计实现方案", "phase": "synthesis", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
-                    {"id": 3, "description": "执行实现", "phase": "implementation", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
-                    {"id": 4, "description": "验证结果", "phase": "verification", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
+                    {"id": 1, "description": f"理解需求并确认工作区现状", "goal": "明确任务边界", "done_when": "已确认目标文件和工作区状态", "phase": "research", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
+                    {"id": 2, "description": "执行核心改动", "goal": "完成用户请求的功能", "done_when": "相关文件和行为已按要求完成", "phase": "implementation", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
+                    {"id": 3, "description": "验证结果", "goal": "确认结果满足要求", "done_when": "测试或检查结果符合预期", "phase": "verification", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
                 ]
         else:
             console.warning("LLM服务未配置，使用默认计划")
             plan = [
-                {"id": 1, "description": f"分析需求: {user_message[:30]}...", "phase": "research", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
-                {"id": 2, "description": "设计实现方案", "phase": "synthesis", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
-                {"id": 3, "description": "执行实现", "phase": "implementation", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
-                {"id": 4, "description": "验证结果", "phase": "verification", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
+                {"id": 1, "description": f"理解需求并确认工作区现状", "goal": "明确任务边界", "done_when": "已确认目标文件和工作区状态", "phase": "research", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
+                {"id": 2, "description": "执行核心改动", "goal": "完成用户请求的功能", "done_when": "相关文件和行为已按要求完成", "phase": "implementation", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
+                {"id": 3, "description": "验证结果", "goal": "确认结果满足要求", "done_when": "测试或检查结果符合预期", "phase": "verification", "status": "pending", "tool": None, "args": None, "result": None, "feedback": None},
             ]
 
         plan_content = plan_file_service.format_plan_as_markdown(user_message, plan)
-        if plan_auto_approve:
-            plan_content = plan_content.replace("*此计划由 Agent 自动生成，请审核后批准执行。*", "*此计划由 Agent 自动生成，已根据配置自动继续执行。*")
-
         create_result = plan_file_service.create_plan(
             session_id=session_id,
             workspace_id=workspace_id,
@@ -376,8 +652,14 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
             plan_steps=plan,
             metadata={"task_description": user_message}
         )
+        plan_file_path = create_result.get("plan_file")
+        final_reply = (
+            "已生成方案，计划文件为 plan.md。\n"
+            "如果你同意方案，请直接回复“可以”或“同意方案”，我会读取 plan.md 并严格按照方案继续执行。\n\n"
+            f"{plan_content}"
+        )
 
-        console.box("计划文件已创建", create_result.get("plan_file"))
+        console.box("计划文件已创建", plan_file_path)
 
         if message_context:
             send_message = message_context.get("send_message")
@@ -385,28 +667,19 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
                 state_metadata = {
                     "execution_mode": "PLAN",
                     "plan_steps": len(plan),
-                    "plan_file": create_result.get("plan_file"),
-                    "plan_auto_approve": plan_auto_approve,
+                    "plan_file": plan_file_path,
                 }
                 send_message("", SegmentType.STATE_CHANGE, state_metadata)
-                send_message(plan_content, SegmentType.TEXT_DELTA)
+                send_message(final_reply, SegmentType.TEXT_DELTA)
 
-        if plan_auto_approve:
-            console.decision_box("execute", "计划已生成，开始执行")
-            return {
-                "plan": plan,
-                "plan_file": create_result.get("plan_file"),
-                "current_step": 0,
-                "results": [],
-                "has_tool_use": True,
-                "final_reply": None,
-            }
-
-        console.decision_box("done", "计划已生成，等待用户确认执行")
+        console.decision_box("done", "计划已生成，结束当前 run")
         return {
             "plan": plan,
-            "plan_file": create_result.get("plan_file"),
-            "final_reply": plan_content
+            "plan_file": plan_file_path,
+            "plan_content": plan_content,
+            "final_reply": final_reply,
+            "has_tool_use": False,
+            "pending_tools": [],
         }
 
     return plan_node
@@ -1041,7 +1314,6 @@ def _execute_workspace_tool(tool_name: str, tool_args: dict, workspace_id: str, 
     console.section(f"Workspace 工具: {tool_name}")
     
     if workspace_service is None:
-        from ...service import WorkspaceService
         workspace_service = WorkspaceService()
     
     if tool_name == "list_workspace_files":
@@ -1184,155 +1456,111 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
             cancel_check = message_context.get("cancel_check")
             if cancel_check:
                 cancel_check()
-        
+
         pending_tools = state.get("pending_tools", [])
         current_agent_type = state.get("agent_type") or "director_agent"
         parent_chain_messages = state.get("parent_chain_messages", [])
         current_conversation_messages = state.get("current_conversation_messages", [])
         workspace_id = state["workspace_id"]
-        
+        execution_mode = state.get("execution_mode")
+
         if pending_tools:
             tool_name = pending_tools[0].get("tool")
             tool_args = pending_tools[0].get("args", {})
-            task_description = tool_args.get("description", "")
-            
+            task_description = (
+                (state.get("next_action") or {}).get("task_description")
+                or tool_args.get("description", "")
+            )
+
             console.step("执行节点", "分析节点", f"执行工具: {tool_name}")
-            
+
             console.box("执行工具", {
                 "工具名称": tool_name,
                 "工具参数": tool_args
             })
-            
-            conversation_id = message_context.get("conversation_id") if message_context else None
-            
-            _write_tool_event(
-                conversation_id,
-                tool_name,
-                "started",
+
+            tool_result = run_tool_execution(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                workspace_id=workspace_id,
+                previous_calls=state.get("tool_history", []),
+                workspace_service=workspace_service,
+                llm_service=llm_service,
+                token_callback=token_callback,
                 task_description=task_description,
+                previous_results=[item.get("result") for item in state.get("tool_history", []) if item.get("result")],
+                agent_type=current_agent_type,
+                settings_service=settings_service,
+                message_context=message_context,
             )
-            
-            if message_context:
-                send_message = message_context.get("send_message")
-                if send_message and tool_name not in SPECIAL_TOOLS:
-                    send_message("", SegmentType.TOOL_CALL, {
-                        "tool_name": tool_name,
-                        "tool_args": tool_args,
-                        "task_description": task_description
-                    })
-            
-            tool_args_copy = tool_args.copy()
-            
-            if tool_name in FILE_TOOLS:
-                path_key = "path" if "path" in tool_args_copy else "file_path"
-                target_path = tool_args_copy.get(path_key) or tool_args_copy.get("directory")
-                if target_path:
-                    allowed, resolved_path = workspace_service.resolve_path(workspace_id, target_path)
-                    if allowed:
-                        if "path" in tool_args_copy:
-                            tool_args_copy["path"] = resolved_path
-                        elif "file_path" in tool_args_copy:
-                            tool_args_copy["file_path"] = resolved_path
-                        elif "directory" in tool_args_copy:
-                            tool_args_copy["directory"] = resolved_path
-            
-            if tool_name in EXPLORE_TOOLS:
-                workspace_root = workspace_service.get_workspace_dir(workspace_id)
-                if workspace_root:
-                    tool_args_copy["workspace_root"] = workspace_root
-            
-            if tool_name == "thinking":
-                tool_result = _execute_thinking_tool_direct(
-                    task_description=task_description,
-                    llm_service=llm_service,
-                    message_context=message_context,
-                    parent_chain_messages=parent_chain_messages,
-                    current_conversation_messages=current_conversation_messages,
-                )
-            elif tool_name == "chat":
-                tool_result = _execute_chat_tool_direct(
-                    task_description=task_description,
-                    llm_service=llm_service,
-                    message_context=message_context,
-                    parent_chain_messages=parent_chain_messages,
-                    current_conversation_messages=current_conversation_messages,
-                )
-            elif tool_name == "read_file":
-                tool_result = _execute_read_file(tool_args_copy)
-            elif tool_name == "write_file":
-                tool_result = _execute_write_file(tool_args_copy)
-            elif tool_name == "delete_file":
-                tool_result = _execute_delete_file(tool_args_copy)
-            elif tool_name == "list_dir":
-                tool_result = _execute_list_dir(tool_args_copy)
-            elif tool_name == "create_dir":
-                tool_result = _execute_create_dir(tool_args_copy)
-            elif tool_name == "explore_code":
-                tool_result = _execute_explore_code(tool_args_copy)
-            elif tool_name == "explore_internet":
-                tool_result = _execute_explore_internet(tool_args_copy)
-            elif tool_name == "call_explore_agent":
-                tool_result = _execute_call_explore_agent(
-                    tool_args_copy, llm_service, token_callback, message_context,
-                    parent_chain_messages, current_conversation_messages
-                )
-            elif tool_name == "call_review_agent":
-                tool_result = _execute_call_review_agent(
-                    tool_args_copy, llm_service, token_callback, message_context,
-                    parent_chain_messages, current_conversation_messages
-                )
-            elif tool_name in WORKSPACE_TOOLS:
-                tool_result = _execute_workspace_tool(tool_name, tool_args_copy, workspace_id, workspace_service)
-            else:
-                tool_result = {"result": f"工具 {tool_name} 执行成功", "error": None}
-            
-            result_str = str(tool_result.get("result", ""))
+
+            result_str = str(tool_result.get("result", "")) if tool_result.get("result") is not None else ""
+            if len(result_str) > 4000:
+                result_str = result_str[:4000] + "..."
             console.box("工具执行结果", result_str[:200])
-            
-            if message_context:
-                send_message = message_context.get("send_message")
-                if send_message and tool_name not in SPECIAL_TOOLS:
-                    result_content = tool_result.get("result")
-                    if result_content is None:
-                        result_preview = ""
-                    else:
-                        result_preview = str(result_content)
-                        if len(result_preview) > 500:
-                            result_preview = result_preview[:500] + "..."
-                    send_message("", SegmentType.TOOL_RES, {
-                        "tool_name": tool_name,
-                        "result": result_preview,
-                        "error": tool_result.get("error"),
-                        "success": tool_result.get("error") is None
-                    })
-            
-            if tool_result.get("error") is None:
-                _write_tool_event(
-                    conversation_id,
-                    tool_name,
-                    "completed",
-                    result=tool_result.get("result") or "",
-                )
-            else:
-                _write_tool_event(
-                    conversation_id,
-                    tool_name,
-                    "failed",
-                    error=str(tool_result.get("error")),
-                )
-            
+
             new_tool_history = state.get("tool_history", []) + [{
                 "tool": tool_name,
                 "args": tool_args,
                 "result": tool_result.get("result")
             }]
-            
+
             new_current_conv_msgs = list(current_conversation_messages)
             new_current_conv_msgs.append({
                 "role": "assistant",
                 "content": f"[工具执行: {tool_name}]\n结果: {result_str[:1000]}"
             })
-            
+
+            tool_success = tool_result.get("error") is None
+            tool_error = tool_result.get("error")
+
+            if _mode_name(execution_mode) == "DIRECT" and tool_name != "chat":
+                direct_update = {
+                    "pending_tools": [],
+                    "tool_history": new_tool_history,
+                    "current_conversation_messages": new_current_conv_msgs,
+                    "has_tool_use": False,
+                    "last_tool_result": result_str,
+                    "last_tool_name": tool_name,
+                    "last_tool_success": tool_success,
+                    "last_tool_error": tool_error,
+                    "iteration_count": (state.get("iteration_count", 0) or 0) + 1,
+                    "current_todo_iteration_count": (state.get("current_todo_iteration_count", 0) or 0) + 1,
+                    "todo_status": "in_progress",
+                    "next_action": None,
+                }
+                if tool_success and tool_name == "update_todo":
+                    next_todos = tool_result.get("todos") or []
+                    next_doing_idx = tool_result.get("doingIdx", 0)
+                    direct_update.update({
+                        "todos": next_todos,
+                        "current_todo_index": next_doing_idx,
+                        "current_todo_goal": None,
+                        "current_todo_done_when": None,
+                        "iteration_count": 0,
+                        "current_todo_iteration_count": 0,
+                        "todo_status": "pending",
+                    })
+                if tool_success and tool_name == "switch_execution_mode":
+                    mode_value = tool_result.get("execution_mode")
+                    if mode_value == "PLAN":
+                        direct_update.update({
+                            "execution_mode": ExecutionMode.PLAN,
+                            "mode_reason": tool_result.get("mode_reason") or "agent 主动切换到 PLAN",
+                            "pending_tools": [],
+                            "has_tool_use": False,
+                            "next_action": {
+                                "kind": "enter_plan",
+                                "task_description": tool_result.get("mode_reason") or "切换到 PLAN",
+                            },
+                        })
+                    elif mode_value == "DIRECT":
+                        direct_update.update({
+                            "execution_mode": ExecutionMode.DIRECT,
+                            "mode_reason": tool_result.get("mode_reason") or "agent 维持 DIRECT",
+                        })
+                return direct_update
+
             has_more_tools = len(pending_tools) > 1
             is_chat_tool = tool_name == "chat"
 
@@ -1343,150 +1571,33 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                     "tool_history": new_tool_history,
                     "current_conversation_messages": new_current_conv_msgs,
                     "has_tool_use": False,
-                    "final_reply": result_str
+                    "final_reply": result_str,
+                    "last_tool_result": result_str,
+                    "last_tool_name": tool_name,
+                    "last_tool_success": tool_success,
+                    "last_tool_error": tool_error,
+                    "next_action": None,
                 }
-            
+
             console.decision_box("execute" if has_more_tools else "analyze", "继续执行或分析")
-            
+
             return {
                 "pending_tools": pending_tools[1:],
                 "tool_history": new_tool_history,
                 "current_conversation_messages": new_current_conv_msgs,
-                "has_tool_use": has_more_tools
+                "has_tool_use": has_more_tools,
+                "last_tool_result": result_str,
+                "last_tool_name": tool_name,
+                "last_tool_success": tool_success,
+                "last_tool_error": tool_error,
             }
-        
-        if state.get("plan") and state.get("current_step", 0) < len(state["plan"]):
-            step = state.get("current_step", 0)
-            plan = state["plan"]
-            task = plan[step]
-            plan_auto_approve = True
-            if settings_service is not None:
-                try:
-                    plan_auto_approve = bool(settings_service.get("agent:plan_auto_approve"))
-                except KeyError:
-                    plan_auto_approve = True
 
-            phase = task.get('phase', 'implementation')
-            phase_names = {
-                'research': '研究阶段',
-                'synthesis': '综合阶段',
-                'implementation': '实现阶段',
-                'verification': '验证阶段'
-            }
-            phase_name = phase_names.get(phase, phase)
-
-            console.step("执行节点", "规划节点", task['description'])
-
-            tool_name = task.get("tool") or "thinking"
-            tool_args = task.get("args") or {}
-            tool_history = state.get("tool_history", [])
-            previous_results = [
-                item.get("result") for item in tool_history
-                if item.get("result")
-            ]
-
-            console.execution_box(
-                step + 1, len(plan), phase_name,
-                task['description'], tool_name, tool_args
-            )
-
-            plan_message_context = dict(message_context or {})
-            if plan_auto_approve:
-                plan_message_context["plan_auto_approve"] = True
-
-            tool_result = run_tool_execution(
-                tool_name=tool_name,
-                tool_args=tool_args,
-                workspace_id=workspace_id,
-                previous_calls=tool_history,
-                llm_service=llm_service,
-                token_callback=token_callback,
-                task_description=task.get("description", ""),
-                previous_results=previous_results,
-                agent_type=current_agent_type,
-                settings_service=settings_service,
-                message_context=plan_message_context,
-                auto_approve=plan_auto_approve,
-            )
-
-            result_str = str(tool_result.get("result", ""))
-            task["status"] = "completed" if tool_result.get("error") is None else "failed"
-            task["result"] = result_str
-
-            if phase == "research":
-                task["feedback"] = f"研究完成：{result_str[:100]}..."
-            elif phase == "synthesis":
-                task["feedback"] = "综合完成：制定了实现规范"
-            elif phase == "implementation":
-                task["feedback"] = f"实现完成：{result_str[:100]}..."
-            elif phase == "verification":
-                task["feedback"] = f"验证完成：{result_str[:100]}..."
-
-            console.result_box(task['status'], result_str[:200], task['feedback'])
-
-            new_results = state.get("results", []) + [{
-                "task": task,
-                "result": tool_result
-            }]
-
-            new_tool_history = tool_history + [{
-                "tool": tool_name,
-                "args": tool_args,
-                "result": tool_result.get("result")
-            }]
-
-            new_current_conv_msgs = list(current_conversation_messages)
-            new_current_conv_msgs.append({
-                "role": "assistant",
-                "content": f"[工具执行: {tool_name}]\n结果: {result_str[:1000]}"
-            })
-
-            has_more_steps = step + 1 < len(plan)
-            is_chat_tool = tool_name == "chat"
-
-            if is_chat_tool:
-                console.decision_box("done", "chat 工具输出最终回复，结束循环")
-                return {
-                    "current_step": step + 1,
-                    "results": new_results,
-                    "tool_history": new_tool_history,
-                    "current_conversation_messages": new_current_conv_msgs,
-                    "plan": plan,
-                    "has_tool_use": False,
-                    "final_reply": result_str,
-                    "execution_mode": None,
-                }
-
-            if has_more_steps:
-                console.decision_box("execute", "继续执行下一个计划步骤")
-                return {
-                    "current_step": step + 1,
-                    "results": new_results,
-                    "tool_history": new_tool_history,
-                    "current_conversation_messages": new_current_conv_msgs,
-                    "plan": plan,
-                    "has_tool_use": True,
-                }
-
-            summary_description = "请根据以上计划执行结果，给用户一个简洁的最终总结回复。"
-            console.decision_box("execute", "计划步骤完成，生成最终回复")
-            return {
-                "current_step": step + 1,
-                "results": new_results,
-                "tool_history": new_tool_history,
-                "current_conversation_messages": new_current_conv_msgs,
-                "plan": plan,
-                "pending_tools": [{"tool": "chat", "args": {"description": summary_description}}],
-                "has_tool_use": True,
-            }
-        
         console.step("执行节点", "无", "没有任务可执行")
         console.decision_box("done", "没有任务可执行，执行完成")
-        
+
         return {
             "pending_tools": [],
             "in_plan_mode": False,
-            "active_subagent": False,
             "execution_mode": None,
             "has_tool_use": False
         }
@@ -1494,85 +1605,67 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
     return execute_node
 
 
-def create_subagent_node(llm_service=None, token_callback=None, settings_service=None, message_context=None):
-    def subagent_node(state: AgentState) -> dict:
-        suggested_agent = state.get("suggested_subagent")
-        user_message = state["messages"][-1] if state["messages"] else ""
-        parent_chain_messages = state.get("parent_chain_messages", [])
-        current_conversation_messages = state.get("current_conversation_messages", [])
+def route_after_todo_review(_state: AgentState) -> str:
+    return "decide"
 
-        console.step("子代理节点", "分析节点", f"启动 {suggested_agent}")
 
-        if suggested_agent in {"explore", "explore_agent"}:
-            result = _execute_call_explore_agent(
-                {"task_description": user_message},
-                llm_service,
-                token_callback,
-                message_context,
-                parent_chain_messages,
-                current_conversation_messages,
-            )
-        elif suggested_agent in {"review", "review_agent"}:
-            result = _execute_call_review_agent(
-                {"task_description": user_message},
-                llm_service,
-                token_callback,
-                message_context,
-                parent_chain_messages,
-                current_conversation_messages,
-            )
-        else:
-            result = {"result": None, "error": f"未知子代理: {suggested_agent}"}
+def route_after_execute(state: AgentState) -> str:
+    next_action = state.get("next_action") or {}
+    mode_name = _mode_name(state.get("execution_mode"))
+    if next_action.get("kind") == "enter_plan":
+        return "plan"
 
-        result_text = result.get("result") or result.get("error") or "子代理未返回结果"
-        console.box("子代理结果", result_text[:200])
-
-        return {
-            "explore_result": result.get("result"),
-            "active_subagent": False,
-            "pending_tools": [
-                {"tool": "chat", "args": {"description": f"总结子代理结果并回复用户: {result_text[:200]}"}}
-            ],
-            "has_tool_use": True
-        }
-
-    return subagent_node
+    if mode_name == "PLAN" and not state.get("pending_tools"):
+        return "plan"
+    if mode_name == "DIRECT" and not state.get("pending_tools"):
+        return "todo_review"
+    return check_state_v3(state)
 
 
 def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_mode: str = "accumulate", window_size: int = 3, settings_service=None, message_context=None):
     graph = StateGraph(AgentState)
-    plan_auto_approve = True
-    if settings_service is not None:
-        try:
-            plan_auto_approve = bool(settings_service.get("agent:plan_auto_approve"))
-        except KeyError:
-            plan_auto_approve = True
 
     graph.add_node("analyze", create_analyze_node(llm_service, message_context, settings_service))
+    graph.add_node("decide", create_decide_next_action_node(llm_service, settings_service, message_context))
     graph.add_node("plan", create_plan_node(llm_service, token_callback, settings_service, message_context))
+    graph.add_node("todo_review", create_step_review_node(llm_service, message_context))
     graph.add_node("execute", create_execute_node(llm_service, token_callback, settings_service, message_context))
-    graph.add_node("subagent", create_subagent_node(llm_service, token_callback, settings_service, message_context))
 
     graph.set_entry_point("analyze")
 
     graph.add_conditional_edges("analyze", route_after_analyze, {
         "plan": "plan",
-        "execute": "execute",
-        "subagent": "subagent",
+        "decide": "decide",
         "done": END
     })
 
-    if plan_auto_approve:
-        graph.add_edge("plan", "execute")
-    else:
-        graph.add_edge("plan", END)
-    graph.add_edge("subagent", "execute")
-    graph.add_conditional_edges("execute", check_state_v3, {
+    graph.add_conditional_edges("decide", check_state_v3, {
         "analyze": "analyze",
+        "decide": "decide",
         "execute": "execute",
         "plan": "plan",
-        "subagent": "subagent",
         "done": END
+    })
+
+    graph.add_conditional_edges("plan", check_state_v3, {
+        "analyze": "analyze",
+        "decide": "decide",
+        "execute": "execute",
+        "plan": "plan",
+        "done": END
+    })
+
+    graph.add_conditional_edges("execute", route_after_execute, {
+        "analyze": "analyze",
+        "decide": "decide",
+        "todo_review": "todo_review",
+        "execute": "execute",
+        "plan": "plan",
+        "done": END
+    })
+
+    graph.add_conditional_edges("todo_review", route_after_todo_review, {
+        "decide": "decide",
     })
 
     return graph.compile()
@@ -1594,7 +1687,7 @@ def run_graph_v3(
     print("[Director Agent] 块类型驱动循环 + Plan/Execute 分离")
     print(f"[Director Agent] 记忆模式: {memory_mode}, 窗口大小: {window_size}")
     print("="*60)
-    
+
     initial_state = build_initial_state(
         user_message=user_message,
         workspace_id=workspace_id,
@@ -1602,7 +1695,7 @@ def run_graph_v3(
         current_conversation_messages=current_conversation_messages,
         is_root_graph=True,
     )
-    
+
     graph = create_orchestrator_graph_v3(llm_service, token_callback, memory_mode, window_size, settings_service, message_context)
     final_state = graph.invoke(initial_state)
 
@@ -1612,11 +1705,11 @@ def run_graph_v3(
             send_message("", SegmentType.DONE, {
                 "message_id": message_context.get("message_id", "")
             })
-    
+
     print("\n" + "="*60)
     print("[Director Agent] 主编排图执行完成")
     print("="*60)
-    
+
     return final_state
 
 

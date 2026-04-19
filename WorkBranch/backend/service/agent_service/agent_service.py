@@ -473,6 +473,7 @@ class AgentService:
             try:
                 result = await loop.run_in_executor(None, run_with_config)
             except Exception as exc:
+                send_message(str(exc), SegmentType.ERROR, {"message_id": message_id, "error": str(exc)})
                 self._log_agent_event(
                     "ERROR",
                     "agent.run.failed",

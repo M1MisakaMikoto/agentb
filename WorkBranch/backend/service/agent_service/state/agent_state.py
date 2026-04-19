@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Any, Optional
+from typing import TypedDict, List, Any, Optional, Literal
 from enum import Enum
 
 
@@ -38,10 +38,12 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
 
 
-class Task(TypedDict):
+class Task(TypedDict, total=False):
     """单个任务定义"""
     id: int
     description: str
+    goal: Optional[str]
+    done_when: Optional[str]
     phase: str
     status: str
     tool: Optional[str]
@@ -67,17 +69,32 @@ class IntentAnalysis(TypedDict):
     confidence: float
 
 
+class NextAction(TypedDict, total=False):
+    kind: Literal["tool", "reply", "step_done", "blocked", "enter_plan"]
+    tool_name: Optional[str]
+    tool_args: Optional[dict]
+    reply: Optional[str]
+    task_description: Optional[str]
+
+
+class TodoItem(TypedDict, total=False):
+    id: int
+    description: str
+    goal: Optional[str]
+    done_when: Optional[str]
+    status: str
+    result: Optional[str]
+    attempt_count: Optional[int]
+
+
 class AgentState(TypedDict):
     """Agent 状态定义"""
     messages: List[Any]
     workspace_id: str
     plan: List[Task]
-    current_step: int
     results: List[Any]
-    plan_failed: bool
     explore_result: Optional[dict]
     tool_history: List[ToolCall]
-    replan_count: int
     agent_type: Optional[str]
     is_root_graph: Optional[bool]
     intent_analysis: Optional[IntentAnalysis]
@@ -86,10 +103,24 @@ class AgentState(TypedDict):
     execution_mode: Optional[str]
     mode_reason: Optional[str]
     suggested_tools: Optional[List[str]]
-    suggested_subagent: Optional[str]  # graph 侧 agent 标识，如 explore_agent/review_agent
     in_plan_mode: Optional[bool]
-    active_subagent: Optional[bool]
     pending_tools: Optional[List[dict]]
     has_tool_use: Optional[bool]
     final_reply: Optional[str]
     plan_file: Optional[str]
+    plan_content: Optional[str]
+    forced_execution_mode: Optional[str]
+    last_tool_result: Optional[str]
+    last_tool_name: Optional[str]
+    last_tool_success: Optional[bool]
+    last_tool_error: Optional[str]
+    iteration_count: Optional[int]
+    max_iterations: Optional[int]
+    todos: Optional[List[TodoItem]]
+    current_todo_index: Optional[int]
+    current_todo_goal: Optional[str]
+    current_todo_done_when: Optional[str]
+    current_todo_iteration_count: Optional[int]
+    todo_max_iterations: Optional[int]
+    todo_status: Optional[str]
+    next_action: Optional[NextAction]

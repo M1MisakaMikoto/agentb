@@ -208,47 +208,15 @@ class ToolExecutor:
     
     async def _execute_todo_tool(self, tool_name: str, args: dict, context: dict) -> dict:
         """执行TODO工具"""
-        from .todo_tools import todo_add, todo_update, todo_delete, todo_list, todo_clear
-        
-        workspace_id = context.get("workspace_id", "default")
-        
-        if tool_name == "todo_add":
-            return todo_add(
+        if tool_name == "update_todo":
+            from .todo_tools import update_todo
+            return update_todo(
                 workspace_id=workspace_id,
-                description=args.get("description", ""),
-                priority=args.get("priority", "medium"),
-                tool=args.get("tool"),
-                args=args.get("args")
+                todos=args.get("todos") or [],
+                doingIdx=args.get("doingIdx", 0)
             )
-        
-        elif tool_name == "todo_update":
-            return todo_update(
-                workspace_id=workspace_id,
-                task_id=args.get("task_id"),
-                status=args.get("status"),
-                result=args.get("result")
-            )
-        
-        elif tool_name == "todo_delete":
-            return todo_delete(
-                workspace_id=workspace_id,
-                task_id=args.get("task_id")
-            )
-        
-        elif tool_name == "todo_list":
-            return todo_list(
-                workspace_id=workspace_id,
-                status=args.get("status")
-            )
-        
-        elif tool_name == "todo_clear":
-            return todo_clear(
-                workspace_id=workspace_id,
-                completed_only=args.get("completed_only", True)
-            )
-        
-        else:
-            return {
-                "success": False,
-                "message": f"未知的TODO工具: {tool_name}"
-            }
+
+        return {
+            "success": False,
+            "message": f"未知的TODO工具: {tool_name}"
+        }

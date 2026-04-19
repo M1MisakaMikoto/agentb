@@ -6,16 +6,20 @@ Tool Registry - 工具定义和权限管理
 - 权限检查函数
 - 辅助常量和函数
 """
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Any
 from datetime import datetime, timezone
+import json
 
 from service.session_service.canonical import SegmentType
 
 
-FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir"}
+FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir", "read_document"}
 EXPLORE_TOOLS = {"explore_code", "explore_internet"}
 SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent"}
 WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}
+TODO_TOOLS = {"update_todo"}
+MODE_TOOLS = {"switch_execution_mode"}
+SQL_TOOLS = {"sql_query"}
 
 SPECIAL_TOOLS = {
     "thinking": {
@@ -33,8 +37,17 @@ SPECIAL_TOOLS = {
 }
 
 
-def _summarize_text(value: str, limit: int = 160) -> str:
-    compact = " ".join((value or "").split())
+def _summarize_text(value: Any, limit: int = 160) -> str:
+    if value is None:
+        raw = ""
+    elif isinstance(value, str):
+        raw = value
+    else:
+        try:
+            raw = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            raw = str(value)
+    compact = " ".join(raw.split())
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3] + "..."
@@ -85,20 +98,20 @@ def get_allowed_tools(agent_type: str, settings_service=None) -> List[str]:
     if settings_service is None:
         from service.settings_service.settings_service import SettingsService
         settings_service = SettingsService()
-    
+
     try:
         permissions = settings_service.get("tool_permissions")
         if agent_type in permissions:
             return permissions[agent_type].get("allowed", [])
     except KeyError:
         pass
-    
+
     default_permissions = {
-        "director_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files"],
-        "plan_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat", "call_explore_agent", "call_review_agent"],
-        "review_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat"],
-        "explore_agent": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files"],
-        "admin_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files"]
+        "director_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files", "update_todo", "switch_execution_mode", "rag_search", "read_document", "sql_query"],
+        "plan_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat", "call_explore_agent", "call_review_agent", "rag_search", "read_document", "sql_query"],
+        "review_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat", "sql_query"],
+        "explore_agent": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files", "sql_query"],
+        "admin_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files", "sql_query"]
     }
     return default_permissions.get(agent_type, default_permissions["director_agent"])
 
@@ -111,10 +124,10 @@ def filter_tools_by_agent_type(agent_type: str, settings_service=None) -> List[d
 
 def generate_tool_prompt(agent_type: str, settings_service=None) -> str:
     tools = filter_tools_by_agent_type(agent_type, settings_service)
-    lines = ["可用的工具包括："]
+    lines = ["工具列表："]
     for tool in tools:
-        params_str = f", 参数: {tool['params']}" if tool['params'] else ""
-        lines.append(f"- {tool['name']}: {tool['description']}{params_str}")
+        if tool["params"]:
+            lines.append(tool["params"])
     result = "\n".join(lines)
     print(f"[Tool Prompt] agent_type={agent_type}, tools={[t['name'] for t in tools]}")
     return result
