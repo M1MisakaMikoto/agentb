@@ -54,11 +54,12 @@ def test_build_chat_system_prompt_appends_native_multimodal_note():
 
 
 def test_build_tool_schema_prompt_uses_registry_metadata():
-    prompt = build_tool_schema_prompt(["read_file", "update_todo", "rag_search"])
+    prompt = build_tool_schema_prompt(["read_file", "update_todo", "rag_search", "sql_query"])
 
     assert 'read_file:{"file_path":"(文件路径)"' in prompt
     assert 'update_todo:{"todos": ["(todo内容1)", "(todo内容2)"...],"doingIdx": (当前todo进行到第几项了，从0开始数)}' in prompt
     assert 'rag_search:{"query":"(查询内容)"' in prompt
+    assert 'sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create，必填)","query":"(query 模式必填；其他模式忽略)","database":"(数据库名称，可选；show_databases 模式忽略，show_tables/describe/show_create 使用该库或默认库)","table":"(表名；describe/show_create 模式必填，其他模式忽略)","limit":"(仅 query 模式生效，默认100，最大1000)"}' in prompt
 
 
 def test_build_plan_generation_messages_include_intent_context():

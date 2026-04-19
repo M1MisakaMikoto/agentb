@@ -1723,13 +1723,6 @@ def run_graph_v3(
     graph = create_orchestrator_graph_v3(llm_service, token_callback, memory_mode, window_size, settings_service, message_context)
     final_state = graph.invoke(initial_state)
 
-    if final_state.get("is_root_graph") and message_context:
-        send_message = message_context.get("send_message")
-        if send_message:
-            send_message("", SegmentType.DONE, {
-                "message_id": message_context.get("message_id", "")
-            })
-
     print("\n" + "="*60)
     print("[Director Agent] 主编排图执行完成")
     print("="*60)

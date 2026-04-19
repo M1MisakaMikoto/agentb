@@ -17,6 +17,7 @@ from service.agent_service.graph.director_agent import (
 )
 from service.agent_service.graph.subgraphs.tool_registry import get_allowed_tools
 from service.agent_service.tools.sql_tools import execute_sql_query
+from service.session_service.conversation_service import ConversationService
 
 
 class FakeLLMService:
@@ -215,6 +216,44 @@ def test_execute_sql_query_returns_clear_error_for_unknown_database():
     assert result["result"] is None
     assert "未找到数据库配置" in result["error"]
     assert "missing_db" in result["error"]
+
+
+def test_conversation_service_creates_followup_for_auto_approved_plan():
+    service = object.__new__(ConversationService)
+    service._conversations = {}
+    service._lock = __import__("asyncio").Lock()
+    service._write_content_record = lambda *args, **kwargs: None
+
+    class DaoStub:
+        async def get_conversation_by_id(self, _conversation_id):
+            return type("PersistedConversation", (), {"session_id": 42})()
+
+    service._dao = DaoStub()
+
+    async def run_case():
+        with patch.object(service, "_is_plan_auto_approve_enabled", return_value=True), \
+             patch.object(service, "get_conversation", return_value={
+                 "assistant_content": json.dumps([
+                     {"type": "plan_start", "content": "", "metadata": {}},
+                     {"type": "text_delta", "content": "如果你同意方案，请直接回复“可以”或“同意方案”", "metadata": {}},
+                     {"type": "done", "content": "", "metadata": {}},
+                 ], ensure_ascii=False)
+             }), \
+             patch.object(service, "create_conversation", return_value="next-conv-1"):
+            return await service._create_auto_approved_followup_conversation(
+                "conv-1",
+                final_reply="已生成方案，计划文件为 plan.md。\n如果你同意方案，请直接回复“可以”或“同意方案”，我会读取 plan.md 并严格按照方案继续执行。",
+                session_id=42,
+            )
+
+    result = __import__("asyncio").run(run_case())
+
+    assert result == {
+        "event": "plan_auto_approved",
+        "plan_status": "auto_approved",
+        "approval_message": "可以",
+        "next_conversation_id": "next-conv-1",
+    }
 
 
     node = create_analyze_node(_llm_service=None, message_context={}, _settings_service=DummySettingsService())

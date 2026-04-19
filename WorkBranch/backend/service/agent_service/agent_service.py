@@ -1,6 +1,7 @@
 import uuid
 import asyncio
 import traceback
+import json
 import httpx
 from typing import Any, Optional, Dict, List, Callable
 from dataclasses import dataclass, field
@@ -294,7 +295,8 @@ class AgentService:
         message_id: str = None,
         stream_callback=None,
         parent_chain_messages: List[Dict] = None,
-        current_conversation_messages: List[Dict] = None
+        current_conversation_messages: List[Dict] = None,
+        handoff_metadata: Optional[Dict[str, Any]] = None,
     ) -> asyncio.Task:
         """
         异步发送消息 - 立即返回 Task，不阻塞
@@ -335,7 +337,8 @@ class AgentService:
                 message_id,
                 stream_callback,
                 parent_chain_messages or [],
-                current_conversation_messages or []
+                current_conversation_messages or [],
+                handoff_metadata or None,
             )
         )
         
@@ -357,7 +360,8 @@ class AgentService:
         message_id: str = None,
         stream_callback=None,
         parent_chain_messages: List[Dict] = None,
-        current_conversation_messages: List[Dict] = None
+        current_conversation_messages: List[Dict] = None,
+        handoff_metadata: Optional[Dict[str, Any]] = None,
     ):
         """
         异步执行 Agent（将同步 run_graph 包装为异步）
@@ -448,6 +452,7 @@ class AgentService:
                 "settings_service": settings,
                 "parent_chain_messages": parent_chain_messages,
                 "current_conversation_messages": current_conversation_messages,
+                "handoff_metadata": handoff_metadata,
             }
 
 
@@ -497,6 +502,38 @@ class AgentService:
                     metadata={"message_id": message_id},
                 )
                 mq.publish_sync(msg)
+
+            final_handoff_metadata = handoff_metadata
+            if final_handoff_metadata is None:
+                try:
+                    from singleton import get_conversation_service
+                    conversation_service = get_conversation_service()
+                    final_handoff_metadata = await conversation_service._create_auto_approved_followup_conversation(
+                        conversation_id,
+                        final_reply=result.get("final_reply"),
+                        session_id=session_id,
+                    )
+                except Exception:
+                    final_handoff_metadata = None
+
+            if final_handoff_metadata and final_handoff_metadata.get("next_conversation_id"):
+                handoff_msg = MessageBuilder.state_change(
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    metadata={"message_id": message_id, **final_handoff_metadata},
+                )
+                mq.publish_sync(handoff_msg)
+
+            done_msg = MessageBuilder.done(
+                message_id=message_id,
+                conversation_id=conversation_id,
+                session_id=session_id,
+                workspace_id=workspace_id,
+                metadata={"message_id": message_id},
+            )
+            mq.publish_sync(done_msg)
 
             self._log_agent_event(
                 "INFO",

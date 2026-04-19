@@ -547,8 +547,8 @@ def register_sql_tools() -> None:
     ToolRegistry.register(
         ToolDefinition(
             name="sql_query",
-            description="执行SQL查询，支持多种模式：query(SELECT查询)、show_databases(列出数据库)、show_tables(列出表)、describe(查看表结构)、show_create(查看建表语句)",
-            params='sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create)","query":"(SQL语句，query模式必填)","database":"(数据库名称，可选)","table":"(表名，describe/show_create模式必填)","limit":"(返回行数限制，默认100)"}',
+            description="执行只读 SQL 查询或结构探查；支持 query(SELECT)、show_databases(列出数据库)、show_tables(列出表)、describe(查看表结构)、show_create(查看建表语句)",
+            params='sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create，必填)","query":"(query 模式必填；其他模式忽略)","database":"(数据库名称，可选；show_databases 模式忽略，show_tables/describe/show_create 使用该库或默认库)","table":"(表名；describe/show_create 模式必填，其他模式忽略)","limit":"(仅 query 模式生效，默认100，最大1000)"}',
             category="sql",
             executor=execute_sql_query,
         )

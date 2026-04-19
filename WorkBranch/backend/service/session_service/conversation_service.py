@@ -7,10 +7,10 @@ from enum import Enum
 from datetime import datetime, timezone
 
 from core.logging import bind_ctx
-from singleton import get_agent_service, get_conversation_dao, get_logging_runtime, get_message_queue, get_workspace_service
+from singleton import get_agent_service, get_conversation_dao, get_logging_runtime, get_message_queue, get_workspace_service, get_settings_service
 from service.agent_service.agent_service import AgentService
 from data.conversation_dao import ConversationDAO
-from service.session_service.canonical import Message, SegmentType
+from service.session_service.canonical import Message, SegmentType, MessageBuilder
 from service.session_service.message_content import deserialize_parts, normalize_user_content, parts_to_plain_text, resolve_runtime_parts, serialize_parts
 
 
@@ -31,6 +31,7 @@ class ConversationInfo:
     created_at: datetime = field(default_factory=datetime.now)
     task: Optional[asyncio.Task] = None
     error: Optional[str] = None
+    handoff_metadata: Optional[Dict[str, Any]] = None
 
 
 class ConversationService:
@@ -77,10 +78,92 @@ class ConversationService:
             }
         )
 
+    def _is_plan_auto_approve_enabled(self) -> bool:
+        settings = get_settings_service()
+        try:
+            return bool(settings.get("agent:plan_auto_approve"))
+        except KeyError:
+            return False
+
+    async def _create_auto_approved_followup_conversation(
+        self,
+        conversation_id: str,
+        *,
+        final_reply: Optional[str] = None,
+        session_id: Optional[int | str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not self._is_plan_auto_approve_enabled():
+            return None
+
+        saw_plan = False
+        plan_prompt_present = False
+
+        if final_reply is not None:
+            saw_plan = bool(final_reply)
+            plan_prompt_present = "如果你同意方案，请直接回复“可以”或“同意方案”" in final_reply
+        else:
+            conversation = await self.get_conversation(conversation_id)
+            if not conversation:
+                return None
+
+            assistant_content = conversation.get("assistant_content")
+            if not assistant_content:
+                return None
+
+            try:
+                events = json.loads(assistant_content)
+            except Exception:
+                return None
+
+            for event in events:
+                event_type = event.get("type")
+                if event_type in {"plan_start", "plan_delta", "plan_end"}:
+                    saw_plan = True
+                if event_type == SegmentType.TEXT_DELTA.value and "如果你同意方案，请直接回复“可以”或“同意方案”" in str(event.get("content", "")):
+                    plan_prompt_present = True
+
+        if not saw_plan or not plan_prompt_present:
+            return None
+
+        if session_id is None:
+            persisted = await self._dao.get_conversation_by_id(conversation_id)
+            if not persisted:
+                return None
+            session_id = persisted.session_id
+
+        next_conversation_id = await self.create_conversation(
+            session_id=int(session_id),
+            user_content="可以",
+            allow_existing_running=True,
+        )
+
+        handoff_metadata = {
+            "event": "plan_auto_approved",
+            "plan_status": "auto_approved",
+            "approval_message": "可以",
+            "next_conversation_id": next_conversation_id,
+        }
+
+        async with self._lock:
+            conv_info = self._conversations.get(conversation_id)
+            if conv_info:
+                conv_info.handoff_metadata = handoff_metadata
+
+        self._write_content_record(
+            conversation_id,
+            "system_event",
+            {
+                "event": "plan.auto_approved",
+                "next_conversation_id": next_conversation_id,
+            },
+        )
+        return handoff_metadata
+
     async def create_conversation(
         self,
         session_id: int,
         user_content: Any,
+        allow_existing_running: bool = False,
     ) -> str:
         conversation_id = str(uuid.uuid4())
         
@@ -89,7 +172,7 @@ class ConversationService:
             raise ValueError(f"Session {session_id} not found")
 
         existing_conversations = await self._dao.list_conversations_by_session(session_id)
-        if any(conv.state == ConversationState.RUNNING.value for conv in existing_conversations):
+        if not allow_existing_running and any(conv.state == ConversationState.RUNNING.value for conv in existing_conversations):
             raise RuntimeError(f"Session {session_id} already has a running conversation")
 
         workspace_id = session.workspace_id
