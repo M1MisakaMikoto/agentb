@@ -140,6 +140,9 @@ class APIClient:
     async def get_conversation(self, conversation_id: str) -> dict:
         return await self._request("GET", f"/session/conversations/{conversation_id}")
 
+    async def generate_session_title(self, session_id: int) -> dict:
+        return await self._request("POST", f"/session/sessions/{session_id}/title:generate")
+
     async def stream_message(self, conversation_id: str):
         url = f"{self.base_url}/session/conversations/{conversation_id}/messages/stream"
         headers = self._headers()
@@ -668,6 +671,19 @@ async def run_single_test(
 
     if result.plan_status == "waiting_approval" and auto_approve_plan and workspace_id:
         print(f"\n{Colors.YELLOW}[4] Plan approval flow is no longer used in this test path{Colors.ENDC}")
+
+    if mode == "direct":
+        print(f"\n{Colors.CYAN}[4] Generating session title...{Colors.ENDC}")
+        title_result = await api.generate_session_title(session_id)
+        if title_result.get("code") != 200:
+            error_msg = title_result.get("message", "Unknown error")
+            print(f"{Colors.RED}Failed: {error_msg}{Colors.ENDC}")
+            result.errors.append(f"Title generation failed: {error_msg}")
+            generated_title = None
+        else:
+            generated_title = (title_result.get("data") or {}).get("title")
+            print(f"{Colors.GREEN}    Generated title: {generated_title}{Colors.ENDC}")
+            log_raw(f"## Generated Title: {generated_title}")
 
     log_raw("## Test Result Summary")
     summary = result.to_dict()
