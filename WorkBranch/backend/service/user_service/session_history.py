@@ -1,4 +1,5 @@
 from typing import List
+import json
 import re
 import uuid
 
@@ -16,7 +17,20 @@ class SessionTitleResult(BaseModel):
 class SessionHistory:
     """会话历史服务层：管理当前用户的会话列表。"""
 
-    TITLE_PROMPT = """你是一个擅长概括会话主题的助手。请根据给定的多轮对话，为整个 session 生成一个简短标题。\n\n你必须返回严格的 JSON，对应 schema 中的 `title` 字段。\n\n输出示例：\n```json\n{\"title\": \"FastAPI 登录 403 排查\"}\n```\n\n要求：\n1. 只概括主要主题，不要写解释\n2. 输出语言跟随对话主语言；若无法判断，默认中文\n3. 标题简短明确，避免泛化表述，如“新会话”“聊天记录”\n4. `title` 不要包含引号、句号、换行或前缀\n5. 只返回 schema 需要的 JSON 字段，不要添加额外字段"""
+    TITLE_PROMPT = """你是一个擅长概括会话主题的助手。请根据给定的多轮对话，为整个 session 生成一个简短标题。
+
+你必须返回严格的 JSON，对应 schema 中的 `title` 字段。
+
+输出示例：
+{"title": "FastAPI 登录 403 排查"}
+
+要求：
+1. 只概括主要主题，不要写解释
+2. 输出语言跟随对话主语言；若无法判断，默认中文
+3. 标题简短明确，避免泛化表述，如“新会话”“聊天记录”
+4. `title` 不要包含引号、句号、换行或前缀
+5. 不要使用 Markdown 代码块
+6. 只返回 schema 需要的 JSON 字段，不要添加额外字段"""
 
     def __init__(self):
         self._user_dao: UserInfoDAO = get_user_info_dao()
@@ -38,13 +52,32 @@ class SessionHistory:
             return context
         return context[:2] + context[-10:]
 
+    @staticmethod
+    def _extract_json_object(text: str) -> dict:
+        fenced_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, re.IGNORECASE)
+        candidate = fenced_match.group(1) if fenced_match else text.strip()
+        if not fenced_match:
+            plain_match = re.search(r"(\{[\s\S]*\})", candidate)
+            if plain_match:
+                candidate = plain_match.group(1)
+        return json.loads(candidate)
+
     def _generate_title(self, context: List[dict]) -> str:
-        result = self._llm.structured_output(
-            self._build_title_messages(context),
-            SessionTitleResult,
-            system_prompt=self.TITLE_PROMPT,
-        )
-        return self._normalize_title(result.title)
+        try:
+            result = self._llm.structured_output(
+                self._build_title_messages(context),
+                SessionTitleResult,
+                system_prompt=self.TITLE_PROMPT,
+            )
+            title = getattr(result, "title", "")
+        except Exception:
+            raw_result = self._llm.chat(
+                self._build_title_messages(context),
+                system_prompt=self.TITLE_PROMPT,
+            )
+            parsed = self._extract_json_object(raw_result)
+            title = parsed.get("title", "")
+        return self._normalize_title(title)
 
     def list_sessions(self) -> List[Session]:
         """

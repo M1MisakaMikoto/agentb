@@ -44,18 +44,32 @@ class FakeUserDAO:
 
 
 class FakeLLMService:
-    def __init__(self, title):
+    def __init__(self, title=None, structured_error=None, chat_response=None):
         self.title = title
+        self.structured_error = structured_error
+        self.chat_response = chat_response
         self.calls = []
 
     def structured_output(self, messages, schema, system_prompt=None, **kwargs):
         self.calls.append({
+            "method": "structured_output",
             "messages": messages,
             "schema": schema,
             "system_prompt": system_prompt,
             "kwargs": kwargs,
         })
+        if self.structured_error is not None:
+            raise self.structured_error
         return schema(title=self.title)
+
+    def chat(self, messages, system_prompt=None, **kwargs):
+        self.calls.append({
+            "method": "chat",
+            "messages": messages,
+            "system_prompt": system_prompt,
+            "kwargs": kwargs,
+        })
+        return self.chat_response
 
 
 def build_session(title="旧标题", user_id=1):
@@ -105,6 +119,31 @@ async def test_generate_session_title_rejects_non_owner():
 
     assert dao.updated_title is None
     assert not llm.calls
+
+
+@pytest.mark.asyncio
+async def test_generate_session_title_falls_back_to_chat_when_structured_output_returns_markdown_json():
+    dao = FakeConversationDAO(
+        session=build_session(),
+        context=[
+            {"role": "user", "content": "帮我总结这次关于 SQL 查询工具接入的问题定位"},
+            {"role": "assistant", "content": "主要在 structured_output 返回格式不稳定。"},
+        ],
+    )
+    llm = FakeLLMService(
+        structured_error=ValueError("Invalid response from LLM: expected JSON"),
+        chat_response='```json\n{"title": "SQL 查询工具输出格式排查"}\n```',
+    )
+
+    with patch("service.user_service.session_history.get_user_info_dao", return_value=FakeUserDAO()), \
+         patch("service.user_service.session_history.get_conversation_dao", return_value=dao), \
+         patch("service.user_service.session_history.get_llm_service", return_value=llm):
+        service = SessionHistory()
+        updated = await service.generate_session_title_async(1, 1)
+
+    assert updated.title == "SQL 查询工具输出格式排查"
+    assert dao.updated_title == "SQL 查询工具输出格式排查"
+    assert [call["method"] for call in llm.calls] == ["structured_output", "chat"]
 
 
 @pytest.mark.asyncio
