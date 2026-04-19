@@ -61,8 +61,8 @@ def get_timestamp() -> str:
 
 TEST_CASES: Dict[str, Dict[str, any]] = {
     "direct": {
-        "question": "你好，请简单介绍一下你自己",
-        "description": "DIRECT 模式 - 简单对话任务",
+        "question": "请详细介绍一下 Python 的异步编程模型，包括 asyncio 的工作原理、事件循环机制、协程与任务的区别、常见的并发模式以及最佳实践，至少500字。",
+        "description": "DIRECT 模式 - 长文本输出测试",
         "expected_mode": "DIRECT",
         "expected_tools": ["thinking", "chat"],
         "forbidden_tools": ["update_todo"],
@@ -198,7 +198,7 @@ class TestResult:
         }
 
 
-async def collect_stream_output(api: APIClient, conversation_id: str, verbose: bool = False):
+async def collect_stream_output(api: APIClient, conversation_id: str, verbose: bool = False, show_raw: bool = False):
     event_types: List[str] = []
     text_chunks: List[str] = []
     chat_chunks: List[str] = []
@@ -207,11 +207,17 @@ async def collect_stream_output(api: APIClient, conversation_id: str, verbose: b
     tool_calls: List[str] = []
     detected_modes: List[str] = []
     conversation_handoff: Optional[Dict] = None
+    raw_lines: List[str] = []
 
     async for item in api.stream_message(conversation_id):
         raw_line = item.get("raw_line", "")
         if not raw_line.strip():
             continue
+
+        if show_raw:
+            raw_lines.append(raw_line)
+            timestamp = time.strftime("%H:%M:%S")
+            print(f"{Colors.DIM}[RAW {timestamp}] {raw_line}{Colors.ENDC}")
 
         if raw_line.startswith(": heartbeat"):
             if verbose:
@@ -282,6 +288,7 @@ async def collect_stream_output(api: APIClient, conversation_id: str, verbose: b
         "tool_calls": tool_calls,
         "detected_modes": detected_modes,
         "conversation_handoff": conversation_handoff,
+        "raw_lines": raw_lines,
     }
 
 
@@ -318,7 +325,7 @@ def extract_response_text(conversation_result: dict) -> str:
     return "".join(parts)
 
 
-async def run_serial_test(api: APIClient, output_file: str) -> TestResult:
+async def run_serial_test(api: APIClient, output_file: str, show_raw: bool = False) -> TestResult:
     test_case = TEST_CASES["serial"]
     result = TestResult("serial", test_case)
 
@@ -338,7 +345,7 @@ async def run_serial_test(api: APIClient, output_file: str) -> TestResult:
     first_conversation_id = first_conv_result["data"]["conversation_id"]
     result.conversation_id = first_conversation_id
 
-    first_stream_task = asyncio.create_task(collect_stream_output(api, first_conversation_id))
+    first_stream_task = asyncio.create_task(collect_stream_output(api, first_conversation_id, show_raw=show_raw))
     await wait_for_conversation_state(api, first_conversation_id, "running")
 
     blocked_conv_result = await api.create_conversation(
@@ -373,7 +380,7 @@ async def run_serial_test(api: APIClient, output_file: str) -> TestResult:
         return result
 
     second_conversation_id = second_conv_result["data"]["conversation_id"]
-    second_stream_result = await collect_stream_output(api, second_conversation_id)
+    second_stream_result = await collect_stream_output(api, second_conversation_id, show_raw=show_raw)
     result.event_count += len(second_stream_result["event_types"])
     if second_stream_result["errors"]:
         result.errors.extend(second_stream_result["errors"])
@@ -399,7 +406,7 @@ async def run_serial_test(api: APIClient, output_file: str) -> TestResult:
     return result
 
 
-async def run_plan_approval_test(api: APIClient, output_file: str, auto_approve_enabled: bool = False) -> TestResult:
+async def run_plan_approval_test(api: APIClient, output_file: str, auto_approve_enabled: bool = False, show_raw: bool = False) -> TestResult:
     test_case = TEST_CASES["plan"]
     result = TestResult("plan", test_case)
 
@@ -436,7 +443,7 @@ async def run_plan_approval_test(api: APIClient, output_file: str, auto_approve_
     print(f"{Colors.GREEN}    Conversation ID: {first_conversation_id}{Colors.ENDC}")
 
     print(f"\n{Colors.CYAN}[3] Receiving plan stream...{Colors.ENDC}\n")
-    first_stream_result = await collect_stream_output(api, first_conversation_id, verbose=True)
+    first_stream_result = await collect_stream_output(api, first_conversation_id, verbose=True, show_raw=show_raw)
     result.event_count += len(first_stream_result["event_types"])
     if first_stream_result["errors"]:
         result.errors.extend(first_stream_result["errors"])
@@ -478,7 +485,7 @@ async def run_plan_approval_test(api: APIClient, output_file: str, auto_approve_
         print(f"{Colors.GREEN}    Next Conversation ID: {next_conversation_id}{Colors.ENDC}")
 
         print(f"\n{Colors.CYAN}[6-AUTO] Receiving auto-approved stream...{Colors.ENDC}\n")
-        auto_stream_result = await collect_stream_output(api, next_conversation_id, verbose=True)
+        auto_stream_result = await collect_stream_output(api, next_conversation_id, verbose=True, show_raw=show_raw)
         result.event_count += len(auto_stream_result["event_types"])
         if auto_stream_result["errors"]:
             result.errors.extend(auto_stream_result["errors"])
@@ -552,7 +559,7 @@ async def run_plan_approval_test(api: APIClient, output_file: str, auto_approve_
     print(f"{Colors.GREEN}    Conversation ID: {second_conversation_id}{Colors.ENDC}")
 
     print(f"\n{Colors.CYAN}[6] Receiving approval stream...{Colors.ENDC}\n")
-    second_stream_result = await collect_stream_output(api, second_conversation_id, verbose=True)
+    second_stream_result = await collect_stream_output(api, second_conversation_id, verbose=True, show_raw=show_raw)
     result.event_count += len(second_stream_result["event_types"])
     if second_stream_result["errors"]:
         result.errors.extend(second_stream_result["errors"])
@@ -619,6 +626,7 @@ async def run_single_test(
     test_case: Dict,
     output_file: str,
     auto_approve_plan: bool = True,
+    show_raw: bool = False,
 ) -> TestResult:
     result = TestResult(mode, test_case)
     question = test_case["question"]
@@ -628,6 +636,9 @@ async def run_single_test(
     def log_raw(line: str):
         raw_output_lines.append(line)
         result.raw_lines.append(line)
+        if show_raw:
+            timestamp = time.strftime("%H:%M:%S")
+            print(f"{Colors.DIM}[RAW {timestamp}] {line}{Colors.ENDC}")
 
     print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
     print(f"{Colors.HEADER}  {test_case.get('description')}{Colors.ENDC}")
@@ -864,7 +875,7 @@ def wait_for_backend(host: str = BASE_HOST, port: int = BASE_PORT, timeout: floa
     return False
 
 
-def start_backend(host: str = BASE_HOST, port: int = BASE_PORT) -> Optional[subprocess.Popen]:
+def start_backend(host: str = BASE_HOST, port: int = BASE_PORT, show_backend: bool = True) -> Optional[subprocess.Popen]:
     backend_dir = Path(__file__).parent.parent
     python_executable = sys.executable
 
@@ -901,8 +912,9 @@ def start_backend(host: str = BASE_HOST, port: int = BASE_PORT) -> Optional[subp
         assert process.stdout is not None
         stdout_encoding = sys.stdout.encoding or "utf-8"
         for line in process.stdout:
-            safe_line = line.rstrip().encode(stdout_encoding, errors="replace").decode(stdout_encoding)
-            print(f"{Colors.DIM}[backend] {safe_line}{Colors.ENDC}")
+            if show_backend:
+                safe_line = line.rstrip().encode(stdout_encoding, errors="replace").decode(stdout_encoding)
+                print(f"{Colors.DIM}[backend] {safe_line}{Colors.ENDC}")
 
     thread = threading.Thread(target=stream_output, daemon=True)
     thread.start()
@@ -950,6 +962,10 @@ async def main():
                         help="Auto-approve plans in PLAN mode")
     parser.add_argument("--plan-auto-approve", action="store_true", default=False,
                         help="Enable plan auto-approve feature to test conversation_handoff event")
+    parser.add_argument("--show-raw", action="store_true", default=False,
+                        help="Show all raw SSE stream data for debugging")
+    parser.add_argument("--no-show-backend", action="store_true", default=False,
+                        help="Hide backend log messages")
     args = parser.parse_args()
 
     timestamp = get_timestamp()
@@ -983,7 +999,7 @@ async def main():
                 await db.init_tables()
                 print(f"{Colors.GREEN}Database initialized{Colors.ENDC}")
 
-                backend_process = start_backend(host=args.host, port=args.port)
+                backend_process = start_backend(host=args.host, port=args.port, show_backend=not args.no_show_backend)
                 started_backend = True
 
                 if not wait_for_backend(host=args.host, port=args.port, timeout=120):
@@ -1001,21 +1017,21 @@ async def main():
                 "expected_mode": expected_mode,
                 "expected_tools": ["thinking", "chat"],
             }
-            result = await run_single_test(api, "custom", custom_case, output_file, args.auto_approve)
+            result = await run_single_test(api, "custom", custom_case, output_file, args.auto_approve, show_raw=args.show_raw)
             results.append(result)
         else:
             modes_to_test = ["direct", "plan", "search", "serial"] if args.mode == "all" else [args.mode]
 
             for mode in modes_to_test:
                 if mode == "serial":
-                    result = await run_serial_test(api, output_file)
+                    result = await run_serial_test(api, output_file, show_raw=args.show_raw)
                     results.append(result)
                 elif mode == "plan":
-                    result = await run_plan_approval_test(api, output_file, auto_approve_enabled=args.plan_auto_approve)
+                    result = await run_plan_approval_test(api, output_file, auto_approve_enabled=args.plan_auto_approve, show_raw=args.show_raw)
                     results.append(result)
                 elif mode in TEST_CASES:
                     result = await run_single_test(
-                        api, mode, TEST_CASES[mode], output_file, args.auto_approve
+                        api, mode, TEST_CASES[mode], output_file, args.auto_approve, show_raw=args.show_raw
                     )
                     results.append(result)
 
