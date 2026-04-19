@@ -86,23 +86,23 @@ DEFAULT_SETTINGS = {
     },
     "tool_permissions": {
         "director_agent": {
-            "allowed": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files", "update_todo", "rag_search", "read_document"],
+            "allowed": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files", "update_todo", "rag_search", "read_document", "sql_query"],
             "forbidden": []
         },
         "plan_agent": {
-            "allowed": ["read_file", "list_dir", "explore_code", "thinking", "call_explore_agent", "call_review_agent", "rag_search", "read_document"],
+            "allowed": ["read_file", "list_dir", "explore_code", "thinking", "call_explore_agent", "call_review_agent", "rag_search", "read_document", "sql_query"],
             "forbidden": ["write_file", "delete_file", "create_dir", "explore_internet"]
         },
         "review_agent": {
-            "allowed": ["read_file", "list_dir", "explore_code", "thinking", "chat"],
+            "allowed": ["read_file", "list_dir", "explore_code", "thinking", "chat", "sql_query"],
             "forbidden": ["write_file", "delete_file", "create_dir", "explore_internet", "call_explore_agent", "call_review_agent"]
         },
         "explore_agent": {
-            "allowed": ["read_file", "list_dir", "thinking", "chat", "explore_internet"],
+            "allowed": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "sql_query"],
             "forbidden": ["write_file", "delete_file", "create_dir", "explore_code", "call_explore_agent", "call_review_agent"]
         },
         "admin_agent": {
-            "allowed": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "call_explore_agent", "call_review_agent"],
+            "allowed": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "call_explore_agent", "call_review_agent", "sql_query"],
             "forbidden": []
         }
     },

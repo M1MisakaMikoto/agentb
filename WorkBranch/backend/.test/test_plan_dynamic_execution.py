@@ -16,6 +16,7 @@ from service.agent_service.graph.director_agent import (
     create_decide_next_action_node,
 )
 from service.agent_service.graph.subgraphs.tool_registry import get_allowed_tools
+from service.agent_service.tools.sql_tools import execute_sql_query
 
 
 class FakeLLMService:
@@ -188,7 +189,34 @@ def test_default_tool_permissions_include_rag_search_for_director_and_plan():
     assert "rag_search" in get_allowed_tools("plan_agent", settings)
 
 
-def test_analyze_node_defaults_to_direct_mode_for_root_agent():
+def test_default_tool_permissions_include_sql_query_for_director_and_plan():
+    class PermissionSettingsService:
+        def get(self, key):
+            if key == "tool_permissions":
+                return {
+                    "director_agent": {"allowed": ["read_file", "sql_query"]},
+                    "plan_agent": {"allowed": ["read_file", "sql_query"]},
+                }
+            raise KeyError(key)
+
+    settings = PermissionSettingsService()
+
+    assert "sql_query" in get_allowed_tools("director_agent", settings)
+    assert "sql_query" in get_allowed_tools("plan_agent", settings)
+
+
+def test_execute_sql_query_returns_clear_error_for_unknown_database():
+    result = execute_sql_query({
+        "query": "SELECT 1",
+        "database": "missing_db",
+        "limit": "bad",
+    })
+
+    assert result["result"] is None
+    assert "未找到数据库配置" in result["error"]
+    assert "missing_db" in result["error"]
+
+
     node = create_analyze_node(_llm_service=None, message_context={}, _settings_service=DummySettingsService())
 
     result = node(_base_state("探索这个项目的代码结构"))

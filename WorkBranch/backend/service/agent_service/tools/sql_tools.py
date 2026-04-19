@@ -1,6 +1,7 @@
 import re
 import json
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,8 +59,10 @@ class SQLToolsConfig:
 
     def get_config(self, database: str = None) -> tuple[str, DatabaseConfig]:
         """获取数据库配置"""
-        if database and database in self._configs:
-            return database, self._configs[database]
+        if database:
+            if database in self._configs:
+                return database, self._configs[database]
+            raise KeyError(f"未找到数据库配置: {database}，可用配置: {', '.join(self.list_databases())}")
         return self._default_database, self._configs.get(self._default_database, DatabaseConfig())
 
     def list_databases(self) -> List[str]:
@@ -101,6 +104,26 @@ def validate_sql(query: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _parse_limit(limit_value: Any) -> int:
+    """解析并规范化 limit 参数"""
+    try:
+        limit = int(limit_value)
+    except (TypeError, ValueError):
+        return 100
+
+    if limit <= 0:
+        return 100
+    if limit > 1000:
+        return 1000
+    return limit
+
+
+def _run_async_in_thread(query: str, database: str | None, limit: int) -> dict:
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(asyncio.run, execute_sql_query_async(query, database, limit))
+        return future.result()
+
+
 async def execute_sql_query_async(
     query: str,
     database: str = None,
@@ -124,12 +147,12 @@ async def execute_sql_query_async(
         return {"result": None, "error": error_msg}
     
     config_manager = SQLToolsConfig()
-    db_name, db_config = config_manager.get_config(database)
+    try:
+        db_name, db_config = config_manager.get_config(database)
+    except KeyError as e:
+        return {"result": None, "error": str(e)}
     
-    if limit <= 0:
-        limit = 100
-    if limit > 1000:
-        limit = 1000
+    limit = _parse_limit(limit)
     
     try:
         import aiomysql
@@ -231,26 +254,17 @@ def execute_sql_query(tool_args: dict) -> dict:
         return {"result": None, "error": "缺少 query 参数"}
     
     database = tool_args.get("database")
-    limit = int(tool_args.get("limit", 100))
-    
+    limit = _parse_limit(tool_args.get("limit", 100))
+
     print(f"[Tool] sql_query: database={database}, limit={limit}")
     print(f"[Tool] SQL: {query[:100]}...")
-    
+
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                result = loop.run_in_executor(
-                    pool,
-                    asyncio.run,
-                    execute_sql_query_async(query, database, limit)
-                )
-                return asyncio.get_event_loop().run_until_complete(result)
-        else:
-            return asyncio.run(execute_sql_query_async(query, database, limit))
+        asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(execute_sql_query_async(query, database, limit))
+
+    return _run_async_in_thread(query, database, limit)
 
 
 SQL_TOOLS = {"sql_query"}
