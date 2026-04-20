@@ -275,7 +275,7 @@ def build_direct_chat_messages(
     full_prompt = build_context_prompt(
         parent_chain_messages,
         current_conversation_messages,
-        f"请向用户输出回复: {task_description}",
+        task_description,
     )
     return [{"role": "user", "content": full_prompt}]
 

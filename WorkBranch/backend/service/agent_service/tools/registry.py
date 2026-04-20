@@ -91,13 +91,13 @@ ALL_TOOLS = {
     },
     "thinking": {
         "name": "thinking",
-        "description": "思考工具",
-        "params": 'thinking:{}'
+        "description": "思考工具，用于分析问题、梳理思路",
+        "params": 'thinking:{"next_task":"(思考任务描述，例如：分析xxx的实现方案)"}'
     },
     "chat": {
         "name": "chat",
-        "description": "与用户对话工具",
-        "params": 'chat:{}'
+        "description": "与用户对话工具，用于向用户输出回复",
+        "params": 'chat:{"next_task":"(回复任务描述，例如：向用户总结xxx并说明xxx)"}'
     },
     "call_explore_agent": {
         "name": "call_explore_agent",

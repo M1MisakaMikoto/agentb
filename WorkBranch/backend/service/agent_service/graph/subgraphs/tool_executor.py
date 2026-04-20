@@ -30,6 +30,7 @@ from service.session_service.canonical import SegmentType
 from core.logging import console
 
 TOOL_EXECUTION_TIMEOUT_SECONDS = 30
+SPECIAL_TOOL_TIMEOUT_SECONDS = 120
 
 
 def _build_tool_failure_result(
@@ -393,39 +394,44 @@ def _execute_thinking_tool(
     config: dict,
 ) -> dict:
     """处理thinking工具的特殊逻辑"""
-    previous_results = tool_args.get("previous_results", [])
     parent_chain_messages = message_context.get("parent_chain_messages", []) if message_context else []
+    current_conversation_messages = message_context.get("current_conversation_messages", []) if message_context else []
+    
+    next_task = task_description
+    if tool_args:
+        next_task = tool_args.get("next_task") or tool_args.get("description") or task_description
     
     print(f"[Thinking] parent_chain_messages count: {len(parent_chain_messages)}")
-    if parent_chain_messages:
-        print(f"[Thinking] First message: {parent_chain_messages[0] if parent_chain_messages else 'None'}")
+    print(f"[Thinking] current_conversation_messages count: {len(current_conversation_messages)}")
+    print(f"[Thinking] next_task: {next_task}")
     
     if not llm_service:
-        result = f"思考任务: {task_description} (LLM 服务未配置)"
+        result = f"思考任务: {next_task} (LLM 服务未配置)"
         console.info(f"结果: {result}")
         return {"result": result, "error": None}
 
-    console.info("调用 LLM 进行思考...")
+    console.info(f"调用 LLM 进行思考，任务: {next_task}")
     send_message = message_context.get("send_message") if message_context else None
 
     if send_message:
         send_message("", config["start_type"], {
-            "task_description": task_description,
+            "task_description": next_task,
             "is_start": True
         })
 
     try:
-        messages = build_special_tool_messages(
-            task_description=task_description,
-            previous_results=previous_results,
-            final_instruction="请思考并执行当前任务。",
-            parent_chain_messages=parent_chain_messages,
+        from service.agent_service.prompts.graph_prompts import build_context_prompt
+        full_prompt = build_context_prompt(
+            parent_chain_messages,
+            current_conversation_messages,
+            next_task,
         )
+        messages = [{"role": "user", "content": full_prompt}]
 
         def thinking_token_callback(token: str):
             if send_message:
                 send_message(token, config["delta_type"], {
-                    "task_description": task_description,
+                    "task_description": next_task,
                     "is_delta": True
                 })
 
@@ -437,7 +443,7 @@ def _execute_thinking_tool(
 
         if send_message:
             send_message("", config["end_type"], {
-                "task_description": task_description,
+                "task_description": next_task,
                 "is_end": True,
                 "result": result
             })
@@ -448,7 +454,7 @@ def _execute_thinking_tool(
         console.error(f"LLM 调用失败: {e}")
         if send_message:
             send_message("", config["end_type"], {
-                "task_description": task_description,
+                "task_description": next_task,
                 "is_end": True,
                 "error": str(e)
             })
@@ -1307,12 +1313,14 @@ def run_tool_execution(
 
     graph = create_tool_execution_subgraph(workspace_service, llm_service, token_callback, settings_service, message_context)
 
+    timeout_seconds = SPECIAL_TOOL_TIMEOUT_SECONDS if tool_name in SPECIAL_TOOLS else TOOL_EXECUTION_TIMEOUT_SECONDS
+
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(graph.invoke, initial_state)
-            result = future.result(timeout=TOOL_EXECUTION_TIMEOUT_SECONDS)
+            result = future.result(timeout=timeout_seconds)
     except FutureTimeoutError:
-        timeout_error = f"工具 {tool_name} 执行超时（{TOOL_EXECUTION_TIMEOUT_SECONDS}s）"
+        timeout_error = f"工具 {tool_name} 执行超时（{timeout_seconds}s）"
         console.error(timeout_error)
         result = _build_tool_failure_result(
             tool_name,

@@ -367,7 +367,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 "pending_tools": [],
             }
 
-        allowed_tools = [tool for tool in get_allowed_tools(current_agent_type, settings_service) if tool != "chat"]
+        allowed_tools = get_allowed_tools(current_agent_type, settings_service)
         tool_schema_prompt = _build_tool_schema_prompt(allowed_tools)
 
         history_lines = []
@@ -1415,6 +1415,7 @@ def _execute_chat_tool_direct(
     message_context: dict,
     parent_chain_messages: List[dict],
     current_conversation_messages: List[dict],
+    tool_args: Optional[dict] = None,
     multimodal_parts: Optional[List[dict]] = None,
 ) -> dict:
     if not llm_service:
@@ -1422,18 +1423,22 @@ def _execute_chat_tool_direct(
         console.info(f"结果: {result}")
         return {"result": result, "error": None}
 
-    console.info("调用 LLM 进行对话回复...")
+    next_task = task_description
+    if tool_args:
+        next_task = tool_args.get("next_task") or tool_args.get("description") or task_description
+
+    console.info(f"调用 LLM 进行对话回复，任务: {next_task}")
     send_message = message_context.get("send_message") if message_context else None
 
     if send_message:
         send_message("", SegmentType.CHAT_START, {
-            "task_description": task_description,
+            "task_description": next_task,
             "is_start": True
         })
 
     try:
         messages = _build_direct_chat_messages(
-            task_description=task_description,
+            task_description=next_task,
             parent_chain_messages=parent_chain_messages,
             current_conversation_messages=current_conversation_messages,
             multimodal_parts=multimodal_parts,
@@ -1443,7 +1448,7 @@ def _execute_chat_tool_direct(
         def chat_token_callback(token: str):
             if send_message:
                 send_message(token, SegmentType.CHAT_DELTA, {
-                    "task_description": task_description,
+                    "task_description": next_task,
                     "is_delta": True
                 })
 
@@ -1456,7 +1461,7 @@ def _execute_chat_tool_direct(
 
         if send_message:
             send_message("", SegmentType.CHAT_END, {
-                "task_description": task_description,
+                "task_description": next_task,
                 "is_end": True,
                 "result": result
             })
@@ -1467,7 +1472,7 @@ def _execute_chat_tool_direct(
         console.error(f"LLM 调用失败: {e}")
         if send_message:
             send_message("", SegmentType.CHAT_END, {
-                "task_description": task_description,
+                "task_description": next_task,
                 "is_end": True,
                 "error": str(e)
             })
@@ -1510,9 +1515,13 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                     message_context=message_context,
                     parent_chain_messages=parent_chain_messages,
                     current_conversation_messages=current_conversation_messages,
+                    tool_args=tool_args,
                     multimodal_parts=tool_args.get("multimodal_parts"),
                 )
             else:
+                enhanced_message_context = dict(message_context) if message_context else {}
+                enhanced_message_context["parent_chain_messages"] = parent_chain_messages
+                enhanced_message_context["current_conversation_messages"] = current_conversation_messages
                 tool_result = run_tool_execution(
                     tool_name=tool_name,
                     tool_args=tool_args,
@@ -1525,7 +1534,7 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                     previous_results=[item.get("result") for item in state.get("tool_history", []) if item.get("result")],
                     agent_type=current_agent_type,
                     settings_service=settings_service,
-                    message_context=message_context,
+                    message_context=enhanced_message_context,
                 )
 
             result_str = str(tool_result.get("result", "")) if tool_result.get("result") is not None else ""
