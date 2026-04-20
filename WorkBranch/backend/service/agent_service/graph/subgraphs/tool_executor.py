@@ -348,6 +348,12 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
                 error=str(tool_result.get("error")),
             )
 
+        if tool_result.get("error") is None:
+            if tool_result.get("result") is None:
+                tool_result["result"] = "[工具没有返回内容]"
+            elif tool_result.get("result") == "":
+                tool_result["result"] = "[工具返回内容为空]"
+
         return tool_result
     except Exception as exc:
         console.error(f"工具执行异常: {exc}")
