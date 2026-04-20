@@ -26,3 +26,4 @@ logs/
 .env
 WorkBranch/models--BAAI--bge-m3/
 workspaces/
+WorkBranch/backend/service/agent_service/tools/sql_tools_config.json
