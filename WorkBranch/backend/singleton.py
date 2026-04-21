@@ -106,8 +106,19 @@ def get_conversation_dao():
 
 @lru_cache(maxsize=1)
 def get_message_queue() -> MessageQueue:
+    from service.session_service.mq import HybridMessageQueue
     settings = get_settings_service()
-    return MessageQueue(settings)
+    try:
+        db_path = settings.get("mq:db_path")
+    except KeyError:
+        db_path = "data/mq.db"
+    
+    try:
+        max_size = settings.get("mq:max_size")
+    except KeyError:
+        max_size = 1000
+    
+    return HybridMessageQueue(db_path=db_path, max_size=max_size)
 
 
 @lru_cache(maxsize=1)

@@ -143,13 +143,13 @@ class APIClient:
     async def generate_session_title(self, session_id: int) -> dict:
         return await self._request("POST", f"/session/sessions/{session_id}/title:generate")
 
-    async def stream_message(self, conversation_id: str):
-        url = f"{self.base_url}/session/conversations/{conversation_id}/messages/stream"
+    async def stream_message(self, conversation_id: str, last_seq: int = 0):
+        url = f"{self.base_url}/session/conversations/{conversation_id}/stream?last_seq={last_seq}"
         headers = self._headers()
 
         timeout = httpx.Timeout(connect=30.0, read=None, write=300.0, pool=300.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream("POST", url, headers=headers) as response:
+            async with client.stream("GET", url, headers=headers) as response:
                 if response.status_code != 200:
                     try:
                         error = await response.aread()

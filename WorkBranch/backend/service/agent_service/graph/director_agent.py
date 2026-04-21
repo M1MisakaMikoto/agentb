@@ -43,9 +43,127 @@ from singleton import get_workspace_service
 
 MAX_REPLAN_COUNT = 3
 MAX_MESSAGES = 10
-MAX_DIRECT_ITERATIONS = 8
+MAX_DIRECT_ITERATIONS = 32
+CHECK_INTERVAL = 8
 
 workspace_service = get_workspace_service()
+
+
+def _build_loop_check_prompt(
+    tool_history: list, 
+    iteration_count: int,
+    user_message: str = "",
+    conversation_history: list = None,
+    todos: list = None,
+) -> str:
+    recent_history = tool_history[-CHECK_INTERVAL:] if len(tool_history) >= CHECK_INTERVAL else tool_history
+    
+    history_lines = []
+    for idx, item in enumerate(recent_history, 1):
+        tool_name = item.get("tool", "unknown")
+        args = item.get("args", {})
+        args_str = str(args)[:100] if args else "{}"
+        result_preview = str(item.get("result", ""))[:200]
+        history_lines.append(
+            f"第{idx}轮: 工具={tool_name}, 参数={args_str}, 结果摘要={result_preview}..."
+        )
+    history_block = "\n".join(history_lines) if history_lines else "(暂无工具调用历史)"
+    
+    user_message_block = ""
+    if user_message:
+        user_message_block = f"""
+## 用户原始请求
+{user_message[:500]}
+"""
+    
+    conversation_block = ""
+    if conversation_history:
+        conv_lines = []
+        for msg in conversation_history[-6:]:
+            role = msg.get("role", "unknown")
+            content = str(msg.get("content", ""))[:300]
+            conv_lines.append(f"[{role}]: {content}")
+        if conv_lines:
+            conversation_block = f"""
+## 对话历史
+{chr(10).join(conv_lines)}
+"""
+    
+    todos_block = ""
+    if todos:
+        todo_lines = []
+        for idx, todo in enumerate(todos[:10], 1):
+            status = todo.get("status", "pending")
+            content = str(todo.get("content", ""))[:100]
+            todo_lines.append(f"{idx}. [{status}] {content}")
+        if todo_lines:
+            todos_block = f"""
+## 待办事项
+{chr(10).join(todo_lines)}
+"""
+    
+    prompt = f"""你是一个任务执行监控器。请分析以下信息，判断任务执行是否存在循环或卡死情况。
+{user_message_block}{conversation_block}{todos_block}
+## 最近{len(recent_history)}轮工具调用历史
+{history_block}
+
+## 当前状态
+- 已执行轮次: {iteration_count}
+
+## 判断标准
+1. **循环**: 连续多次调用相同工具，使用相同或非常相似的参数，且结果没有实质进展
+2. **卡死**: 工具调用失败后反复重试，或在一个无效状态中无法跳出
+3. **正常**: 工具调用有变化，或正在逐步推进任务，或者正在处理复杂任务需要更多步骤
+
+## 重要提示
+- 如果工具调用正在推进任务（例如：创建目录后创建文件，读取文件后修改内容），应判断为"正常"
+- 如果用户请求是复杂任务（如创建项目、多文件修改），可能需要较多工具调用，应判断为"正常"
+- 只有在明确看到重复调用相同工具且无进展时，才判断为"循环"
+
+## 输出要求
+请以JSON格式返回判断结果：
+- 如果判断为循环或卡死，返回: {{"action": "stop", "reason": "具体原因"}}
+- 如果判断为正常，返回: {{"action": "continue", "reason": "简要说明"}}
+
+只返回JSON，不要其他内容。"""
+    
+    return prompt
+
+
+def _check_loop_or_stuck(
+    tool_history: list,
+    iteration_count: int,
+    llm_service,
+    user_message: str = "",
+    conversation_history: list = None,
+    todos: list = None,
+) -> dict:
+    from service.agent_service.service.llm_service import LLMService
+    
+    prompt = _build_loop_check_prompt(
+        tool_history, 
+        iteration_count,
+        user_message=user_message,
+        conversation_history=conversation_history,
+        todos=todos,
+    )
+    
+    try:
+        if isinstance(llm_service, LLMService):
+            response = llm_service.chat(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+            )
+        else:
+            response = llm_service.chat(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+            )
+        
+        result = json.loads(response)
+        return result
+    except Exception as e:
+        return {"action": "continue", "reason": f"检查失败: {str(e)}"}
 
 
 def _emit_final_reply(reply: str, message_context: dict = None) -> None:
@@ -343,6 +461,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         current_conversation_messages = state.get("current_conversation_messages", []) or []
         iteration_count = state.get("iteration_count", 0) or 0
         max_iterations = state.get("max_iterations", MAX_DIRECT_ITERATIONS) or MAX_DIRECT_ITERATIONS
+        todos = state.get("todos") or []
 
         console.step(title, subtitle, f"第 {iteration_count + 1}/{max_iterations} 轮")
 
@@ -356,6 +475,27 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 "pending_tools": [],
                 "iteration_count": iteration_count,
             }
+
+        if iteration_count > 0 and iteration_count % CHECK_INTERVAL == 0:
+            check_result = _check_loop_or_stuck(
+                tool_history, 
+                iteration_count, 
+                llm_service,
+                user_message=user_message,
+                conversation_history=current_conversation_messages,
+                todos=todos,
+            )
+            if check_result.get("action") == "stop":
+                reason = check_result.get("reason", "检测到循环或卡死")
+                reply = f"抱歉，检测到任务执行出现循环或卡死情况（{reason}）。我已经停止继续调用工具，请你细化要求或分步执行。"
+                _emit_final_reply(reply, message_context)
+                return {
+                    "next_action": {"kind": "reply", "reply": reply, "task_description": f"循环检测停止: {reason}"},
+                    "final_reply": reply,
+                    "has_tool_use": False,
+                    "pending_tools": [],
+                    "iteration_count": iteration_count,
+                }
 
         if llm_service is None:
             reply = f"无法为任务自动决策下一步：{user_message}"
@@ -382,7 +522,6 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         if last_tool_result:
             last_result_block = last_tool_result if len(last_tool_result) <= 1000 else last_tool_result[:1000] + "..."
 
-        todos = state.get("todos") or []
         current_todo_index = state.get("current_todo_index", 0) or 0
         todo_block = _format_todo_prompt_block(todos, current_todo_index)
         todo_intro = f"\n\n{todo_block}\n\n" if todo_block else ""
@@ -469,6 +608,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
 
         context_prompt = build_context_prompt(parent_chain_messages, current_conversation_messages, current_task)
 
+        response = None
         try:
             response = llm_service.chat(
                 messages=[{"role": "user", "content": context_prompt}],
@@ -485,8 +625,8 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             response_text = response_text.strip()
             decision_data = json.loads(response_text)
         except Exception as e:
-            console.box("决策解析失败", response_text if 'response_text' in locals() else str(response))
-            reply = f"当前无法自动决策下一步：{e}；原始回复：{response_text if 'response_text' in locals() else response}"
+            console.box("决策解析失败", response_text if 'response_text' in locals() else str(response) if response else "No response")
+            reply = f"当前无法自动决策下一步：{e}；原始回复：{response_text if 'response_text' in locals() else (response if response else 'No response')}"
             _emit_final_reply(reply, message_context)
             return {
                 "next_action": {"kind": "reply", "reply": reply, "task_description": user_message},

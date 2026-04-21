@@ -12,7 +12,7 @@ from controller.VO.result import Result
 from core.logging import bind_ctx, get_ctx
 from singleton import get_logging_runtime, get_message_queue, get_conversation_service
 from service.session_service.mq import MessageQueue
-from service.session_service.canonical import SegmentType
+from service.session_service.canonical import SegmentType, Message
 from service.session_service.message_content import MessageContentError, normalize_user_content
 
 router = APIRouter(prefix="/session/conversations", tags=["conversations"])
@@ -83,23 +83,33 @@ async def prepare_conversation_message(
     return Result.success(data=result)
 
 
-@router.post("/{conversation_id}/messages/stream")
+@router.get("/{conversation_id}/stream")
 async def stream_conversation_message(
     conversation_id: str,
+    last_seq: int = 0,
 ) -> StreamingResponse:
-    """流式发送消息 - 执行 Agent 并返回 SSE 流"""
+    """流式发送消息 - 支持断点续传
+    
+    Args:
+        conversation_id: 对话ID
+        last_seq: 上次接收的最后消息序号，用于断点续传
+    """
     service = get_conversation_service()
+    mq = get_message_queue()
+    
     conversation = await service.get_conversation(conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="对话不存在")
 
-    if conversation.get("state") == "running":
-        raise HTTPException(status_code=400, detail="对话正在运行中")
+    if conversation.get("state") == "pending" and last_seq > 0:
+        raise HTTPException(status_code=400, detail="对话尚未开始，无法断点续传")
 
     logger = get_logging_runtime().get_logger("api")
     request_ctx = get_ctx()
     request_ctx["conversation_id"] = conversation_id
     request_ctx["workspace_id"] = conversation.get("workspace_id") or request_ctx.get("workspace_id")
+
+    stream_state = mq.get_stream_state(conversation_id)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         stream_start = time.perf_counter()
@@ -109,29 +119,45 @@ async def stream_conversation_message(
         max_timeout = STREAM_MAX_TIMEOUT_TICKS
 
         subscriber = None
-        mq = get_message_queue()
 
         with bind_ctx(**request_ctx):
             logger.info(
                 event="stream.started",
                 msg="conversation stream started",
-                extra={"conversation_id": conversation_id},
+                extra={"conversation_id": conversation_id, "last_seq": last_seq},
             )
 
             try:
-                await mq.start_consumer()
-                subscriber = mq.subscribe(conversation_id)
+                if stream_state["is_completed"]:
+                    messages_after = mq.get_messages_after(conversation_id, last_seq)
+                    if messages_after:
+                        for msg in messages_after:
+                            yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'stream_completed', 'conversation_id': conversation_id, 'last_seq': last_seq, 'message': '对话已完成，请调用历史API获取完整数据'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                    logger.info(
+                        event="stream.completed_from_history",
+                        msg="stream completed from history",
+                        extra={"conversation_id": conversation_id, "last_seq": last_seq},
+                    )
+                    return
 
-                asyncio.create_task(service.send_message(conversation_id))
+                await mq.start_consumer()
+                subscriber = mq.subscribe(conversation_id, last_seq=last_seq)
+
+                if last_seq == 0 and conversation.get("state") != "running":
+                    asyncio.create_task(service.send_message(conversation_id))
 
                 while not done_received and timeout_counter < max_timeout:
                     try:
-                        message = await asyncio.wait_for(
+                        message, seq = await asyncio.wait_for(
                             subscriber.get(),
                             timeout=5.0,
                         )
 
                         event_data = message.to_dict()
+                        event_data["seq"] = seq
 
                         if not first_chunk_logged:
                             logger.info(

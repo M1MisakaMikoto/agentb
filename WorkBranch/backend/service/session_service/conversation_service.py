@@ -172,6 +172,13 @@ class ConversationService:
             session_id=str(session_id),
         )
 
+        mq = self._get_mq()
+        mq.register_stream(
+            conversation_id=conversation_id,
+            session_id=str(session_id),
+            workspace_id=workspace_id
+        )
+
         self._write_content_record(
             conversation_id,
             "system_event",
@@ -319,7 +326,7 @@ class ConversationService:
 
             while not done_received:
                 try:
-                    message = await asyncio.wait_for(subscriber.get(), timeout=1.0)
+                    message, seq = await asyncio.wait_for(subscriber.get(), timeout=1.0)
                     await collect_and_forward(message)
                 except asyncio.TimeoutError:
                     if task.done():
