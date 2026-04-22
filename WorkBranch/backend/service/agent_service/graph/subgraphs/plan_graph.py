@@ -162,6 +162,7 @@ def phase1_understand(state: AgentState, llm_service=None, token_callback: Optio
                 current_conversation_messages=current_conversation_messages,
                 agent_type=agent_type,
                 settings_service=settings_service,
+                message_context=message_context,
             )
             
             _send_thinking_start(send_message, {"phase": "understand"})
@@ -253,6 +254,7 @@ def phase2_design(state: AgentState, llm_service=None, token_callback: Optional[
                 intent_analysis=intent_analysis,
                 agent_type=agent_type,
                 settings_service=settings_service,
+                message_context=message_context,
             )
             
             _send_thinking_start(send_message, {"phase": "design"})

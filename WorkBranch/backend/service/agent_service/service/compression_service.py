@@ -1,10 +1,11 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 import json
 import time
 
 from ..cache import CompressionCache
 from ..prompts.compression_prompts import CONVOLUTION_COMPRESSION_PROMPT, COMPRESSION_SYSTEM_PROMPT
+from service.session_service.canonical import SegmentType
 
 
 @dataclass
@@ -270,12 +271,44 @@ class CompressionService:
             "total_compression_time": 0,
         }
     
-    def compress_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """压缩消息列表"""
+    def compress_messages(
+        self, 
+        messages: List[Dict[str, Any]], 
+        message_context: Optional[dict] = None,
+        source: str = "unknown"
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """
+        压缩消息列表，并发送信号给前端
+        
+        Args:
+            messages: 待压缩的消息列表
+            message_context: 消息上下文，包含 send_message 方法
+            source: 压缩来源，如 "parent_chain" 或 "current_conversation"
+        
+        Returns:
+            (压缩后的消息列表, 压缩统计信息)
+        """
         if not self.enabled or not messages:
-            return messages
+            return messages, {}
+        
+        send_message = message_context.get("send_message") if message_context else None
+        
+        original_tokens = sum(
+            self.compressor.token_calculator.estimate_tokens(
+                self.compressor._extract_content(msg)
+            )
+            for msg in messages
+        )
         
         start_time = time.time()
+        
+        if send_message:
+            send_message("", SegmentType.COMPRESSION_START, {
+                "source": source,
+                "message_count": len(messages),
+                "original_tokens": original_tokens,
+                "is_start": True
+            })
         
         self._metrics["total_requests"] += 1
         
@@ -284,10 +317,36 @@ class CompressionService:
         compression_time = time.time() - start_time
         self._metrics["total_compression_time"] += compression_time
         
-        if any(msg.get("compressed") for msg in result):
+        compressed_count = sum(1 for msg in result if msg.get("compressed"))
+        if compressed_count > 0:
             self._metrics["compressed_requests"] += 1
         
-        return result
+        compressed_tokens = sum(
+            self.compressor.token_calculator.estimate_tokens(
+                self.compressor._extract_content(msg)
+            )
+            for msg in result
+        )
+        
+        if send_message:
+            send_message("", SegmentType.COMPRESSION_END, {
+                "source": source,
+                "message_count": len(messages),
+                "compressed_count": compressed_count,
+                "original_tokens": original_tokens,
+                "compressed_tokens": compressed_tokens,
+                "compression_time": round(compression_time, 2),
+                "is_end": True
+            })
+        
+        stats = {
+            "original_tokens": original_tokens,
+            "compressed_tokens": compressed_tokens,
+            "compression_time": compression_time,
+            "compressed_count": compressed_count
+        }
+        
+        return result, stats
     
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""

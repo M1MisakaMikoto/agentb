@@ -28,6 +28,8 @@ class SegmentType(Enum):
     ERROR = "error"
     DONE = "done"
     CONVERSATION_HANDOFF = "conversation_handoff"
+    COMPRESSION_START = "compression_start"
+    COMPRESSION_END = "compression_end"
 
 
 @dataclass

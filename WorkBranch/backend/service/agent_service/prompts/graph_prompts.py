@@ -312,14 +312,21 @@ def get_plan_system_prompt(agent_type: str = "director_agent", settings_service=
     return PLAN_SYSTEM_PROMPT_BASE.format(tool_prompt=tool_prompt)
 
 
-def format_parent_chain_block(parent_chain_messages: List[dict]) -> str:
+def format_parent_chain_block(
+    parent_chain_messages: List[dict],
+    message_context: Optional[dict] = None
+) -> str:
     if not parent_chain_messages:
         return ""
 
     try:
         from singleton import get_compression_service
         compression_service = get_compression_service()
-        compressed_messages = compression_service.compress_messages(parent_chain_messages)
+        compressed_messages, _ = compression_service.compress_messages(
+            parent_chain_messages,
+            message_context=message_context,
+            source="parent_chain"
+        )
     except Exception:
         compressed_messages = parent_chain_messages
 
@@ -346,14 +353,21 @@ def format_parent_chain_block(parent_chain_messages: List[dict]) -> str:
     return "\n".join(lines)
 
 
-def format_current_conversation_block(current_conversation_messages: List[dict]) -> str:
+def format_current_conversation_block(
+    current_conversation_messages: List[dict],
+    message_context: Optional[dict] = None
+) -> str:
     if not current_conversation_messages:
         return ""
 
     try:
         from singleton import get_compression_service
         compression_service = get_compression_service()
-        compressed_messages = compression_service.compress_messages(current_conversation_messages)
+        compressed_messages, _ = compression_service.compress_messages(
+            current_conversation_messages,
+            message_context=message_context,
+            source="current_conversation"
+        )
     except Exception:
         compressed_messages = current_conversation_messages
 
@@ -394,12 +408,13 @@ def build_intent_analysis_messages(
     current_conversation_messages: List[dict],
     agent_type: str = "director_agent",
     settings_service=None,
+    message_context: Optional[dict] = None,
 ) -> tuple[str, List[dict]]:
     tool_prompt = generate_tool_prompt(agent_type, settings_service)
     system_prompt = INTENT_ANALYSIS_PROMPT.format(tool_prompt=tool_prompt)
     prompt = (
-        f"{format_parent_chain_block(parent_chain_messages)}"
-        f"{format_current_conversation_block(current_conversation_messages)}"
+        f"{format_parent_chain_block(parent_chain_messages, message_context)}"
+        f"{format_current_conversation_block(current_conversation_messages, message_context)}"
         f"{format_current_question(user_message)}"
         "请分析以上用户当前问题的意图。"
     )
@@ -413,6 +428,7 @@ def build_plan_generation_messages(
     intent_analysis: Optional[dict] = None,
     agent_type: str = "director_agent",
     settings_service=None,
+    message_context: Optional[dict] = None,
 ) -> tuple[str, List[dict]]:
     system_prompt = get_plan_system_prompt(agent_type, settings_service)
 
@@ -428,8 +444,8 @@ def build_plan_generation_messages(
 """
 
     prompt = (
-        f"{format_parent_chain_block(parent_chain_messages)}"
-        f"{format_current_conversation_block(current_conversation_messages)}"
+        f"{format_parent_chain_block(parent_chain_messages, message_context)}"
+        f"{format_current_conversation_block(current_conversation_messages, message_context)}"
         f"{format_current_question(user_message)}"
         f"{intent_context}"
         "请根据以上用户当前问题生成执行计划，包含 2-5 个任务，严格按照 JSON 格式输出。"
