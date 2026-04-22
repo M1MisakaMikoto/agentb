@@ -38,17 +38,14 @@ MIME_TYPES = {
 
 BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 SOURCE_FILES = [
-    Path(__file__).resolve().parents[3] / ".dev" / "table" / "doc" / "测试 DOCX 文档.docx",
-    Path(__file__).resolve().parents[3] / ".dev" / "table" / "doc" / "测试 PDF 文档.pdf",
-    Path(__file__).resolve().parents[3] / ".dev" / "table" / "doc" / "测试 XLSX 工作表.xlsx",
+    Path(__file__).resolve().parents[3] / ".dev" / "table" / "城市桥梁养护技术规程（标准文本）.pdf",
 ]
 PROMPT = (
-    "请在当前工作区内完成一个分阶段的只读任务。工作区里已经有三个文件，文件名分别是“测试 DOCX 文档.docx”、“测试 PDF 文档.pdf”、“测试 XLSX 工作表.xlsx”。"
-    "请先查看工作区里有哪些文件并确认这三个文件位置；"
-    "再使用 read_document 工具分别读取这三个文件；"
-    "然后分别总结每个文件里写了什么。"
-    "这是一个多步骤任务；如果你判断需要拆分阶段，请先建立任务列表再继续执行。"
-    "不要修改任何文件，不要创建新文件，最后按 DOCX、PDF、XLSX 三段输出简短结论。"
+    "请在当前工作区内完成一个只读任务。工作区里已经有一个文件，文件名是\"城市桥梁养护技术规程（标准文本）.pdf\"。"
+    "请先查看工作区里有哪些文件并确认该文件位置；"
+    "再使用 read_document 工具读取这个文件；"
+    "然后总结文件的主要内容。"
+    "不要修改任何文件，不要创建新文件，最后输出简短结论。"
 )
 
 
@@ -170,11 +167,11 @@ class APIClient:
         except Exception as e:
             return {"code": -1, "message": str(e), "data": None}
 
-    async def stream_message(self, conversation_id: str):
-        url = f"{self.base_url}/session/conversations/{conversation_id}/messages/stream"
+    async def stream_message(self, conversation_id: str, last_seq: int = 0):
+        url = f"{self.base_url}/session/conversations/{conversation_id}/stream?last_seq={last_seq}"
         timeout = httpx.Timeout(connect=30.0, read=None, write=300.0, pool=300.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream("POST", url, headers=self._json_headers()) as response:
+            async with client.stream("GET", url, headers=self._auth_headers()) as response:
                 if response.status_code != 200:
                     try:
                         error = await response.aread()
