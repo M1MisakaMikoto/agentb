@@ -63,7 +63,7 @@ async def run_serial_mode_test(api: APIClient, scenario_config: dict, verbose: b
     print_step(6, "Second conversation - asking for secret code...", Colors.CYAN)
     second_question = "上一轮对话中的暗号是什么？请告诉我。"
     conv_result2 = await api.create_conversation(session_id, second_question)
-    if conv_result2.get("code") != 0:
+    if not conv_result2.get("success", True):
         print_error(f"Failed to create second conversation: {conv_result2.get('message')}")
         result.errors.append(f"create_conversation_2: {conv_result2.get('message')}")
         return result

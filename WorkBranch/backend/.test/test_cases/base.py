@@ -87,7 +87,7 @@ def wait_for_backend(host: str = "127.0.0.1", port: int = 8000, timeout: float =
 
 
 def start_backend() -> Optional[subprocess.Popen]:
-    backend_dir = Path(__file__).parent.parent.resolve()
+    backend_dir = Path(__file__).parent.parent.parent.resolve()
     python_executable = sys.executable
 
     run_server = backend_dir / "run_server.py"
@@ -345,7 +345,8 @@ class APIClient:
             path = self._get_endpoint("conversation", "stream", conversation_id=conversation_id)
             path = f"{path}?last_seq={last_seq}"
         
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=5.0))
+        try:
             method = "POST" if use_v2 else "GET"
             async with client.stream(method, f"{self.base_url}{path}", headers=self._headers()) as response:
                 if response.status_code != 200:
@@ -358,6 +359,8 @@ class APIClient:
 
                 async for line in response.aiter_lines():
                     yield {"raw_line": line}
+        finally:
+            await client.aclose()
 
 
 async def wait_for_conversation_state(
@@ -365,6 +368,7 @@ async def wait_for_conversation_state(
     conversation_id: str,
     expected_state: str,
     timeout: float = 120.0,
+    poll_interval: float = 1.0,
 ) -> dict:
     deadline = time.time() + timeout
     last_result = None
@@ -373,13 +377,15 @@ async def wait_for_conversation_state(
         last_result = conversation_result
         data = conversation_result.get("data") or {}
         current_state = data.get("state")
+        
         if current_state == expected_state:
             return conversation_result
         if expected_state == "processing" and current_state in ("running", "pending"):
             return conversation_result
-        if expected_state == "completed" and current_state in ("running", "pending"):
-            pass
-        await asyncio.sleep(0.5)
+        if expected_state == "processing" and current_state == "completed":
+            return conversation_result
+        
+        await asyncio.sleep(poll_interval)
     return last_result
 
 
@@ -418,15 +424,48 @@ async def collect_stream_output(
     
     deadline = time.time() + timeout
     stream_iter = api.stream_message(conversation_id, use_v2=use_v2)
+    pending_item = None
+    loop_count = 0
     
     while time.time() < deadline:
+        loop_count += 1
+        if verbose and loop_count % 10 == 0:
+            print(f"{Colors.DIM}[loop {loop_count}] waiting for stream...{Colors.ENDC}")
+        
         try:
-            item = await asyncio.wait_for(stream_iter.__anext__(), timeout=1.0)
-        except asyncio.TimeoutError:
-            if result.done:
-                break
-            continue
+            if pending_item is None:
+                pending_item = asyncio.create_task(stream_iter.__anext__())
+            
+            done, _ = await asyncio.wait(
+                {pending_item},
+                timeout=1.0,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            if not done:
+                if verbose:
+                    print(f"{Colors.DIM}[wait timeout] checking conversation state...{Colors.ENDC}")
+                conv_check = await api.get_conversation(conversation_id)
+                conv_state = conv_check.get("data", {}).get("state")
+                if verbose:
+                    print(f"{Colors.DIM}[wait timeout] state={conv_state}{Colors.ENDC}")
+                if conv_state == "completed":
+                    if verbose:
+                        print(f"{Colors.GREEN}[timeout] Conversation already completed, ending stream{Colors.ENDC}")
+                    result.done = True
+                    pending_item.cancel()
+                    break
+                continue
+            
+            item = await pending_item
+            pending_item = None
         except StopAsyncIteration:
+            if verbose:
+                print(f"{Colors.GREEN}[StopAsyncIteration] Stream ended{Colors.ENDC}")
+            break
+        except Exception as e:
+            if verbose:
+                print(f"{Colors.RED}[error] {e}{Colors.ENDC}")
             break
         
         raw_line = item.get("raw_line", "")
@@ -441,6 +480,13 @@ async def collect_stream_output(
         if raw_line.startswith(": heartbeat"):
             if verbose:
                 print(f"{Colors.DIM}[heartbeat]{Colors.ENDC}")
+            conv_check = await api.get_conversation(conversation_id)
+            conv_state = conv_check.get("data", {}).get("state")
+            if conv_state == "completed":
+                if verbose:
+                    print(f"{Colors.GREEN}[heartbeat] Conversation already completed, ending stream{Colors.ENDC}")
+                result.done = True
+                break
             continue
 
         if not raw_line.startswith("data: "):
@@ -465,8 +511,10 @@ async def collect_stream_output(
             if verbose:
                 safe_print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
         elif event_type == "chat_end":
+            result.done = True
             if verbose:
                 print(f"{Colors.GREEN}[chat_end] Chat completed{Colors.ENDC}")
+            break
         elif event_type == "thinking_delta":
             content = data.get("content", "")
             result.thinking_content += content

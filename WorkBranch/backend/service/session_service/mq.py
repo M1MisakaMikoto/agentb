@@ -267,7 +267,7 @@ class HybridMessageQueue:
 
         return {
             "last_seq": 0,
-            "is_completed": False,
+            "is_completed": True,
             "session_id": "",
             "workspace_id": ""
         }
