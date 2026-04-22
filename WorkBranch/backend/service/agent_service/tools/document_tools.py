@@ -202,7 +202,7 @@ def execute_read_document(tool_args: dict) -> dict:
     
     settings = get_settings_service()
     try:
-        use_llm_parsing = settings.get("pdf:use_llm_parsing")
+        use_llm_parsing = settings.get("agent_tools:pdf:use_llm_parsing")
     except KeyError:
         use_llm_parsing = True
     

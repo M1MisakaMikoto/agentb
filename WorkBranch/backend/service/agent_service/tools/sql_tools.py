@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .registry import ToolDefinition, ToolRegistry
+from singleton import get_settings_service
 
 
 QueryMode = Literal["query", "show_databases", "show_tables", "describe", "show_create"]
@@ -36,17 +37,18 @@ class SQLToolsConfig:
         return cls._instance
 
     def _load_config(self):
-        """从配置文件加载数据库配置"""
-        config_path = Path(__file__).parent / "sql_tools_config.json"
+        """从 SettingsService 加载数据库配置"""
+        settings = get_settings_service()
         
-        if config_path.exists():
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config_data = json.load(f)
-                
-                self._default_database = config_data.get("default_database", "default")
-                
-                for db_name, db_config in config_data.get("databases", {}).items():
+        try:
+            self._default_database = settings.get("agent_tools:sql:default_database")
+        except KeyError:
+            self._default_database = "default"
+        
+        try:
+            databases = settings.get("agent_tools:sql:databases")
+            if isinstance(databases, dict):
+                for db_name, db_config in databases.items():
                     self._configs[db_name] = DatabaseConfig(
                         host=db_config.get("host", "localhost"),
                         port=db_config.get("port", 3306),
@@ -54,8 +56,8 @@ class SQLToolsConfig:
                         password=db_config.get("password", ""),
                         charset=db_config.get("charset", "utf8mb4"),
                     )
-            except Exception as e:
-                print(f"[SQLToolsConfig] 加载配置文件失败: {e}")
+        except KeyError:
+            pass
         
         if not self._configs:
             self._configs["default"] = DatabaseConfig()
