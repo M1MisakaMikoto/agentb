@@ -66,7 +66,9 @@ DEFAULT_SETTINGS = {
     "agent": {
         "memory_mode": "accumulate",
         "memory_window_size": 3,
-        "plan_auto_approve": True
+        "plan_auto_approve": True,
+        "tool_timeout_seconds": 60,
+        "special_tool_timeout_seconds": 120
     },
     "logging": {
         "enabled": True,

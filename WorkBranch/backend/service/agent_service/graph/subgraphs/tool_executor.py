@@ -1319,7 +1319,10 @@ def run_tool_execution(
 
     graph = create_tool_execution_subgraph(workspace_service, llm_service, token_callback, settings_service, message_context)
 
-    timeout_seconds = SPECIAL_TOOL_TIMEOUT_SECONDS if tool_name in SPECIAL_TOOLS else TOOL_EXECUTION_TIMEOUT_SECONDS
+    if tool_name in SPECIAL_TOOLS:
+        timeout_seconds = settings_service.get("agent:special_tool_timeout_seconds") if settings_service else SPECIAL_TOOL_TIMEOUT_SECONDS
+    else:
+        timeout_seconds = settings_service.get("agent:tool_timeout_seconds") if settings_service else TOOL_EXECUTION_TIMEOUT_SECONDS
 
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
