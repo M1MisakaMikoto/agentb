@@ -109,6 +109,20 @@ DEFAULT_SETTINGS = {
             "forbidden": []
         }
     },
+    "compression": {
+        "enabled": True,
+        "compression_version": "v1",
+        "trigger_threshold": 0.8,
+        "target_min": 0.4,
+        "target_max": 0.5,
+        "keep_recent": 3,
+        "min_length_to_compress": 200,
+        "cache_enabled": True,
+        "cache_ttl_seconds": 3600,
+        "l1_cache_size": 100,
+        "max_workers": 3,
+        "compression_timeout": 30
+    },
     "debug": {
         "consistency_check": False
     }

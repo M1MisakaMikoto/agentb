@@ -5,6 +5,7 @@ from .agent_prompts import (
     REVIEW_AGENT_PROMPT
 )
 from .system_prompts import get_agent_prompt, enhance_prompt_with_context, AGENT_PROMPTS
+from .compression_prompts import CONVOLUTION_COMPRESSION_PROMPT, COMPRESSION_SYSTEM_PROMPT
 
 __all__ = [
     "GENERAL_PURPOSE_PROMPT",
@@ -13,5 +14,7 @@ __all__ = [
     "REVIEW_AGENT_PROMPT",
     "AGENT_PROMPTS",
     "get_agent_prompt",
-    "enhance_prompt_with_context"
+    "enhance_prompt_with_context",
+    "CONVOLUTION_COMPRESSION_PROMPT",
+    "COMPRESSION_SYSTEM_PROMPT",
 ]

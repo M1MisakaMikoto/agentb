@@ -127,6 +127,14 @@ def get_logging_runtime() -> LoggingRuntime:
     return LoggingRuntime(settings)
 
 
+@lru_cache(maxsize=1)
+def get_compression_service():
+    from service.agent_service.service import CompressionService
+    settings = get_settings_service()
+    llm = get_llm_service()
+    return CompressionService(settings, llm)
+
+
 async def clear_all_singletons_async():
     """清除所有单例缓存并关闭已打开的资源。"""
     global _mysql_pool_instance
@@ -165,6 +173,7 @@ async def clear_all_singletons_async():
     get_conversation_dao.cache_clear()
     get_message_queue.cache_clear()
     get_logging_runtime.cache_clear()
+    get_compression_service.cache_clear()
 
 
 def clear_all_singletons():

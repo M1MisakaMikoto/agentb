@@ -316,15 +316,28 @@ def format_parent_chain_block(parent_chain_messages: List[dict]) -> str:
     if not parent_chain_messages:
         return ""
 
+    try:
+        from singleton import get_compression_service
+        compression_service = get_compression_service()
+        compressed_messages = compression_service.compress_messages(parent_chain_messages)
+    except Exception:
+        compressed_messages = parent_chain_messages
+
     lines = ["## 历史对话记录", ""]
     lines.append("以下是之前对话分支的历史记录，供参考：")
     lines.append("")
 
-    for msg in parent_chain_messages:
+    for msg in compressed_messages:
         role = msg.get("role", "unknown")
-        content = build_prompt_safe_text(msg)
         role_label = "用户" if role == "user" else "助手" if role == "assistant" else role
-        lines.append(f"**{role_label}**: {content}")
+        
+        if msg.get("compressed"):
+            content = msg.get("content", "")
+            lines.append(f"**{role_label}**: {content}")
+            lines.append(f"*(已压缩，原始长度: {msg.get('original_length', 0)}字符)*")
+        else:
+            content = build_prompt_safe_text(msg)
+            lines.append(f"**{role_label}**: {content}")
 
     lines.append("")
     lines.append("---")
@@ -337,15 +350,28 @@ def format_current_conversation_block(current_conversation_messages: List[dict])
     if not current_conversation_messages:
         return ""
 
+    try:
+        from singleton import get_compression_service
+        compression_service = get_compression_service()
+        compressed_messages = compression_service.compress_messages(current_conversation_messages)
+    except Exception:
+        compressed_messages = current_conversation_messages
+
     lines = ["## 当前对话内历史内容", ""]
     lines.append("以下是当前对话内之前的交互记录：")
     lines.append("")
 
-    for msg in current_conversation_messages:
+    for msg in compressed_messages:
         role = msg.get("role", "unknown")
-        content = build_prompt_safe_text(msg)
         role_label = "用户" if role == "user" else "助手" if role == "assistant" else role
-        lines.append(f"**{role_label}**: {content}")
+        
+        if msg.get("compressed"):
+            content = msg.get("content", "")
+            lines.append(f"**{role_label}**: {content}")
+            lines.append(f"*(已压缩，原始长度: {msg.get('original_length', 0)}字符)*")
+        else:
+            content = build_prompt_safe_text(msg)
+            lines.append(f"**{role_label}**: {content}")
 
     lines.append("")
     lines.append("---")
