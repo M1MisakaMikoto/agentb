@@ -1689,13 +1689,16 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
             }]
 
             new_current_conv_msgs = list(current_conversation_messages)
+            tool_error = tool_result.get("error")
+            content = f"[工具执行: {tool_name}]\n结果: {result_str[:1000]}"
+            if tool_error:
+                content += f"\n错误: {tool_error}"
             new_current_conv_msgs.append({
                 "role": "assistant",
-                "content": f"[工具执行: {tool_name}]\n结果: {result_str[:1000]}"
+                "content": content
             })
 
             tool_success = tool_result.get("error") is None
-            tool_error = tool_result.get("error")
 
             if _mode_name(execution_mode) == "DIRECT" and tool_name != "chat":
                 direct_update = {
