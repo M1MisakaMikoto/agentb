@@ -2,22 +2,40 @@ import os
 from typing import Optional, List, Dict, Any
 
 from .registry import ToolDefinition, ToolRegistry
+from singleton import get_settings_service
 
 
-def _read_pdf(file_path: str, start_idx: int = 0, max_length: int = 10000, include_metadata: bool = True) -> dict:
-    """读取PDF文件"""
+def _read_pdf(file_path: str, start_idx: int = 0, max_length: int = 10000, include_metadata: bool = True, use_llm_parsing: bool = True) -> dict:
+    """读取PDF文件
+    
+    Args:
+        use_llm_parsing: True 使用 pymupdf4llm (LLM优化格式), False 使用 pypdf (快速纯文本)
+    """
     try:
-        import pymupdf4llm
         import pypdf
     except ImportError:
-        return {"result": None, "error": "缺少依赖: pip install pymupdf4llm pypdf"}
+        return {"result": None, "error": "缺少依赖: pip install pypdf"}
     
     try:
-        md_text = pymupdf4llm.to_markdown(file_path)
+        if use_llm_parsing:
+            try:
+                import pymupdf4llm
+            except ImportError:
+                return {"result": None, "error": "缺少依赖: pip install pymupdf4llm"}
+            
+            md_text = pymupdf4llm.to_markdown(file_path)
+            full_text = md_text
+        else:
+            with open(file_path, "rb") as f:
+                reader = pypdf.PdfReader(f)
+                text_parts = []
+                for page in reader.pages:
+                    text_parts.append(page.extract_text() or "")
+                full_text = "\n".join(text_parts)
         
-        total_length = len(md_text)
+        total_length = len(full_text)
         end_idx = min(start_idx + max_length, total_length)
-        content = md_text[start_idx:end_idx]
+        content = full_text[start_idx:end_idx]
         
         metadata = {}
         if include_metadata:
@@ -32,9 +50,10 @@ def _read_pdf(file_path: str, start_idx: int = 0, max_length: int = 10000, inclu
                         "creator": reader.metadata.creator if reader.metadata else None,
                         "producer": reader.metadata.producer if reader.metadata else None,
                         "creation_date": str(reader.metadata.creation_date) if reader.metadata and reader.metadata.creation_date else None,
+                        "parsing_mode": "llm" if use_llm_parsing else "fast",
                     }
             except Exception:
-                metadata = {"file_type": "pdf", "page_count": "unknown"}
+                metadata = {"file_type": "pdf", "page_count": "unknown", "parsing_mode": "llm" if use_llm_parsing else "fast"}
         
         return {
             "result": {
@@ -181,6 +200,12 @@ def execute_read_document(tool_args: dict) -> dict:
     max_length = tool_args.get("max_length", 10000)
     include_metadata = tool_args.get("include_metadata", True)
     
+    settings = get_settings_service()
+    try:
+        use_llm_parsing = settings.get("pdf:use_llm_parsing")
+    except KeyError:
+        use_llm_parsing = True
+    
     print(f"[Tool] read_document: {file_path}")
     
     if not os.path.exists(file_path):
@@ -192,7 +217,7 @@ def execute_read_document(tool_args: dict) -> dict:
     ext = os.path.splitext(file_path)[1].lower()
     
     if ext == ".pdf":
-        result = _read_pdf(file_path, start_idx, max_length, include_metadata)
+        result = _read_pdf(file_path, start_idx, max_length, include_metadata, use_llm_parsing)
     elif ext in [".docx", ".doc"]:
         if ext == ".doc":
             return {"result": None, "error": "暂不支持 .doc 格式，请转换为 .docx 格式"}
