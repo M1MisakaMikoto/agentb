@@ -129,25 +129,36 @@ def _read_docx(file_path: str, start_idx: int = 0, max_length: int = 10000, incl
         return {"result": None, "error": f"Word文档读取失败: {str(e)}"}
 
 
-def _read_xlsx(file_path: str, start_idx: int = 0, max_length: int = 10000, include_metadata: bool = True) -> dict:
-    """读取Excel文件"""
+def _read_excel(file_path: str, start_idx: int = 0, max_length: int = 10000, include_metadata: bool = True) -> dict:
+    """读取Excel文件（支持 .xls 和 .xlsx）"""
     try:
-        from openpyxl import load_workbook
+        import pandas as pd
     except ImportError:
-        return {"result": None, "error": "缺少依赖: pip install openpyxl"}
+        return {"result": None, "error": "缺少依赖: pip install pandas"}
     
     try:
-        wb = load_workbook(file_path, data_only=True)
+        import os
+        ext = os.path.splitext(file_path)[1].lower()
         
         all_content = []
         sheet_info = []
+        sheet_names = []
         
-        for sheet_name in wb.sheetnames:
-            sheet = wb[sheet_name]
-            rows_data = []
+        if ext == ".xls":
+            try:
+                import xlrd
+            except ImportError:
+                return {"result": None, "error": "缺少依赖: pip install xlrd (用于读取 .xls 文件)"}
+        
+        xl_file = pd.ExcelFile(file_path)
+        sheet_names = xl_file.sheet_names
+        
+        for sheet_name in sheet_names:
+            df = pd.read_excel(xl_file, sheet_name=sheet_name, header=None)
             
-            for row in sheet.iter_rows(values_only=True):
-                row_values = [str(cell) if cell is not None else "" for cell in row]
+            rows_data = []
+            for _, row in df.iterrows():
+                row_values = [str(cell) if pd.notna(cell) else "" for cell in row]
                 if any(v.strip() for v in row_values):
                     rows_data.append(" | ".join(row_values))
             
@@ -156,8 +167,8 @@ def _read_xlsx(file_path: str, start_idx: int = 0, max_length: int = 10000, incl
             
             sheet_info.append({
                 "name": sheet_name,
-                "rows": sheet.max_row,
-                "cols": sheet.max_column,
+                "rows": len(df),
+                "cols": len(df.columns),
                 "content_preview": rows_data[:5] if rows_data else []
             })
         
@@ -169,9 +180,9 @@ def _read_xlsx(file_path: str, start_idx: int = 0, max_length: int = 10000, incl
         metadata = {}
         if include_metadata:
             metadata = {
-                "file_type": "xlsx",
-                "sheet_count": len(wb.sheetnames),
-                "sheet_names": wb.sheetnames,
+                "file_type": ext.lstrip("."),
+                "sheet_count": len(sheet_names),
+                "sheet_names": sheet_names,
             }
         
         return {
@@ -223,11 +234,9 @@ def execute_read_document(tool_args: dict) -> dict:
             return {"result": None, "error": "暂不支持 .doc 格式，请转换为 .docx 格式"}
         result = _read_docx(file_path, start_idx, max_length, include_metadata)
     elif ext in [".xlsx", ".xls"]:
-        if ext == ".xls":
-            return {"result": None, "error": "暂不支持 .xls 格式，请转换为 .xlsx 格式"}
-        result = _read_xlsx(file_path, start_idx, max_length, include_metadata)
+        result = _read_excel(file_path, start_idx, max_length, include_metadata)
     else:
-        return {"result": None, "error": f"不支持的文件格式: {ext}。支持: .pdf, .docx, .xlsx"}
+        return {"result": None, "error": f"不支持的文件格式: {ext}。支持: .pdf, .docx, .xlsx, .xls"}
     
     if result.get("error") is None:
         print(f"[Tool] read_document 成功: {result['result'].get('total_length', 0)} 字符")
