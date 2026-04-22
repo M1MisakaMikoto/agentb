@@ -61,7 +61,7 @@ async def run_cross_lifecycle_test(api: APIClient, scenario_config: dict, verbos
     
     print_step(1, "Creating session...", Colors.CYAN)
     session_result = await api.create_session(title="Cross Lifecycle Test")
-    if session_result.get("code") != 0:
+    if not session_result.get("success", True):
         print_error(f"Failed to create session: {session_result.get('message')}")
         result.errors.append(f"create_session: {session_result.get('message')}")
         return result
@@ -73,7 +73,7 @@ async def run_cross_lifecycle_test(api: APIClient, scenario_config: dict, verbos
     print_step(2, "First conversation - setting secret code...", Colors.CYAN)
     first_prompt = scenario_config.get("first_prompt", "你好，请记住暗号 CROSS-LIFETIME-2024，只回复这串暗号。")
     conv_result = await api.create_conversation(session_id, first_prompt)
-    if conv_result.get("code") != 0:
+    if not conv_result.get("success", True):
         print_error(f"Failed to create conversation: {conv_result.get('message')}")
         result.errors.append(f"create_conversation: {conv_result.get('message')}")
         return result

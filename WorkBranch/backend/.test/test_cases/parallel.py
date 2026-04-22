@@ -60,13 +60,13 @@ async def run_single_parallel_test(
         test_api = APIClient(api.config, user_id=user_id)
         
         session_result = await test_api.create_session(title=f"Parallel Test - {theme}")
-        if session_result.get("code") != 0:
+        if not session_result.get("success", True):
             errors.append(f"create_session: {session_result.get('message')}")
         else:
             session_id = session_result.get("data", {}).get("id")
             
             conv_result = await test_api.create_conversation(session_id, question)
-            if conv_result.get("code") != 0:
+            if not conv_result.get("success", True):
                 errors.append(f"create_conversation: {conv_result.get('message')}")
             else:
                 conversation_id = conv_result.get("data", {}).get("conversation_id")

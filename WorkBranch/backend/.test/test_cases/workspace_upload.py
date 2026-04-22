@@ -48,7 +48,7 @@ async def upload_files_to_workspace(
                 print_dim(f"Uploading: {file_path.name}")
             
             upload_result = await api.upload_workspace_file(workspace_id, file_path)
-            if upload_result.get("code") != 0:
+            if not upload_result.get("success", True):
                 print_error(f"Failed to upload {file_path.name}: {upload_result.get('message')}")
                 continue
             
@@ -74,7 +74,7 @@ async def run_workspace_upload_extract_write_test(
     
     print_step(1, "Creating session...", Colors.CYAN)
     session_result = await api.create_session(title="Workspace Upload Extract Write Test")
-    if session_result.get("code") != 0:
+    if not session_result.get("success", True):
         print_error(f"Failed to create session: {session_result.get('message')}")
         result.errors.append(f"create_session: {session_result.get('message')}")
         return result
@@ -99,7 +99,7 @@ async def run_workspace_upload_extract_write_test(
         result.errors.append(str(e))
         return result
     
-    if conv_result.get("code") != 0:
+    if not conv_result.get("success", True):
         print_error(f"Failed to create conversation: {conv_result.get('message')}")
         result.errors.append(f"create_conversation: {conv_result.get('message')}")
         return result
@@ -146,7 +146,7 @@ async def run_workspace_upload_read_document_test(
     
     print_step(1, "Creating session...", Colors.CYAN)
     session_result = await api.create_session(title="Workspace Upload Read Document Test")
-    if session_result.get("code") != 0:
+    if not session_result.get("success", True):
         print_error(f"Failed to create session: {session_result.get('message')}")
         result.errors.append(f"create_session: {session_result.get('message')}")
         return result
@@ -172,7 +172,7 @@ async def run_workspace_upload_read_document_test(
         result.errors.append(str(e))
         return result
     
-    if conv_result.get("code") != 0:
+    if not conv_result.get("success", True):
         print_error(f"Failed to create conversation: {conv_result.get('message')}")
         result.errors.append(f"create_conversation: {conv_result.get('message')}")
         return result
@@ -224,7 +224,7 @@ async def run_workspace_upload_image_understanding_test(
     
     print_step(1, "Creating session...", Colors.CYAN)
     session_result = await api.create_session(title="Workspace Upload Image Understanding Test")
-    if session_result.get("code") != 0:
+    if not session_result.get("success", True):
         print_error(f"Failed to create session: {session_result.get('message')}")
         result.errors.append(f"create_session: {session_result.get('message')}")
         return result
@@ -249,7 +249,7 @@ async def run_workspace_upload_image_understanding_test(
         result.errors.append(str(e))
         return result
     
-    if conv_result.get("code") != 0:
+    if not conv_result.get("success", True):
         print_error(f"Failed to create conversation: {conv_result.get('message')}")
         result.errors.append(f"create_conversation: {conv_result.get('message')}")
         return result

@@ -108,7 +108,7 @@ async def run_mq_resume_test(api: APIClient, scenario_config: dict, verbose: boo
     
     print_step(1, "Creating session...", Colors.CYAN)
     session_result = await api.create_session(title="MQ Resume Test")
-    if session_result.get("code") != 0:
+    if not session_result.get("success", True):
         print_error(f"Failed to create session: {session_result.get('message')}")
         result.errors.append(f"create_session: {session_result.get('message')}")
         return result
@@ -120,7 +120,7 @@ async def run_mq_resume_test(api: APIClient, scenario_config: dict, verbose: boo
     print_step(2, "Creating conversation...", Colors.CYAN)
     normal_prompt = test_prompts.get("normal", "请用至少100字介绍一下Python的异步编程。")
     conv_result = await api.create_conversation(session_id, normal_prompt)
-    if conv_result.get("code") != 0:
+    if not conv_result.get("success", True):
         print_error(f"Failed to create conversation: {conv_result.get('message')}")
         result.errors.append(f"create_conversation: {conv_result.get('message')}")
         return result

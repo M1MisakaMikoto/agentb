@@ -87,18 +87,13 @@ def wait_for_backend(host: str = "127.0.0.1", port: int = 8000, timeout: float =
 
 
 def start_backend() -> Optional[subprocess.Popen]:
-    backend_dir = Path(__file__).parent.parent
+    backend_dir = Path(__file__).parent.parent.resolve()
     python_executable = sys.executable
 
+    run_server = backend_dir / "run_server.py"
     command = [
         python_executable,
-        "-m",
-        "uvicorn",
-        "app:app",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "8000",
+        str(run_server),
     ]
 
     print(f"{Colors.CYAN}Starting backend...{Colors.ENDC}")
@@ -242,12 +237,21 @@ class APIClient:
                             "code": response.status_code,
                             "message": data.get("detail", str(data)),
                             "data": None,
+                            "success": False,
                         }
-                    return data
+                    api_code = data.get("code")
+                    if api_code is not None and api_code != 200:
+                        return {
+                            "code": api_code,
+                            "message": data.get("message", "Unknown error"),
+                            "data": data.get("data"),
+                            "success": False,
+                        }
+                    return {"success": True, **data}
                 except Exception:
-                    return {"code": response.status_code, "message": response.text, "data": None}
+                    return {"code": response.status_code, "message": response.text, "data": None, "success": False}
             except Exception as e:
-                return {"code": -1, "message": str(e), "data": None}
+                return {"code": -1, "message": str(e), "data": None, "success": False}
 
     async def create_session(self, title: str = "Test Session") -> dict:
         path = self._get_endpoint("session", "create")
@@ -368,9 +372,14 @@ async def wait_for_conversation_state(
         conversation_result = await api.get_conversation(conversation_id)
         last_result = conversation_result
         data = conversation_result.get("data") or {}
-        if data.get("state") == expected_state:
+        current_state = data.get("state")
+        if current_state == expected_state:
             return conversation_result
-        await asyncio.sleep(0.2)
+        if expected_state == "processing" and current_state in ("running", "pending"):
+            return conversation_result
+        if expected_state == "completed" and current_state in ("running", "pending"):
+            pass
+        await asyncio.sleep(0.5)
     return last_result
 
 
@@ -403,8 +412,23 @@ async def collect_stream_output(
     verbose: bool = True,
     show_raw: bool = False,
     use_v2: bool = False,
+    timeout: float = 60.0,
 ):
-    async for item in api.stream_message(conversation_id, use_v2=use_v2):
+    import asyncio
+    
+    deadline = time.time() + timeout
+    stream_iter = api.stream_message(conversation_id, use_v2=use_v2)
+    
+    while time.time() < deadline:
+        try:
+            item = await asyncio.wait_for(stream_iter.__anext__(), timeout=1.0)
+        except asyncio.TimeoutError:
+            if result.done:
+                break
+            continue
+        except StopAsyncIteration:
+            break
+        
         raw_line = item.get("raw_line", "")
         if not raw_line.strip():
             continue
@@ -440,6 +464,9 @@ async def collect_stream_output(
             result.chat_content += content
             if verbose:
                 safe_print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
+        elif event_type == "chat_end":
+            if verbose:
+                print(f"{Colors.GREEN}[chat_end] Chat completed{Colors.ENDC}")
         elif event_type == "thinking_delta":
             content = data.get("content", "")
             result.thinking_content += content
@@ -483,6 +510,7 @@ async def collect_stream_output(
             result.done = True
             if verbose:
                 print(f"{Colors.GREEN}[done] Stream completed{Colors.ENDC}")
+            break
         elif event_type == "error":
             error_content = data.get("content", "Unknown error")
             result.errors.append(error_content)

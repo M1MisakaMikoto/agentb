@@ -130,7 +130,7 @@ async def run_rag_search_test(api: APIClient, scenario_config: dict, verbose: bo
     try:
         print_step(2, "Creating session...", Colors.CYAN)
         session_result = await api.create_session(title="RAG Search Test")
-        if session_result.get("code") != 0:
+        if not session_result.get("success", True):
             print_error(f"Failed to create session: {session_result.get('message')}")
             result.errors.append(f"create_session: {session_result.get('message')}")
             return result
@@ -142,7 +142,7 @@ async def run_rag_search_test(api: APIClient, scenario_config: dict, verbose: bo
         print_step(3, "Creating conversation with RAG search query...", Colors.CYAN)
         question = f"请使用 RAG 搜索工具在知识库 {kb_id} 中搜索关于产品的信息"
         conv_result = await api.create_conversation(session_id, question)
-        if conv_result.get("code") != 0:
+        if not conv_result.get("success", True):
             print_error(f"Failed to create conversation: {conv_result.get('message')}")
             result.errors.append(f"create_conversation: {conv_result.get('message')}")
             return result

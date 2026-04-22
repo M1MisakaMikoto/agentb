@@ -29,7 +29,7 @@ async def run_plan_mode_test(api: APIClient, scenario_config: dict, verbose: boo
     
     print_step(1, "Creating session...", Colors.CYAN)
     session_result = await api.create_session(title="PLAN Mode Test")
-    if session_result.get("code") != 0:
+    if not session_result.get("success", True):
         print_error(f"Failed to create session: {session_result.get('message')}")
         result.errors.append(f"create_session: {session_result.get('message')}")
         return result
@@ -41,7 +41,7 @@ async def run_plan_mode_test(api: APIClient, scenario_config: dict, verbose: boo
     print_step(2, "Creating conversation...", Colors.CYAN)
     question = scenario_config.get("question", "请把'实现一个简单的用户登录功能'当作复杂多阶段开发任务处理。")
     conv_result = await api.create_conversation(session_id, question)
-    if conv_result.get("code") != 0:
+    if not conv_result.get("success", True):
         print_error(f"Failed to create conversation: {conv_result.get('message')}")
         result.errors.append(f"create_conversation: {conv_result.get('message')}")
         return result
@@ -68,7 +68,7 @@ async def run_plan_mode_test(api: APIClient, scenario_config: dict, verbose: boo
         approval_message = scenario_config.get("approval_message", "可以")
         
         approve_result = await api.approve_plan(workspace_id, approved=True)
-        if approve_result.get("code") != 0:
+        if not approve_result.get("success", True):
             print_error(f"Failed to approve plan: {approve_result.get('message')}")
             result.errors.append(f"approve_plan: {approve_result.get('message')}")
         else:

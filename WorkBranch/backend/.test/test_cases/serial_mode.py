@@ -28,7 +28,7 @@ async def run_serial_mode_test(api: APIClient, scenario_config: dict, verbose: b
     
     print_step(1, "Creating session...", Colors.CYAN)
     session_result = await api.create_session(title="SERIAL Mode Test")
-    if session_result.get("code") != 0:
+    if not session_result.get("success", True):
         print_error(f"Failed to create session: {session_result.get('message')}")
         result.errors.append(f"create_session: {session_result.get('message')}")
         return result
@@ -40,7 +40,7 @@ async def run_serial_mode_test(api: APIClient, scenario_config: dict, verbose: b
     print_step(2, "First conversation - setting secret code...", Colors.CYAN)
     first_question = scenario_config.get("question", "请记住暗号 ALPHA-9271，只回复这串暗号。")
     conv_result = await api.create_conversation(session_id, first_question)
-    if conv_result.get("code") != 0:
+    if not conv_result.get("success", True):
         print_error(f"Failed to create conversation: {conv_result.get('message')}")
         result.errors.append(f"create_conversation: {conv_result.get('message')}")
         return result

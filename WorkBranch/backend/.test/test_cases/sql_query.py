@@ -136,7 +136,7 @@ async def run_sql_query_test(api: APIClient, scenario_config: dict, verbose: boo
         
         print_step(2, "Creating session...", Colors.CYAN)
         session_result = await api.create_session(title="SQL Query Test")
-        if session_result.get("code") != 0:
+        if not session_result.get("success", True):
             print_error(f"Failed to create session: {session_result.get('message')}")
             result.errors.append(f"create_session: {session_result.get('message')}")
             return result
@@ -148,7 +148,7 @@ async def run_sql_query_test(api: APIClient, scenario_config: dict, verbose: boo
         print_step(3, "Creating conversation with SQL query...", Colors.CYAN)
         question = f"请查询数据库 {db_name} 中 orders 表的所有记录，并统计各类别的销售总额"
         conv_result = await api.create_conversation(session_id, question)
-        if conv_result.get("code") != 0:
+        if not conv_result.get("success", True):
             print_error(f"Failed to create conversation: {conv_result.get('message')}")
             result.errors.append(f"create_conversation: {conv_result.get('message')}")
             return result
@@ -201,7 +201,7 @@ async def run_sql_agent_bridge_test(api: APIClient, scenario_config: dict, verbo
     
     print_step(1, "Creating session...", Colors.CYAN)
     session_result = await api.create_session(title="SQL Agent Bridge Test")
-    if session_result.get("code") != 0:
+    if not session_result.get("success", True):
         print_error(f"Failed to create session: {session_result.get('message')}")
         result.errors.append(f"create_session: {session_result.get('message')}")
         return result
@@ -213,7 +213,7 @@ async def run_sql_agent_bridge_test(api: APIClient, scenario_config: dict, verbo
     print_step(2, "Creating conversation with SQL agent bridge query...", Colors.CYAN)
     prompt = scenario_config.get("prompt", "我需要统计智慧管养系统中桥梁基础数据的总数，需要调用工具查数据库")
     conv_result = await api.create_conversation(session_id, prompt)
-    if conv_result.get("code") != 0:
+    if not conv_result.get("success", True):
         print_error(f"Failed to create conversation: {conv_result.get('message')}")
         result.errors.append(f"create_conversation: {conv_result.get('message')}")
         return result
