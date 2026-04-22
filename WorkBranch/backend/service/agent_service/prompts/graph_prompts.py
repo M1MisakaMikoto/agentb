@@ -146,7 +146,7 @@ PLAN_MODE_SYSTEM_PROMPT = """你现在的职责是作为规划代理，围绕当
   "kind": "tool",
   "tool_name": "工具名",
   "tool_args": {"参数名": "参数值"},
-  "task_description": "这一步要做什么"
+  "task_description": "调用当前步骤的原因"
 }
 
 2. 计划已完成：

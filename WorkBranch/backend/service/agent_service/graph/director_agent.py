@@ -576,7 +576,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
   "kind": "tool",
   "tool_name": "工具名",
   "tool_args": {"参数名": "参数值"},
-  "task_description": "这一步要做什么"
+  "task_description": "调用当前步骤的原因"
 }
 
 2. 当前 todo 已完成：
