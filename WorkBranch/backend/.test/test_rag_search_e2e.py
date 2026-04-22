@@ -32,9 +32,10 @@ import httpx
 
 BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+WORKBRANCH_ROOT = PROJECT_ROOT / "WorkBranch"
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 SETTINGS_PATH = PROJECT_ROOT / "setting.json"
-RAG_DIR = PROJECT_ROOT / "WorkBranch" / "rag"
+RAG_DIR = WORKBRANCH_ROOT / "rag"
 RAG_META_DB = RAG_DIR / "file_meta.sqlite3"
 DOCS_ROOT = PROJECT_ROOT / "DOCS"
 
@@ -523,8 +524,9 @@ async def create_test_knowledge_base() -> tuple[int, dict]:
 async def ingest_test_documents(kb_id: int, doc_ids: List[int]):
     """导入测试文档到向量数据库"""
     try:
-        if str(RAG_DIR) not in sys.path:
-            sys.path.insert(0, str(RAG_DIR))
+        # "from rag..." 需要把 WorkBranch 加入 sys.path，而不是 WorkBranch/rag
+        if str(WORKBRANCH_ROOT) not in sys.path:
+            sys.path.insert(0, str(WORKBRANCH_ROOT))
         from rag.service.ingestion.ingestion_service import IngestionService
         
         ingestion = IngestionService()
