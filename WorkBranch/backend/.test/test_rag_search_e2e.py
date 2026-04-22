@@ -275,10 +275,10 @@ class APIClient:
         return await self._request("GET", f"/session/conversations/{conversation_id}")
 
     async def stream_message(self, conversation_id: str):
-        url = f"{self.base_url}/session/conversations/{conversation_id}/messages/stream"
+        url = f"{self.base_url}/session/conversations/{conversation_id}/stream"
         timeout = httpx.Timeout(connect=30.0, read=None, write=300.0, pool=300.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream("POST", url, headers=self._json_headers()) as response:
+            async with client.stream("GET", url, headers=self._json_headers()) as response:
                 if response.status_code != 200:
                     try:
                         error_body = await response.aread()
