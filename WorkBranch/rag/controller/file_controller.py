@@ -301,6 +301,20 @@ def get_document(document_id: int) -> dict:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@router.get("/api/documents/{document_id}/file")
+def get_document_file(document_id: int) -> dict:
+    try:
+        detail_do = FILE_META_DAO.get_document_detail(document_id)
+        payload = FILE_SYSTEM_SERVICE.read_file(path=detail_do.document.storage_key)
+        return FILE_RESPONSE_ASSEMBLER.to_read_vo(payload).model_dump()
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except IsADirectoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.put("/api/documents/{document_id}")
 def update_document(document_id: int, payload: DocumentUpdateRequestDTO) -> dict:
     try:
@@ -403,7 +417,7 @@ def list_files(path: str = Query(default="", description="Relative directory pat
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.get("/api/file")
+@router.get("/api/file", deprecated=True)
 def read_file(path: str = Query(..., description="Relative file path")) -> dict:
     try:
         payload = FILE_SYSTEM_SERVICE.read_file(path=path)
@@ -454,6 +468,4 @@ def delete_file(path: str = Query(..., description="Relative file or directory p
         raise HTTPException(status_code=404, detail=str(exc))
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
-
 

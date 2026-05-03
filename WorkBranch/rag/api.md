@@ -32,6 +32,7 @@
   - 上传后会触发 ingestion
 - `GET /rag/api/documents?category_id=&keyword=&page=1&size=20`
 - `GET /rag/api/documents/{document_id}`
+- `GET /rag/api/documents/{document_id}/file`（直接按文档 ID 返回文件内容）
 - `PUT /rag/api/documents/{document_id}`
   - body: `{ "display_name": "string" }`
 - `DELETE /rag/api/documents/{document_id}`
@@ -49,7 +50,7 @@
 - `GET /rag/api/jobs/{job_id}`
 ## 8. 文件系统兼容接口（DOCS 目录）
 - `GET /rag/api/files?path=` 列目录
-- `GET /rag/api/file?path=` 读文件
+- `GET /rag/api/file?path=` 读文件（已弃用，建议改用 `GET /rag/api/documents/{document_id}/file`）
 - `POST /rag/api/file` 创建文件或目录
   - body:
     ```json
