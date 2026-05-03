@@ -205,8 +205,8 @@ class RAG_service:
                     fused_score = vector_score
 
                 score = fused_score if request.use_rerank else vector_score
-
-                if request.min_score is not None and score < request.min_score:
+                threshold_score = vector_score
+                if request.min_score is not None and threshold_score < request.min_score:
                     continue
 
                 source = str(metadata.get("source", ""))
