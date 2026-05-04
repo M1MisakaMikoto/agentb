@@ -19,7 +19,7 @@ import shutil
 import fnmatch
 
 from .decision.complexity_analyzer import ExecutionMode
-from ..agent_graphs import AGENT_GRAPH_CONFIG
+from .agent_config import AGENT_GRAPH_CONFIG
 from ..state import AgentState
 from .subgraphs.tool_registry import (
     is_tool_allowed, get_allowed_tools, _write_tool_event

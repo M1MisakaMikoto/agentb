@@ -548,13 +548,34 @@ def _execute_subagent_tool(
     config: dict,
 ) -> dict:
     """
-    执行子代理工具 - 实现嵌套流式输出
+    执行子代理工具 - 实现真正的嵌套流式输出
     
     输出流程：
     1. 发送 subagent_start 事件
-    2. 调用 run_agent_graph 执行子代理（子代理内部会发送 thinking/chat 等事件）
-    3. 发送 subagent_end 事件
+    2. 创建包装后的 send_message 函数
+    3. 调用 run_agent_graph 执行子代理（子代理内部会发送 thinking/chat 等事件）
+    4. 所有子代理事件会被包装成嵌套结构后发送
+    5. 发送 subagent_end 事件
+    
+    嵌套结构示例：
+    {
+      "type": "subagent_explore_delta",     // 外层：子代理 delta 事件类型
+      "content": {                           // 外层 content：完整嵌套子代理事件
+        "role": "assistant",
+        "type": "thinking_delta",            // 内层：子代理实际事件类型
+        "content": "xxx",                    // 内层 content：子代理实际内容
+        "timestamp": "xxx",
+        "metadata": {...}
+      },
+      "timestamp": "xxx",
+      "metadata": {
+        "task_description": "...",
+        "is_delta": true
+      }
+    }
     """
+    from datetime import datetime
+    
     subagent_type = config.get("subagent_type")
     actual_task_description = tool_args.get("task_description") or task_description
 
@@ -575,7 +596,54 @@ def _execute_subagent_tool(
 
     send_message = message_context.get("send_message") if message_context else None
 
+    def create_wrapped_send_message(original_send_message):
+        """创建包装后的 send_message 函数，实现真正的嵌套"""
+        
+        def wrapped_send_message(content, event_type, metadata=None):
+            """
+            包装后的发送函数
+            
+            将子代理的事件包装成嵌套结构：
+            - 外层：subagent_xxx_delta 事件
+            - 内层：原始的子代理事件完整结构
+            """
+            if not original_send_message:
+                return
+            
+            timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+            
+            inner_event = {
+                "role": "explore_subagent" if "explore" in subagent_type else "review_subagent",
+                "type": event_type.value if hasattr(event_type, 'value') else str(event_type),
+                "content": content,
+                "timestamp": timestamp,
+                "metadata": metadata or {}
+            }
+            
+            outer_metadata = {
+                "task_description": actual_task_description,
+                "subagent_type": subagent_type,
+                "is_delta": True
+            }
+            
+            if metadata:
+                if metadata.get("is_start"):
+                    outer_metadata["is_start"] = True
+                    outer_metadata.pop("is_delta", None)
+                elif metadata.get("is_end"):
+                    outer_metadata["is_end"] = True
+                    outer_metadata.pop("is_delta", None)
+            
+            original_send_message(
+                inner_event,           # content 参数：完整的内层事件
+                config["delta_type"],  # event_type 参数：使用配置的 delta_type
+                outer_metadata         # metadata 参数：外层的元数据
+            )
+        
+        return wrapped_send_message
+
     if send_message:
+        wrapped_send_message = create_wrapped_send_message(send_message)
         send_message("", config["start_type"], {
             "task_description": actual_task_description,
             "subagent_type": subagent_type,
@@ -584,6 +652,10 @@ def _execute_subagent_tool(
 
     try:
         from ..agent_graphs import run_agent_graph
+        
+        wrapped_message_context = dict(message_context) if message_context else {}
+        if send_message and wrapped_message_context:
+            wrapped_message_context["send_message"] = wrapped_send_message
 
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
@@ -596,7 +668,7 @@ def _execute_subagent_tool(
                 "accumulate",
                 3,
                 settings_service,
-                message_context,
+                wrapped_message_context,
                 parent_chain_messages,
                 current_conversation_messages,
                 False,
