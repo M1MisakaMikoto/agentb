@@ -15,7 +15,7 @@ import fnmatch
 from ...state import ToolExecutionState, ToolCall
 from ...tools.todo_tools import update_todo
 from ...tools.rag_tool import execute_rag_search
-from ...tools.document_tools import execute_read_document
+from ...tools.document_tools import execute_document
 from ...tools.sql_tools import execute_sql_query
 from .tool_registry import (
     FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS, SQL_TOOLS,
@@ -291,7 +291,9 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
         elif tool_name == "rag_search":
             tool_result = execute_rag_search(tool_args)
         elif tool_name == "read_document":
-            tool_result = execute_read_document(tool_args)
+            tool_result = execute_document({**tool_args, "operation": "r"})
+        elif tool_name == "document":
+            tool_result = execute_document(tool_args)
         elif tool_name == "sql_query":
             tool_result = execute_sql_query(tool_args)
         elif tool_name == "update_todo":

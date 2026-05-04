@@ -141,8 +141,13 @@ ALL_TOOLS = {
     },
     "read_document": {
         "name": "read_document",
-        "description": "读取PDF、Word、Excel文档内容，支持分页读取和元数据提取",
-        "params": 'read_document:{"file_path":"(文档路径)","start_idx":"(起始索引，从第几个字符开始读，默认0)","max_length":"(最大读取字符数，默认10000)","include_metadata":"(是否包含元数据，默认true)"}'
+        "description": "[兼容]读取PDF、Word、Excel文档内容（推荐使用document工具）",
+        "params": 'read_document:{"file_path":"(文档路径)","start_idx":"(起始索引，默认0)","max_length":"(最大长度，默认10000)","include_metadata":"(含元数据，默认true)"}'
+    },
+    "document": {
+        "name": "document",
+        "description": "统一文档操作工具(类似fopen)，支持PDF/DOC/DOCX/XLS/XLSX的读写追加修改。r=读 w=写 a=追加 u=修改",
+        "params": 'document:{"operation":"(必填)r|w|a|u","file_path":"(必填)文档路径","content":"(文本内容, PDF/Word用)","data":"(JSON数组, Excel用, 如{\\"Sheet1\\":[[行1],[行2]]})","target":"(update定位, 如段落索引/单元格A1)","field":"(字段类型, paragraph/metadata/cell)","metadata":"(文档元数据, {author,title})","start_idx":"(读取起始位置)","max_length":"(最大读取长度)","include_metadata":"(是否包含元数据)"}'
     },
     "sql_query": {
         "name": "sql_query",
@@ -158,5 +163,5 @@ SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent"}
 TODO_TOOLS = {"update_todo"}
 RAG_TOOLS = {"rag_search"}
 WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}
-DOCUMENT_TOOLS = {"read_document"}
+DOCUMENT_TOOLS = {"document", "read_document"}
 SQL_TOOLS = {"sql_query"}
