@@ -11,7 +11,7 @@ from rag.DAO.document_meta_dao import DocumentMetaDAO
 from rag.DAO.RAG_DAO import RAG_DAO
 from rag.DAO.base_dao import BaseRAGDAO
 from rag.DAO.knowledge_base_dao import KnowledgeBaseDAO
-from rag.service.ingestion.embedding_engine.bge_embedding_engine import BgeEmbeddingEngine
+from rag.service.ingestion.embedding_engine.OllamaEmbeddingEngine import OllamaEmbeddingEngine
 from rag.service.rerank_strategy import (
     ChunkDocTwoStageRerankStrategy,
     ChunkScoreRerankStrategy,
@@ -40,7 +40,7 @@ class RAG_service:
     ) -> None:
         self.dao = dao or RAG_DAO()
         self.document_meta_dao = document_meta_dao or DocumentMetaDAO()
-        self.embedding_engine = BgeEmbeddingEngine()
+        self.embedding_engine = OllamaEmbeddingEngine(base_url="http://127.0.0.1:11434", model="bge-m3:latest")
         self.rerank_registry = RerankStrategyRegistry()
         self.rerank_registry.register(ChunkScoreRerankStrategy())
         self.rerank_registry.register(ChunkDocTwoStageRerankStrategy())
@@ -205,8 +205,8 @@ class RAG_service:
                     fused_score = vector_score
 
                 score = fused_score if request.use_rerank else vector_score
-
-                if request.min_score is not None and score < request.min_score:
+                threshold_score = vector_score
+                if request.min_score is not None and threshold_score < request.min_score:
                     continue
 
                 source = str(metadata.get("source", ""))

@@ -341,7 +341,7 @@
         setPrimaryCategoryId(primary ? String(primary.id) : (cats[0] ? String(cats[0].id) : ""));
 
         try {
-          const fileData = await api(`${API_BASE}/file?path=${encodeURIComponent(doc.storage_key)}`);
+          const fileData = await api(`${API_BASE}/documents/${doc.id}/file`);
           setDocContent(fileData.content || "");
         } catch {
           setDocContent("");

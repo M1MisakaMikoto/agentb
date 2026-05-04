@@ -28,6 +28,9 @@ class FileMetaDAO:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         try:
             yield conn
             conn.commit()
@@ -121,6 +124,15 @@ class FileMetaDAO:
                     FOREIGN KEY(document_id) REFERENCES documents(id)
                 )
                 """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documents_status_updated_at ON documents(status, updated_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documents_tenant_status_updated_at ON documents(tenant_id, status, updated_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_document_category_map_category_doc ON document_category_map(category_id, document_id)"
             )
         # 知识库隔离：幂等迁移（knowledge_bases �?+ documents.kb_id 列）
         from rag.DAO.knowledge_base_dao import KnowledgeBaseDAO

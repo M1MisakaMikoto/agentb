@@ -6,7 +6,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import sqlite_vec
 from sqlite_vec import serialize_float32
@@ -36,6 +36,9 @@ class SqliteVecDAO:
         
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         try:
             yield conn
             conn.commit()
@@ -153,8 +156,8 @@ class SqliteVecDAO:
         """
         query_blob = serialize_float32(query_vector)
         
-        sql_clauses = []
-        sql_params = []
+        sql_clauses: List[str] = []
+        sql_params: List[Any] = []
         
         # 处理过滤条件
         if kb_id is not None:
@@ -167,6 +170,11 @@ class SqliteVecDAO:
         if document_id is not None:
             sql_clauses.append("c.document_id = ?")
             sql_params.append(document_id)
+
+        extra_clauses, extra_params = self._build_where_filter_sql(where_filter)
+        if extra_clauses:
+            sql_clauses.extend(extra_clauses)
+            sql_params.extend(extra_params)
             
         where_sql = ""
         if sql_clauses:
@@ -215,6 +223,56 @@ class SqliteVecDAO:
             "documents": [documents],
             "metadatas": [metadatas],
         }
+
+    def _build_where_filter_sql(self, where_filter: Optional[Dict[str, Any]]) -> Tuple[List[str], List[Any]]:
+        if not where_filter:
+            return [], []
+
+        clauses: List[str] = []
+        params: List[Any] = []
+
+        def add_condition(key: str, value: Any) -> None:
+            if key == "document_id":
+                if isinstance(value, dict) and "$in" in value and isinstance(value["$in"], list) and value["$in"]:
+                    placeholders = ",".join(["?"] * len(value["$in"]))
+                    clauses.append(f"c.document_id IN ({placeholders})")
+                    params.extend([str(v) for v in value["$in"]])
+                elif value is not None:
+                    clauses.append("c.document_id = ?")
+                    params.append(str(value))
+                return
+
+            if key == "source_type":
+                json_path = "$.source_type"
+                if isinstance(value, dict) and "$in" in value and isinstance(value["$in"], list) and value["$in"]:
+                    placeholders = ",".join(["?"] * len(value["$in"]))
+                    clauses.append(f"json_extract(c.metadata, '{json_path}') IN ({placeholders})")
+                    params.extend([str(v) for v in value["$in"]])
+                elif value is not None:
+                    clauses.append(f"json_extract(c.metadata, '{json_path}') = ?")
+                    params.append(str(value))
+                return
+
+            json_path = f"$.{key}"
+            if isinstance(value, dict) and "$in" in value and isinstance(value["$in"], list) and value["$in"]:
+                placeholders = ",".join(["?"] * len(value["$in"]))
+                clauses.append(f"json_extract(c.metadata, '{json_path}') IN ({placeholders})")
+                params.extend([str(v) for v in value["$in"]])
+            elif value is not None:
+                clauses.append(f"json_extract(c.metadata, '{json_path}') = ?")
+                params.append(str(value))
+
+        if "$and" in where_filter and isinstance(where_filter["$and"], list):
+            for sub in where_filter["$and"]:
+                if isinstance(sub, dict):
+                    for k, v in sub.items():
+                        add_condition(str(k), v)
+            return clauses, params
+
+        for k, v in where_filter.items():
+            add_condition(str(k), v)
+
+        return clauses, params
 
     def delete_doc(self, document_id: str) -> int:
         """
