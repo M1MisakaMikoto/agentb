@@ -386,9 +386,12 @@ def _execute_special_tool(
 
     if tool_name == "thinking":
         return _execute_thinking_tool(tool_name, tool_args, task_description, llm_service, message_context, config)
-    
+
     if tool_name == "chat":
         return _execute_chat_tool(tool_name, tool_args, task_description, llm_service, message_context, config)
+
+    if config.get("is_subagent"):
+        return _execute_subagent_tool(tool_name, tool_args, task_description, llm_service, message_context, config)
 
     return {"result": f"特殊工具 {tool_name} 未实现", "error": f"Special tool {tool_name} not implemented"}
 
@@ -534,6 +537,126 @@ def _execute_chat_tool(
                 "error": str(e)
             })
         return {"result": f"回复失败: {e}", "error": str(e)}
+
+
+def _execute_subagent_tool(
+    tool_name: str,
+    tool_args: dict,
+    task_description: str,
+    llm_service,
+    message_context: dict,
+    config: dict,
+) -> dict:
+    """
+    执行子代理工具 - 实现嵌套流式输出
+    
+    输出流程：
+    1. 发送 subagent_start 事件
+    2. 调用 run_agent_graph 执行子代理（子代理内部会发送 thinking/chat 等事件）
+    3. 发送 subagent_end 事件
+    """
+    subagent_type = config.get("subagent_type")
+    actual_task_description = tool_args.get("task_description") or task_description
+
+    print(f"[SubAgent] {tool_name}: {actual_task_description}")
+
+    workspace_id = None
+    parent_chain_messages = []
+    current_conversation_messages = []
+    settings_service = None
+    if message_context:
+        workspace_id = message_context.get("workspace_id")
+        parent_chain_messages = message_context.get("parent_chain_messages") or []
+        current_conversation_messages = message_context.get("current_conversation_messages") or []
+        settings_service = message_context.get("settings_service")
+
+    if not workspace_id:
+        return {"result": None, "error": "缺少 workspace_id"}
+
+    send_message = message_context.get("send_message") if message_context else None
+
+    if send_message:
+        send_message("", config["start_type"], {
+            "task_description": actual_task_description,
+            "subagent_type": subagent_type,
+            "is_start": True
+        })
+
+    try:
+        from ..agent_graphs import run_agent_graph
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                run_agent_graph,
+                subagent_type,
+                actual_task_description,
+                workspace_id,
+                llm_service,
+                None,
+                "accumulate",
+                3,
+                settings_service,
+                message_context,
+                parent_chain_messages,
+                current_conversation_messages,
+                False,
+            )
+
+            try:
+                outcome = future.result(timeout=SPECIAL_TOOL_TIMEOUT_SECONDS)
+            except FutureTimeoutError:
+                future.cancel()
+                outcome = {
+                    "kind": "graph",
+                    "status": "failed",
+                    "payload": None,
+                    "produced_user_reply": False,
+                    "exit_info": {
+                        "code": "subgraph_timeout",
+                        "message": f"{subagent_type} 子图执行超时",
+                        "details": {
+                            "agent_type": subagent_type,
+                            "timeout_seconds": SPECIAL_TOOL_TIMEOUT_SECONDS
+                        },
+                    },
+                }
+
+        if send_message:
+            if outcome.get("status") == "failed":
+                exit_info = outcome.get("exit_info") or {}
+                send_message("", config["end_type"], {
+                    "task_description": actual_task_description,
+                    "subagent_type": subagent_type,
+                    "is_end": True,
+                    "error": exit_info.get("message") or exit_info.get("code"),
+                    "outcome": outcome
+                })
+            else:
+                send_message("", config["end_type"], {
+                    "task_description": actual_task_description,
+                    "subagent_type": subagent_type,
+                    "is_end": True,
+                    "result": outcome.get("payload"),
+                    "outcome": outcome
+                })
+
+        if outcome.get("status") == "failed":
+            exit_info = outcome.get("exit_info") or {}
+            error_msg = exit_info.get("message") or exit_info.get("code") or "子代理执行失败"
+            return {"result": None, "error": error_msg, "outcome": outcome}
+
+        result = outcome.get("payload") or ""
+        return {"result": result, "error": None, "outcome": outcome}
+
+    except Exception as e:
+        if send_message:
+            send_message("", config["end_type"], {
+                "task_description": actual_task_description,
+                "subagent_type": subagent_type,
+                "is_end": True,
+                "error": str(e)
+            })
+        return {"result": None, "error": f"子代理执行失败: {str(e)}"}
 
 
 def _execute_read_file(tool_args: dict) -> dict:

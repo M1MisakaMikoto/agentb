@@ -22,6 +22,14 @@ class SegmentType(Enum):
     PLAN_DELTA = "plan_delta"
     PLAN_END = "plan_end"
     
+    SUBAGENT_EXPLORE_START = "subagent_explore_start"
+    SUBAGENT_EXPLORE_DELTA = "subagent_explore_delta"
+    SUBAGENT_EXPLORE_END = "subagent_explore_end"
+    
+    SUBAGENT_REVIEW_START = "subagent_review_start"
+    SUBAGENT_REVIEW_DELTA = "subagent_review_delta"
+    SUBAGENT_REVIEW_END = "subagent_review_end"
+    
     STATE_CHANGE = "state_change"
     TOOL_CALL = "tool_call"
     TOOL_RES = "tool_res"

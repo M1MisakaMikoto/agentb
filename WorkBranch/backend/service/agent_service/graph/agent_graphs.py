@@ -73,9 +73,11 @@ AGENT_GRAPH_CONFIG = {
     },
     "explore_agent": {
         "execution_mode": ExecutionMode.DIRECT,
+        "system_prompt_key": "EXPLORE",
     },
     "review_agent": {
         "execution_mode": ExecutionMode.DIRECT,
+        "system_prompt_key": "REVIEW",
     },
 }
 
@@ -177,15 +179,6 @@ def create_agent_graph(
     settings_service=None,
     message_context: dict = None,
 ):
-    if agent_type in {"explore_agent", "review_agent"}:
-        return create_child_agent_graph(
-            agent_type=agent_type,
-            llm_service=llm_service,
-            token_callback=token_callback,
-            settings_service=settings_service,
-            message_context=message_context,
-        )
-
     return create_orchestrator_graph_v3(
         llm_service=llm_service,
         token_callback=token_callback,
