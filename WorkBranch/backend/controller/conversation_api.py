@@ -5,7 +5,7 @@ import traceback
 from typing import Any, AsyncGenerator, Optional
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
 from controller.VO.result import Result
@@ -13,6 +13,7 @@ from core.logging import bind_ctx, get_ctx
 from singleton import get_logging_runtime, get_message_queue, get_conversation_service
 from service.session_service.mq import MessageQueue
 from service.session_service.canonical import SegmentType, Message
+from raw_streaming_response import RawStreamingResponse
 from service.session_service.message_content import MessageContentError, normalize_user_content
 
 router = APIRouter(prefix="/session/conversations", tags=["conversations"])
@@ -112,6 +113,7 @@ async def stream_conversation_message(
     stream_state = mq.get_stream_state(conversation_id)
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        
         stream_start = time.perf_counter()
         first_chunk_logged = False
         done_received = False
@@ -145,16 +147,52 @@ async def stream_conversation_message(
 
                 await mq.start_consumer()
                 subscriber = mq.subscribe(conversation_id, last_seq=last_seq)
+                
+                print(f"[DEBUG] stream_state: {stream_state}, last_seq: {last_seq}, state: {conversation.get('state')}")
 
                 if last_seq == 0 and conversation.get("state") != "running":
-                    asyncio.create_task(service.send_message(conversation_id))
+                    print(f"[DEBUG] Creating send_message task for conversation {conversation_id}, state={conversation.get('state')}")
+                    logger.info(
+                        event="send_message_task_creating",
+                        msg="creating send_message task",
+                        extra={"conversation_id": conversation_id, "state": conversation.get("state")},
+                    )
+                    task = asyncio.create_task(service.send_message(conversation_id))
+                    def task_callback(t):
+                        try:
+                            exc = t.exception()
+                            if exc:
+                                logger.error(
+                                    event="send_message_task_failed",
+                                    msg=f"send_message task failed: {exc}",
+                                    extra={"conversation_id": conversation_id}
+                                )
+                            else:
+                                logger.info(
+                                    event="send_message_task_completed",
+                                    msg="send_message task completed",
+                                    extra={"conversation_id": conversation_id}
+                                )
+                        except asyncio.CancelledError:
+                            logger.warning(
+                                event="send_message_task_cancelled",
+                                msg="send_message task was cancelled",
+                                extra={"conversation_id": conversation_id}
+                            )
+                    task.add_done_callback(task_callback)
 
+                print(f"[STREAM-DEBUG] Starting main loop, done_received={done_received}, timeout_counter={timeout_counter}")
+                
                 while not done_received and timeout_counter < max_timeout:
                     try:
+                        print(f"[STREAM-DEBUG] Waiting for message (timeout=5s, iteration #{timeout_counter+1})...")
+                        
                         message, seq = await asyncio.wait_for(
                             subscriber.get(),
                             timeout=5.0,
                         )
+                        
+                        print(f"[STREAM-DEBUG] ✓ Got message: type={message.type}, seq={seq}")
 
                         event_data = message.to_dict()
                         event_data["seq"] = seq
@@ -171,6 +209,7 @@ async def stream_conversation_message(
                             first_chunk_logged = True
 
                         yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+                        print(f"[STREAM-DEBUG] ✓ Yielded message to client")
 
                         if message.type == SegmentType.DONE:
                             done_received = True
@@ -187,6 +226,7 @@ async def stream_conversation_message(
 
                     except asyncio.TimeoutError:
                         timeout_counter += 1
+                        print(f"[STREAM-DEBUG] ✗ Timeout #{timeout_counter}, sending heartbeat")
                         yield ": heartbeat\n\n"
 
                         current = await service.get_conversation(conversation_id)
@@ -252,4 +292,10 @@ async def stream_conversation_message(
                 if subscriber is not None:
                     mq.unsubscribe(conversation_id, subscriber)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return RawStreamingResponse(
+        event_generator(),
+        status_code=200,
+        headers={
+            "X-Request-Id": request_ctx.get("request_id") or "",
+        },
+    )

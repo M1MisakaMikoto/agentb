@@ -170,6 +170,8 @@ class HybridMessageQueue:
             seq = self._get_next_seq(message.conversation_id)
             self._save_to_sqlite(message, seq)
             self._sync_queue.put_nowait((message, seq))
+            
+            print(f"[MQ] publish_sync: conv={message.conversation_id}, type={message.type.value}, seq={seq}, subscribers={len(self._subscribers.get(message.conversation_id, []))}")
 
             if message.type == SegmentType.DONE:
                 with self._stream_states_lock:
@@ -294,6 +296,8 @@ class HybridMessageQueue:
         with self._subscribers_lock:
             subscribers = self._subscribers.setdefault(conversation_id, [])
             subscribers.append(subscriber_queue)
+        
+        print(f"[MQ] subscribe: conv={conversation_id}, last_seq={last_seq}, total_subscribers={len(subscribers)}")
 
         if last_seq > 0:
             missed_messages = self.get_messages_after(conversation_id, last_seq)
@@ -329,10 +333,13 @@ class HybridMessageQueue:
     def _publish_to_subscribers(self, message: Message, seq: int) -> None:
         with self._subscribers_lock:
             subscribers = list(self._subscribers.get(message.conversation_id, []))
+        print(f"[MQ] _publish_to_subscribers: conv={message.conversation_id}, type={message.type.value}, seq={seq}, subscribers_count={len(subscribers)}")
         for subscriber in subscribers:
             try:
                 subscriber.put_nowait((message, seq))
+                print(f"[MQ] Message put into subscriber queue")
             except asyncio.QueueFull:
+                print(f"[MQ] Queue full, skipping subscriber")
                 continue
 
     async def start_consumer(self) -> None:
@@ -360,11 +367,14 @@ class HybridMessageQueue:
         self._sync_bridge_thread.start()
 
     def _sync_bridge_loop(self) -> None:
+        print(f"[MQ Bridge] Starting sync bridge loop")
         while self._sync_bridge_running:
             try:
                 item = self._sync_queue.get(timeout=0.1)
                 message, seq = item
+                print(f"[MQ Bridge] Got message: type={message.type.value}, seq={seq}")
                 if self._main_loop and self._main_loop.is_running():
+                    print(f"[MQ Bridge] Dispatching to subscribers")
                     self._main_loop.call_soon_threadsafe(
                         lambda m=message, s=seq: self._main_loop.create_task(
                             self._dispatch_to_subscribers(m, s)
@@ -373,6 +383,7 @@ class HybridMessageQueue:
             except queue.Empty:
                 continue
             except Exception as e:
+                print(f"[MQ Bridge] Error: {e}")
                 self._log_event("ERROR", "mq.bridge.error", f"Bridge error: {e}")
 
     async def _dispatch_to_subscribers(self, message: Message, seq: int) -> None:

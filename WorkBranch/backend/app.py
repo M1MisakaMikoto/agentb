@@ -300,7 +300,8 @@ async def ingest_frontend_log(request: Request, body: FrontendLogBody) -> Result
     return Result.success()
 
 
-@app.middleware("http")
+# 临时注释以测试流式响应 - logging_middleware (BaseHTTPMiddleware) 会缓冲
+# @app.middleware("http")
 async def logging_middleware(request: Request, call_next):
     runtime = get_logging_runtime()
     logger = runtime.get_logger("api")

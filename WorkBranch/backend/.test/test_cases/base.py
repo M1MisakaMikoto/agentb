@@ -50,7 +50,7 @@ def safe_print(text: str):
 
 
 def get_project_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    return Path(__file__).resolve().parents[4]
 
 
 def load_config(config_path: Optional[str] = None) -> Dict:

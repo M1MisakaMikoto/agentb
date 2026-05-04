@@ -152,25 +152,33 @@ async def run_workspace_upload_read_document_test(
         return result
     
     session_id = session_result.get("data", {}).get("id")
+    workspace_id = session_result.get("data", {}).get("workspace_id")
     result.session_id = session_id
     print_success(f"Session created: {session_id}")
+    print_success(f"Workspace ID: {workspace_id}")
     
-    print_step(2, "Creating conversation with document upload...", Colors.CYAN)
+    print_step(2, "Uploading file to workspace...", Colors.CYAN)
     source_files = scenario_config.get("source_files", [".dev/table/城市桥梁养护技术规程（标准文本）.pdf"])
     prompt = scenario_config.get("prompt", "请读取文档并总结内容。")
     
     try:
-        file_parts = []
+        uploaded_files = []
         for source_file in source_files:
             file_path = resolve_source_file(source_file)
-            file_parts.append({"type": "file", "path": str(file_path)})
-        
-        user_content_parts = [{"type": "text", "text": prompt}] + file_parts
-        conv_result = await api.create_conversation(session_id, prompt, user_content_parts=user_content_parts)
+            upload_result = await api.upload_workspace_file(workspace_id, file_path)
+            if not upload_result.get("success", True):
+                print_error(f"Failed to upload file: {upload_result.get('message')}")
+                result.errors.append(f"upload_file: {upload_result.get('message')}")
+                return result
+            uploaded_files.append(file_path.name)
+            print_success(f"Uploaded: {file_path.name}")
     except FileNotFoundError as e:
         print_error(str(e))
         result.errors.append(str(e))
         return result
+    
+    print_step(3, "Creating conversation with document prompt...", Colors.CYAN)
+    conv_result = await api.create_conversation(session_id, prompt)
     
     if not conv_result.get("success", True):
         print_error(f"Failed to create conversation: {conv_result.get('message')}")
@@ -178,23 +186,20 @@ async def run_workspace_upload_read_document_test(
         return result
     
     conversation_id = conv_result.get("data", {}).get("conversation_id")
-    workspace_id = conv_result.get("data", {}).get("workspace_id")
     result.conversation_id = conversation_id
-    result.workspace_id = workspace_id
     print_success(f"Conversation created: {conversation_id}")
-    print_dim(f"Workspace ID: {workspace_id}")
     
-    print_step(3, "Waiting for conversation to be processing...", Colors.CYAN)
+    print_step(4, "Waiting for conversation to be processing...", Colors.CYAN)
     await wait_for_conversation_state(api, conversation_id, "processing", timeout=10.0)
     
-    print_step(4, "Streaming response...", Colors.CYAN)
+    print_step(5, "Streaming response...", Colors.CYAN)
     await collect_stream_output(api, conversation_id, result, verbose=verbose)
     
-    print_step(5, "Waiting for conversation to complete...", Colors.CYAN)
+    print_step(6, "Waiting for conversation to complete...", Colors.CYAN)
     final_result = await wait_for_conversation_state(api, conversation_id, "completed", timeout=300.0)
     result.response_text = extract_response_text(final_result)
     
-    print_step(6, "Validating results...", Colors.CYAN)
+    print_step(7, "Validating results...", Colors.CYAN)
     
     if "read_document" in result.tool_calls:
         print_success("read_document tool was called")

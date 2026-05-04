@@ -15,6 +15,7 @@ __pycache__/
 node_modules/
 
 .temp/
+.qoder/
 
 *.db
 logs/
@@ -28,3 +29,25 @@ WorkBranch/models--BAAI--bge-m3/
 workspaces/
 WorkBranch/backend/service/agent_service/tools/sql_tools_config.json
 data/
+
+# Server logs (uvicorn/gunicorn)
+server*.log
+server*.err
+
+# Debug/test scripts (temporary)
+test_*.py
+test_*.bat
+run_server*.py
+!run_server.py
+
+# Nginx temporary files
+nginx.conf
+nginx.zip
+nginx/
+mime.types
+
+# Test artifacts and temp data
+*.json.bak
+prediction_test_result.json
+conversation_export.json
+*_plan.md
