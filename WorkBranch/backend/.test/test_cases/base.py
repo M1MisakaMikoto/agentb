@@ -167,6 +167,8 @@ class TestResult:
         self.session_id: Optional[int] = None
         self.detected_mode: Optional[str] = None
         self.detected_modes: List[str] = []
+        self.next_conversation_id: Optional[str] = None
+        self.response_text: str = ""
         self.raw_lines: List[str] = []
         self.done = False
         self.response_text = ""
@@ -345,7 +347,7 @@ class APIClient:
             path = self._get_endpoint("conversation", "stream", conversation_id=conversation_id)
             path = f"{path}?last_seq={last_seq}"
         
-        client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=5.0))
+        client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=None))
         try:
             method = "POST" if use_v2 else "GET"
             async with client.stream(method, f"{self.base_url}{path}", headers=self._headers()) as response:
@@ -459,6 +461,11 @@ async def collect_stream_output(
             
             item = await pending_item
             pending_item = None
+            
+            if item is None:
+                if verbose:
+                    print(f"{Colors.DIM}[skip] None item from stream{Colors.ENDC}")
+                continue
         except StopAsyncIteration:
             if verbose:
                 print(f"{Colors.GREEN}[StopAsyncIteration] Stream ended{Colors.ENDC}")
@@ -468,8 +475,8 @@ async def collect_stream_output(
                 print(f"{Colors.RED}[error] {e}{Colors.ENDC}")
             break
         
-        raw_line = item.get("raw_line", "")
-        if not raw_line.strip():
+        raw_line = item.get("raw_line", "") if isinstance(item, dict) else ""
+        if not raw_line or not raw_line.strip():
             continue
 
         if show_raw:
@@ -552,8 +559,9 @@ async def collect_stream_output(
                 print(f"{Colors.YELLOW}[plan_end] Plan generation completed{Colors.ENDC}")
         elif event_type == "conversation_handoff":
             metadata = data.get("metadata", {})
+            result.next_conversation_id = metadata.get("next_conversation_id")
             if verbose:
-                print(f"{Colors.HEADER}[conversation_handoff] auto_approved: {metadata.get('auto_approved')}, next_conversation_id: {metadata.get('next_conversation_id')}{Colors.ENDC}")
+                print(f"{Colors.HEADER}[conversation_handoff] auto_approved: {metadata.get('auto_approved')}, next_conversation_id: {result.next_conversation_id}{Colors.ENDC}")
         elif event_type == "done":
             result.done = True
             if verbose:
