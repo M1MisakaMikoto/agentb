@@ -73,7 +73,7 @@ class FileMetaDAO:
                     mime_type TEXT,
                     size_bytes INTEGER NOT NULL DEFAULT 0,
                     hash_sha256 TEXT,
-                    status TEXT NOT NULL DEFAULT 'ready',
+                    status TEXT NOT NULL DEFAULT 'queued',
                     created_by INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -132,7 +132,7 @@ class FileMetaDAO:
                 "CREATE INDEX IF NOT EXISTS idx_documents_tenant_status_updated_at ON documents(tenant_id, status, updated_at DESC)"
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_document_category_map_category_doc ON document_category_map(category_id, document_id)"
+                "CREATE INDEX IF NOT EXISTS idx_ingest_jobs_document_status_created_at ON ingest_jobs(document_id, status, created_at DESC)"
             )
         # 知识库隔离：幂等迁移（knowledge_bases �?+ documents.kb_id 列）
         from rag.DAO.knowledge_base_dao import KnowledgeBaseDAO
@@ -248,7 +248,7 @@ class FileMetaDAO:
                 INSERT INTO documents (
                     tenant_id, filename, display_name, storage_key, mime_type, size_bytes, hash_sha256,
                     status, created_by, created_at, updated_at, kb_id
-                ) VALUES (1, ?, ?, '', ?, ?, ?, 'ready', 1, ?, ?, ?)
+                ) VALUES (1, ?, ?, '', ?, ?, ?, 'queued', 1, ?, ?, ?)
                 """,
                 (display_name, display_name, mime, size, hash_sha, now, now, kb_id),
             )

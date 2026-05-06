@@ -50,7 +50,7 @@
 - `GET /rag/api/jobs/{job_id}`
 ## 8. 文件系统兼容接口（DOCS 目录）
 - `GET /rag/api/files?path=` 列目录
-- `GET /rag/api/file?path=` 读文件（已弃用，建议改用 `GET /rag/api/documents/{document_id}/file`）
+- `GET /rag/api/file?path=` 读文件（已弃用，建议改用 `GET /rag/api/documents/{document_id}/file`，计划下线日期：2026-06-30）
 - `POST /rag/api/file` 创建文件或目录
   - body:
     ```json
@@ -81,6 +81,11 @@
 - `rewrite_query` (bool)
 - `filters` (可选)
 - `kb_id` (可选)
+
+`recall_k` 召回窗口可通过环境变量调优（仅在 `use_rerank=true` 时生效）:
+- `RAG_RECALL_K_HYBRID_MULTIPLIER`（默认 `6`）
+- `RAG_RECALL_K_DENSE_MULTIPLIER`（默认 `3`）
+- `RAG_RECALL_K_MAX`（默认 `100`）
 
 `RAGSearchResponse` 关键字段:
 - `ok`, `trace_id`, `query`, `items`, `debug`, `error`

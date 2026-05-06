@@ -39,6 +39,8 @@ def _load_boost_weight() -> float:
 
 
 class TitleBoostRerankStrategy(BaseRerankStrategy):
+    order = 200
+    enabled = True
     BOOST_WEIGHT = 0.3
     MIN_MATCH_TOKENS = 1
 
