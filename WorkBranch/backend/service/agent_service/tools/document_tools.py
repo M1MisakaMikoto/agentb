@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import json
 import time
@@ -406,8 +406,34 @@ def _set_cell_text(cell, text, bold=False):
     run = cell.paragraphs[0].add_run(text)
     run.bold = bold
     run.font.name = 'SimSun'
-    run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+    _set_east_asia_font(run, 'SimSun')
     run.font.size = __import__('docx.shared').Pt(10.5)
+
+
+def _set_east_asia_font(run, font_name: str):
+    """安全地设置中文字体（兼容不同版本的 python-docx）"""
+    try:
+        from docx.oxml.ns import qn
+        run._element.rPr.rFonts.set(qn('w:eastAsia'), font_name)
+    except Exception:
+        pass
+
+
+def _check_memory_usage(threshold_mb: int = 512) -> bool:
+    """检查当前进程内存使用情况"""
+    try:
+        import psutil
+        import os
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        memory_mb = memory_info.rss / 1024 / 1024
+        
+        if memory_mb > threshold_mb:
+            print(f"[WARNING] 内存使用过高: {memory_mb:.1f}MB > {threshold_mb}MB")
+            return False
+        return True
+    except ImportError:
+        return True
 
 
 def _set_table_borders(table):
@@ -448,7 +474,7 @@ def _add_cover_page(doc, title, subtitle=None, date=None, company=None):
     run.bold = True
     run.font.size = Pt(26)
     run.font.name = 'SimHei'
-    run._element.rPr.rFonts.set('w:eastAsia', 'SimHei')
+    _set_east_asia_font(run, 'SimHei')
     
     if subtitle:
         doc.add_paragraph()
@@ -457,7 +483,7 @@ def _add_cover_page(doc, title, subtitle=None, date=None, company=None):
         run = sub_p.add_run(subtitle)
         run.font.size = Pt(16)
         run.font.name = 'SimSun'
-        run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+        _set_east_asia_font(run, 'SimSun')
     
     for _ in range(8):
         p = doc.add_paragraph()
@@ -475,23 +501,37 @@ def _add_cover_page(doc, title, subtitle=None, date=None, company=None):
         run = p.add_run(line)
         run.font.size = Pt(12)
         run.font.name = 'SimSun'
-        run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+        _set_east_asia_font(run, 'SimSun')
     
     doc.add_page_break()
 
 
-def _markdown_to_docx_content(markdown_text: str, doc) -> None:
+def _markdown_to_docx_content(markdown_text: str, doc, chunk_size: int = 500) -> None:
+    """
+    分块处理 Markdown 内容，避免大文档导致内存爆炸
+    
+    Args:
+        markdown_text: 完整的 Markdown 文本
+        doc: python-docx Document 对象
+        chunk_size: 每个块的最大行数（默认500行）
+    """
     try:
         import re
-        from docx.shared import Pt
+        import gc
+        from docx.shared import Pt, Cm
         from docx.enum.text import WD_ALIGN_PARAGRAPH
     except ImportError:
         pass
     
     lines = markdown_text.split("\n")
+    total_lines = len(lines)
+    
+    print(f"[DOCX] 开始处理文档，总行数: {total_lines}")
+    
     i = 0
     in_cover = False
     cover_data = {}
+    processed_chunks = 0
     
     while i < len(lines):
         line = lines[i]
@@ -526,26 +566,26 @@ def _markdown_to_docx_content(markdown_text: str, doc) -> None:
             heading = doc.add_heading(level=1)
             run = heading.add_run(text)
             run.font.name = 'SimHei'
-            run._element.rPr.rFonts.set('w:eastAsia', 'SimHei')
+            _set_east_asia_font(run, 'SimHei')
             heading.alignment = WD_ALIGN_PARAGRAPH.CENTER if i < 10 else None
         elif line.startswith("## "):
             text = line[3:].strip()
             heading = doc.add_heading(level=2)
             run = heading.add_run(text)
             run.font.name = 'SimHei'
-            run._element.rPr.rFonts.set('w:eastAsia', 'SimHei')
+            _set_east_asia_font(run, 'SimHei')
         elif line.startswith("### "):
             text = line[4:].strip()
             heading = doc.add_heading(level=3)
             run = heading.add_run(text)
             run.font.name = 'SimHei'
-            run._element.rPr.rFonts.set('w:eastAsia', 'SimHei')
+            _set_east_asia_font(run, 'SimHei')
         elif line.startswith("#### "):
             text = line[5:].strip()
             heading = doc.add_heading(level=4)
             run = heading.add_run(text)
             run.font.name = 'SimSun'
-            run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+            _set_east_asia_font(run, 'SimSun')
         elif line.startswith("---") or line.startswith("***"):
             pass
         elif line.startswith("- ") or line.startswith("* "):
@@ -557,7 +597,7 @@ def _markdown_to_docx_content(markdown_text: str, doc) -> None:
                 p = doc.add_paragraph(item, style='List Bullet')
                 for run in p.runs:
                     run.font.name = 'SimSun'
-                    run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+                    _set_east_asia_font(run, 'SimSun')
                     run.font.size = Pt(12)
             continue
         elif re.match(r'^\d+\.\s', line):
@@ -569,7 +609,7 @@ def _markdown_to_docx_content(markdown_text: str, doc) -> None:
                 p = doc.add_paragraph(item, style='List Number')
                 for run in p.runs:
                     run.font.name = 'SimSun'
-                    run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+                    _set_east_asia_font(run, 'SimSun')
                     run.font.size = Pt(12)
             continue
         elif line.startswith("|"):
@@ -608,10 +648,22 @@ def _markdown_to_docx_content(markdown_text: str, doc) -> None:
             p.paragraph_format.line_spacing = 1.5
             for run in p.runs:
                 run.font.name = 'SimSun'
-                run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+                _set_east_asia_font(run, 'SimSun')
                 run.font.size = Pt(12)
         
         i += 1
+        
+        processed_chunks += 1
+        
+        if processed_chunks % chunk_size == 0:
+            progress_pct = (i / total_lines) * 100
+            print(f"[DOCX] 处理进度: {progress_pct:.1f}% ({i}/{total_lines})")
+            
+            if not _check_memory_usage():
+                print("[WARNING] 内存使用较高，尝试垃圾回收...")
+                gc.collect()
+    
+    print(f"[DOCX] 文档处理完成，共处理 {i} 行")
 
 
 def _docx_write(file_path: str, content: str, metadata: Optional[dict] = None) -> dict:
@@ -656,7 +708,15 @@ def _docx_write(file_path: str, content: str, metadata: Optional[dict] = None) -
                 return _make_result(error="创建DOC需要LibreOffice支持，已生成DOCX版本")
         
         return _make_result({"message": f"Word文档创建成功: {file_path}"})
+    except MemoryError as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] DOCX写入内存不足:\n{error_detail}")
+        return _make_result(error=f"内存不足，文档内容过大 ({len(content)}字符)。建议：1) 减少文档内容 2) 分多次写入 3) 联系管理员调整内存限制")
     except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] DOCX写入失败详情:\n{error_detail}")
         return _make_result(error=f"Word文档写入失败: {str(e)}")
 
 

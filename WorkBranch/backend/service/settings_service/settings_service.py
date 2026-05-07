@@ -30,7 +30,7 @@ def _merge_missing_defaults(defaults, current):
 
     return merged, changed
 
-
+# 开发时 修改默认值后记得更新setting.json
 DEFAULT_SETTINGS = {
     "mysql": {
         "host": "localhost",
@@ -67,8 +67,8 @@ DEFAULT_SETTINGS = {
         "memory_mode": "accumulate",
         "memory_window_size": 3,
         "plan_auto_approve": True,
-        "tool_timeout_seconds": 60,
-        "special_tool_timeout_seconds": 120
+        "tool_timeout_seconds": 300,
+        "special_tool_timeout_seconds": 600
     },
     "logging": {
         "enabled": True,
