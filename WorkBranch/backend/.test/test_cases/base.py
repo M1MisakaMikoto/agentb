@@ -355,7 +355,7 @@ class APIClient:
             path = self._get_endpoint("conversation", "stream", conversation_id=conversation_id)
             path = f"{path}?last_seq={last_seq}"
         
-        client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=5.0))
+        client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, read=30.0))
         try:
             method = "POST" if use_v2 else "GET"
             async with client.stream(method, f"{self.base_url}{path}", headers=self._headers()) as response:
@@ -514,6 +514,10 @@ async def collect_stream_output(
                     retry_delay *= 2
                     break
                 
+                if item is None:
+                    if verbose:
+                        print(f"{Colors.YELLOW}[warning] Received None from stream iterator, skipping{Colors.ENDC}")
+                    continue
                 raw_line = item.get("raw_line", "")
                 if not raw_line.strip():
                     continue
