@@ -33,22 +33,6 @@ SPECIAL_TOOLS = {
         "delta_type": SegmentType.CHAT_DELTA,
         "end_type": SegmentType.CHAT_END,
         "content_field": "chat_content"
-    },
-    "call_explore_agent": {
-        "start_type": SegmentType.SUBAGENT_EXPLORE_START,
-        "delta_type": SegmentType.SUBAGENT_EXPLORE_DELTA,
-        "end_type": SegmentType.SUBAGENT_EXPLORE_END,
-        "content_field": None,
-        "is_subagent": True,
-        "subagent_type": "explore_agent"
-    },
-    "call_review_agent": {
-        "start_type": SegmentType.SUBAGENT_REVIEW_START,
-        "delta_type": SegmentType.SUBAGENT_REVIEW_DELTA,
-        "end_type": SegmentType.SUBAGENT_REVIEW_END,
-        "content_field": None,
-        "is_subagent": True,
-        "subagent_type": "review_agent"
     }
 }
 

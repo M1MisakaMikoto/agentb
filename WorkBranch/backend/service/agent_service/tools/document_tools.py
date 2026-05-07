@@ -259,102 +259,34 @@ def _pdf_update(file_path: str, target: str, content: Optional[str] = None,
 # ============================================================
 
 def _convert_doc_to_docx(file_path: str) -> Optional[str]:
-    import traceback
-    import time as _time
-    
-    print(f"[DOC-CONVERT] Starting conversion for: {file_path}", flush=True)
-    
-    max_retries = 3
-    for attempt in range(max_retries):
+    try:
+        import subprocess
+        temp_docx = tempfile.mktemp(suffix=".docx")
+        
         try:
-            import subprocess
-            temp_docx = tempfile.mktemp(suffix=".docx")
-            
-            try:
-                from docx2python import docx2python
-                print("[DOC-CONVERT] Trying docx2python...", flush=True)
-                docx2python(file_path, temp_docx)
-                if os.path.exists(temp_docx) and os.path.getsize(temp_docx) > 0:
-                    print(f"[DOC-CONVERT] docx2python SUCCESS: {temp_docx}", flush=True)
+            from docx2python import docx2python
+            docx2python(file_path, temp_docx)
+            return temp_docx
+        except ImportError:
+            pass
+        
+        try:
+            result = subprocess.run(
+                ["libreoffice", "--headless", "--convert-to", "docx", "--outdir",
+                 os.path.dirname(temp_docx), file_path],
+                capture_output=True, timeout=30
+            )
+            if result.returncode == 0:
+                converted = file_path.rsplit(".", 1)[0] + ".docx"
+                if os.path.exists(converted):
+                    shutil.move(converted, temp_docx)
                     return temp_docx
-                print("[DOC-CONVERT] docx2python produced empty file", flush=True)
-            except ImportError:
-                print("[DOC-CONVERT] docx2python not available", flush=True)
-            except Exception as e:
-                print(f"[DOC-CONVERT] docx2python error: {e}", flush=True)
-            
-            try:
-                print("[DOC-CONVERT] Trying LibreOffice...", flush=True)
-                result = subprocess.run(
-                    ["libreoffice", "--headless", "--convert-to", "docx", "--outdir",
-                     os.path.dirname(temp_docx), file_path],
-                    capture_output=True, timeout=60
-                )
-                if result.returncode == 0:
-                    converted = file_path.rsplit(".", 1)[0] + ".docx"
-                    if os.path.exists(converted):
-                        shutil.move(converted, temp_docx)
-                        if os.path.exists(temp_docx) and os.path.getsize(temp_docx) > 0:
-                            print(f"[DOC-CONVERT] LibreOffice SUCCESS: {temp_docx}", flush=True)
-                            return temp_docx
-                else:
-                    print(f"[DOC-CONVERT] LibreOffice failed, rc={result.returncode}", flush=True)
-            except FileNotFoundError:
-                print("[DOC-CONVERT] LibreOffice not found", flush=True)
-            except Exception as e:
-                print(f"[DOC-CONVERT] LibreOffice error: {e}", flush=True)
-            
-            try:
-                import win32com.client
-                print(f"[DOC-CONVERT] Trying win32com Word (attempt {attempt+1}/{max_retries})...", flush=True)
-                
-                word = None
-                doc = None
-                try:
-                    word = win32com.client.Dispatch("Word.Application")
-                    word.Visible = False
-                    doc = word.Documents.Open(os.path.abspath(file_path))
-                    doc.SaveAs2(temp_docx, FileFormat=16)
-                    converted_ok = os.path.exists(temp_docx) and os.path.getsize(temp_docx) > 0
-                    
-                    if converted_ok:
-                        print(f"[DOC-CONVERT] win32com SUCCESS: {temp_docx}", flush=True)
-                        return temp_docx
-                    else:
-                        print("[DOC-CONVERT] win32com: file not created or empty", flush=True)
-                except Exception as com_err:
-                    print(f"[DOC-CONVERT] win32com error: {type(com_err).__name__}: {com_err}", flush=True)
-                    raise com_err
-                finally:
-                    try:
-                        if doc: doc.Close(False)
-                    except Exception:
-                        pass
-                    try:
-                        if word: word.Quit()
-                    except Exception:
-                        pass
-                    _time.sleep(2)
-                    
-            except ImportError:
-                print("[DOC-CONVERT] win32com not available", flush=True)
-            except Exception as e:
-                print(f"[DOC-CONVERT] win32com exception (attempt {attempt+1}): {type(e).__name__}: {e}", flush=True)
-                if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 3
-                    print(f"[DOC-CONVERT] Retrying in {wait_time}s...", flush=True)
-                    _time.sleep(wait_time)
-                    continue
-            
-            break
-            
-        except Exception as e:
-            print(f"[DOC-CONVERT] Attempt {attempt+1} failed: {type(e).__name__}: {e}", flush=True)
-            if attempt < max_retries - 1:
-                _time.sleep((attempt + 1) * 3)
-    
-    print("[DOC-CONVERT] ALL METHODS FAILED, returning None", flush=True)
-    return None
+        except FileNotFoundError:
+            pass
+        
+        return None
+    except Exception:
+        return None
 
 
 def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
@@ -369,30 +301,13 @@ def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
         cleanup = False
         
         if _get_ext(file_path) == ".doc":
-            debug_log_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', '.test', 'logs', 'doc_tool_debug.log')
-            try:
-                with open(debug_log_path, 'a', encoding='utf-8') as df:
-                    df.write(f"[{__import__('datetime').datetime.now().isoformat()}] _docx_read: converting .doc file: {file_path}\n")
-            except Exception:
-                pass
             converted = _convert_doc_to_docx(file_path)
-            try:
-                with open(debug_log_path, 'a', encoding='utf-8') as df:
-                    df.write(f"[{__import__('datetime').datetime.now().isoformat()}] _docx_read: convert result={converted}\n")
-            except Exception:
-                pass
             if not converted:
                 return _make_result(error=".doc格式转换失败，请安装LibreOffice或docx2python")
             actual_path = converted
             cleanup = True
         
         doc = Document(actual_path)
-        
-        try:
-            with open(debug_log_path, 'a', encoding='utf-8') as df:
-                df.write(f"[{__import__('datetime').datetime.now().isoformat()}] _docx_read: Document() success, path={actual_path}\n")
-        except Exception:
-            pass
         
         paragraphs = []
         structure = []
@@ -948,13 +863,6 @@ def execute_document(tool_args: dict) -> dict:
         return _make_result(error=f"无效操作类型: {operation}，支持: {'|'.join(sorted(valid_ops))}")
     
     print(f"[Tool] document [{operation}] {file_path}")
-    
-    debug_log_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', '.test', 'logs', 'doc_tool_debug.log')
-    try:
-        with open(debug_log_path, 'a', encoding='utf-8') as df:
-            df.write(f"[{__import__('datetime').datetime.now().isoformat()}] document op={operation} path={file_path} ext={_get_ext(file_path)} exists={os.path.exists(file_path)}\n")
-    except Exception:
-        pass
     
     if operation != "w":
         if not os.path.exists(file_path):

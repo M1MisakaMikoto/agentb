@@ -4,7 +4,6 @@ from langgraph.graph import StateGraph, END
 
 from singleton import get_workspace_service
 
-from .agent_config import AGENT_GRAPH_CONFIG
 from .director_agent import build_initial_state, create_orchestrator_graph_v3, get_last_user_message_text
 from .decision.complexity_analyzer import ExecutionMode
 from .subgraphs import run_tool_execution
@@ -68,6 +67,17 @@ def _build_default_tools(agent_type: str, user_message: Any) -> list[dict]:
     return []
 
 
+AGENT_GRAPH_CONFIG = {
+    "director_agent": {
+        "execution_mode": None,
+    },
+    "explore_agent": {
+        "execution_mode": ExecutionMode.DIRECT,
+    },
+    "review_agent": {
+        "execution_mode": ExecutionMode.DIRECT,
+    },
+}
 
 
 def create_child_agent_graph(
@@ -167,6 +177,15 @@ def create_agent_graph(
     settings_service=None,
     message_context: dict = None,
 ):
+    if agent_type in {"explore_agent", "review_agent"}:
+        return create_child_agent_graph(
+            agent_type=agent_type,
+            llm_service=llm_service,
+            token_callback=token_callback,
+            settings_service=settings_service,
+            message_context=message_context,
+        )
+
     return create_orchestrator_graph_v3(
         llm_service=llm_service,
         token_callback=token_callback,
