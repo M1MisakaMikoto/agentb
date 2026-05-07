@@ -167,9 +167,15 @@ class TestResult:
         self.session_id: Optional[int] = None
         self.detected_mode: Optional[str] = None
         self.detected_modes: List[str] = []
+        self.next_conversation_id: Optional[str] = None
         self.raw_lines: List[str] = []
         self.done = False
         self.response_text = ""
+        # [方案B] 工作区轮询结果
+        self.workspace_files_checked: bool = False
+        self.prediction_report_found: bool = False
+        self.prediction_report_name: Optional[str] = None
+        self.prediction_report_size: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -189,6 +195,10 @@ class TestResult:
             "detected_modes": self.detected_modes,
             "done": self.done,
             "response_text": self.response_text[:500] if self.response_text else None,
+            "workspace_files_checked": self.workspace_files_checked,
+            "prediction_report_found": self.prediction_report_found,
+            "prediction_report_name": self.prediction_report_name,
+            "prediction_report_size": self.prediction_report_size,
         }
 
 

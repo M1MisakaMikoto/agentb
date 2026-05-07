@@ -3,6 +3,8 @@ from typing import List, Optional, Tuple
 import aiomysql
 from aiomysql import Pool, DictCursor
 
+CONNECT_TIMEOUT = 10.0
+
 
 class MySQLDatabase:
     """MySQL 异步数据库封装类，提供连接池管理和基础操作方法。"""
@@ -11,6 +13,36 @@ class MySQLDatabase:
         self._settings = settings_service
         self._pool: Optional[Pool] = None
         self._lock = asyncio.Lock()
+
+    async def _connect_with_timeout(self, **kwargs):
+        """带超时的 MySQL 连接。"""
+        try:
+            return await asyncio.wait_for(
+                aiomysql.connect(**kwargs),
+                timeout=CONNECT_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            host = kwargs.get('host', 'localhost')
+            port = kwargs.get('port', 3306)
+            raise TimeoutError(
+                f"MySQL 连接超时 ({CONNECT_TIMEOUT}s): 无法连接到 {host}:{port}。"
+                f"请检查: 1) MySQL 服务是否已启动; 2) 网络是否可达; 3) 配置是否正确"
+            )
+
+    async def _create_pool_with_timeout(self, **kwargs):
+        """带超时的 MySQL 连接池创建。"""
+        try:
+            return await asyncio.wait_for(
+                aiomysql.create_pool(**kwargs),
+                timeout=CONNECT_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            host = kwargs.get('host', 'localhost')
+            port = kwargs.get('port', 3306)
+            raise TimeoutError(
+                f"MySQL 连接池创建超时 ({CONNECT_TIMEOUT}s): 无法连接到 {host}:{port}。"
+                f"请检查: 1) MySQL 服务是否已启动; 2) 网络是否可达; 3) 配置是否正确"
+            )
 
     async def init_pool(self) -> None:
         """初始化连接池。"""
@@ -23,26 +55,29 @@ class MySQLDatabase:
 
             config = self._settings.get("mysql")
             database = config.get("database", "agentb")
+            host = config.get("host", "localhost")
+            port = config.get("port", 3306)
             
-            # 先创建数据库（如果不存在）
-            conn = await aiomysql.connect(
-                host=config.get("host", "localhost"),
-                port=config.get("port", 3306),
+            conn_kwargs = dict(
+                host=host,
+                port=port,
                 user=config.get("user", "root"),
                 password=config.get("password", "123456"),
                 charset="utf8mb4",
                 autocommit=True,
+                connect_timeout=CONNECT_TIMEOUT,
             )
+            
+            conn = await self._connect_with_timeout(**conn_kwargs)
             try:
                 async with conn.cursor() as cursor:
                     await cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
             finally:
                 conn.close()
             
-            # 创建连接池
-            self._pool = await aiomysql.create_pool(
-                host=config.get("host", "localhost"),
-                port=config.get("port", 3306),
+            pool_kwargs = dict(
+                host=host,
+                port=port,
                 user=config.get("user", "root"),
                 password=config.get("password", "123456"),
                 db=database,
@@ -52,7 +87,10 @@ class MySQLDatabase:
                 echo=config.get("echo", False),
                 charset="utf8mb4",
                 autocommit=True,
+                connect_timeout=CONNECT_TIMEOUT,
             )
+            
+            self._pool = await self._create_pool_with_timeout(**pool_kwargs)
 
     async def close_pool(self) -> None:
         """关闭连接池。"""

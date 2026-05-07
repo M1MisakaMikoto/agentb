@@ -1,5 +1,7 @@
 import os
+import sys
 import json
+import time
 import tempfile
 import shutil
 from typing import Optional, Dict, Any, Tuple
@@ -259,34 +261,79 @@ def _pdf_update(file_path: str, target: str, content: Optional[str] = None,
 # ============================================================
 
 def _convert_doc_to_docx(file_path: str) -> Optional[str]:
-    try:
-        import subprocess
-        temp_docx = tempfile.mktemp(suffix=".docx")
-        
+    """Convert .doc to .docx using multiple methods with retry logic."""
+    max_retries = 3
+    
+    for attempt in range(max_retries):
         try:
-            from docx2python import docx2python
-            docx2python(file_path, temp_docx)
-            return temp_docx
-        except ImportError:
-            pass
-        
-        try:
-            result = subprocess.run(
-                ["libreoffice", "--headless", "--convert-to", "docx", "--outdir",
-                 os.path.dirname(temp_docx), file_path],
-                capture_output=True, timeout=30
-            )
-            if result.returncode == 0:
-                converted = file_path.rsplit(".", 1)[0] + ".docx"
-                if os.path.exists(converted):
-                    shutil.move(converted, temp_docx)
+            temp_docx = tempfile.mktemp(suffix=".docx")
+            
+            # Method 1: Win32 COM (Windows only, most reliable)
+            if sys.platform == "win32":
+                try:
+                    import win32com.client
+                    import pythoncom
+                    
+                    pythoncom.CoInitialize()
+                    
+                    word = win32com.client.Dispatch("Word.Application")
+                    word.Visible = False
+                    
+                    doc = word.Documents.Open(
+                        os.path.abspath(file_path),
+                        Visible=False,
+                        ConfirmConversions=False
+                    )
+                    
+                    # Save as docx (wdFormatXMLDocument = 16)
+                    doc.SaveAs2(os.path.abspath(temp_docx), FileFormat=16)
+                    doc.Close()
+                    word.Quit()
+                    
+                    pythoncom.CoUninitialize()
+                    
+                    if os.path.exists(temp_docx):
+                        return temp_docx
+                        
+                except ImportError:
+                    pass
+                except Exception as com_error:
+                    if attempt < max_retries - 1:
+                        time.sleep(2 * (attempt + 1))
+                        continue
+            
+            # Method 2: docx2python library
+            try:
+                from docx2python import docx2python
+                docx2python(file_path, temp_docx)
+                if os.path.exists(temp_docx):
                     return temp_docx
-        except FileNotFoundError:
-            pass
-        
-        return None
-    except Exception:
-        return None
+            except ImportError:
+                pass
+            
+            # Method 3: LibreOffice command line
+            try:
+                result = subprocess.run(
+                    ["libreoffice", "--headless", "--convert-to", "docx", "--outdir",
+                     os.path.dirname(temp_docx), file_path],
+                    capture_output=True, timeout=30
+                )
+                if result.returncode == 0:
+                    converted = file_path.rsplit(".", 1)[0] + ".docx"
+                    if os.path.exists(converted):
+                        shutil.move(converted, temp_docx)
+                        return temp_docx
+            except FileNotFoundError:
+                pass
+            
+            break
+            
+        except Exception:
+            if attempt < max_retries - 1:
+                time.sleep(2 * (attempt + 1))
+                continue
+    
+    return None
 
 
 def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
@@ -354,30 +401,151 @@ def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
         return _make_result(error=f"Word文档读取失败: {str(e)}")
 
 
+def _set_cell_text(cell, text, bold=False):
+    cell.text = ""
+    run = cell.paragraphs[0].add_run(text)
+    run.bold = bold
+    run.font.name = 'SimSun'
+    run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+    run.font.size = __import__('docx.shared').Pt(10.5)
+
+
+def _set_table_borders(table):
+    try:
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+        tbl = table._tbl
+        tblPr = tbl.tblPr if tbl.tblPr is not None else OxmlElement('w:tblPr')
+        tblBorders = OxmlElement('w:tblBorders')
+        for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
+            border = OxmlElement(f'w:{border_name}')
+            border.set(qn('w:val'), 'single')
+            border.set(qn('w:sz'), '4')
+            border.set(qn('w:space'), '0')
+            border.set(qn('w:color'), '000000')
+            tblBorders.append(border)
+        tblPr.append(tblBorders)
+        if tbl.tblPr is None:
+            tbl.insert(0, tblPr)
+    except Exception:
+        pass
+
+
+def _add_cover_page(doc, title, subtitle=None, date=None, company=None):
+    try:
+        from docx.shared import Pt, Cm, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError:
+        return
+    
+    for _ in range(6):
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    title_p = doc.add_paragraph()
+    title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title_p.add_run(title)
+    run.bold = True
+    run.font.size = Pt(26)
+    run.font.name = 'SimHei'
+    run._element.rPr.rFonts.set('w:eastAsia', 'SimHei')
+    
+    if subtitle:
+        doc.add_paragraph()
+        sub_p = doc.add_paragraph()
+        sub_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = sub_p.add_run(subtitle)
+        run.font.size = Pt(16)
+        run.font.name = 'SimSun'
+        run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+    
+    for _ in range(8):
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    info_lines = []
+    if date:
+        info_lines.append(date)
+    if company:
+        info_lines.append(company)
+    
+    for line in info_lines:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(line)
+        run.font.size = Pt(12)
+        run.font.name = 'SimSun'
+        run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+    
+    doc.add_page_break()
+
+
 def _markdown_to_docx_content(markdown_text: str, doc) -> None:
     try:
         import re
+        from docx.shared import Pt
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
     except ImportError:
         pass
     
     lines = markdown_text.split("\n")
     i = 0
+    in_cover = False
+    cover_data = {}
     
     while i < len(lines):
         line = lines[i]
         
+        if '{{cover' in line and '}}' in line:
+            in_cover = True
+            match = re.search(r'\{\{cover:(\w+)\}\}\s*(.*)', line)
+            if match:
+                cover_data[match.group(1)] = match.group(2).strip()
+            i += 1
+            continue
+        
+        if in_cover and line.strip() == '' and i + 1 < len(lines) and not lines[i+1].startswith('{{'):
+            in_cover = False
+            if cover_data.get('title'):
+                _add_cover_page(doc,
+                    title=cover_data.get('title', ''),
+                    subtitle=cover_data.get('subtitle'),
+                    date=cover_data.get('date'),
+                    company=cover_data.get('company'))
+            cover_data = {}
+        
+        if in_cover:
+            match = re.search(r'\{\{cover:(\w+)\}\}\s*(.*)', line)
+            if match:
+                cover_data[match.group(1)] = match.group(2).strip()
+            i += 1
+            continue
+        
         if line.startswith("# "):
+            text = line[2:].strip()
             heading = doc.add_heading(level=1)
-            heading.add_run(line[2:].strip())
+            run = heading.add_run(text)
+            run.font.name = 'SimHei'
+            run._element.rPr.rFonts.set('w:eastAsia', 'SimHei')
+            heading.alignment = WD_ALIGN_PARAGRAPH.CENTER if i < 10 else None
         elif line.startswith("## "):
+            text = line[3:].strip()
             heading = doc.add_heading(level=2)
-            heading.add_run(line[3:].strip())
+            run = heading.add_run(text)
+            run.font.name = 'SimHei'
+            run._element.rPr.rFonts.set('w:eastAsia', 'SimHei')
         elif line.startswith("### "):
+            text = line[4:].strip()
             heading = doc.add_heading(level=3)
-            heading.add_run(line[4:].strip())
+            run = heading.add_run(text)
+            run.font.name = 'SimHei'
+            run._element.rPr.rFonts.set('w:eastAsia', 'SimHei')
         elif line.startswith("#### "):
+            text = line[5:].strip()
             heading = doc.add_heading(level=4)
-            heading.add_run(line[5:].strip())
+            run = heading.add_run(text)
+            run.font.name = 'SimSun'
+            run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
         elif line.startswith("---") or line.startswith("***"):
             pass
         elif line.startswith("- ") or line.startswith("* "):
@@ -387,6 +555,10 @@ def _markdown_to_docx_content(markdown_text: str, doc) -> None:
                 i += 1
             for item in items:
                 p = doc.add_paragraph(item, style='List Bullet')
+                for run in p.runs:
+                    run.font.name = 'SimSun'
+                    run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+                    run.font.size = Pt(12)
             continue
         elif re.match(r'^\d+\.\s', line):
             items = []
@@ -395,6 +567,10 @@ def _markdown_to_docx_content(markdown_text: str, doc) -> None:
                 i += 1
             for item in items:
                 p = doc.add_paragraph(item, style='List Number')
+                for run in p.runs:
+                    run.font.name = 'SimSun'
+                    run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+                    run.font.size = Pt(12)
             continue
         elif line.startswith("|"):
             table_lines = []
@@ -415,17 +591,25 @@ def _markdown_to_docx_content(markdown_text: str, doc) -> None:
                 if headers:
                     table = doc.add_table(rows=len(rows)+1, cols=len(headers))
                     table.style = 'Table Grid'
+                    _set_table_borders(table)
                     
                     for j, h in enumerate(headers):
-                        table.rows[0].cells[j].text = h
+                        if j < len(table.rows[0].cells):
+                            _set_cell_text(table.rows[0].cells[j], h, bold=True)
                     
                     for r_idx, row in enumerate(rows):
                         for c_idx, cell in enumerate(row):
-                            if c_idx < len(table.rows[r_idx+1].cells):
-                                table.rows[r_idx+1].cells[c_idx].text = cell
+                            if r_idx + 1 < len(table.rows) and c_idx < len(table.rows[r_idx+1].cells):
+                                _set_cell_text(table.rows[r_idx+1].cells[c_idx], cell)
             continue
         elif line.strip():
-            doc.add_paragraph(line)
+            p = doc.add_paragraph(line)
+            p.paragraph_format.first_line_indent = Cm(0.74) if any('\u4e00' <= c <= '\u9fff' for c in line) else None
+            p.paragraph_format.line_spacing = 1.5
+            for run in p.runs:
+                run.font.name = 'SimSun'
+                run._element.rPr.rFonts.set('w:eastAsia', 'SimSun')
+                run.font.size = Pt(12)
         
         i += 1
 
