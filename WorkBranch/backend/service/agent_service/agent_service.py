@@ -153,7 +153,7 @@ class AgentService:
 
     def _create_http_client(self) -> httpx.Client:
         settings = self._get_settings()
-        timeout = httpx.Timeout(120.0, connect=30.0)
+        timeout = httpx.Timeout(300.0, connect=60.0)
         proxy = None
 
         try:

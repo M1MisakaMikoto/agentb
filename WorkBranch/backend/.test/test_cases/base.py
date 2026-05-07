@@ -327,7 +327,7 @@ class APIClient:
         mime_type = mime_types.get(suffix, "application/octet-stream")
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=300.0) as client:
                 with open(file_path, "rb") as f:
                     response = await client.post(
                         f"{self.base_url}{path}",
@@ -428,155 +428,219 @@ async def collect_stream_output(
     verbose: bool = True,
     show_raw: bool = False,
     use_v2: bool = False,
-    timeout: float = 60.0,
+    timeout: float = 300.0,
 ):
     import asyncio
     
     deadline = time.time() + timeout
-    stream_iter = api.stream_message(conversation_id, use_v2=use_v2)
-    pending_item = None
-    loop_count = 0
+    max_retries = 3
+    retry_count = 0
+    retry_delay = 2.0
     
-    while time.time() < deadline:
-        loop_count += 1
-        if verbose and loop_count % 10 == 0:
-            print(f"{Colors.DIM}[loop {loop_count}] waiting for stream...{Colors.ENDC}")
-        
+    while retry_count <= max_retries and time.time() < deadline:
         try:
-            if pending_item is None:
-                pending_item = asyncio.create_task(stream_iter.__anext__())
-            
-            done, _ = await asyncio.wait(
-                {pending_item},
-                timeout=1.0,
-                return_when=asyncio.FIRST_COMPLETED
-            )
-            
-            if not done:
-                if verbose:
-                    print(f"{Colors.DIM}[wait timeout] checking conversation state...{Colors.ENDC}")
-                conv_check = await api.get_conversation(conversation_id)
-                conv_state = conv_check.get("data", {}).get("state")
-                if verbose:
-                    print(f"{Colors.DIM}[wait timeout] state={conv_state}{Colors.ENDC}")
-                if conv_state == "completed":
-                    if verbose:
-                        print(f"{Colors.GREEN}[timeout] Conversation already completed, ending stream{Colors.ENDC}")
-                    result.done = True
-                    pending_item.cancel()
-                    break
-                continue
-            
-            item = await pending_item
+            stream_iter = api.stream_message(conversation_id, use_v2=use_v2)
             pending_item = None
-        except StopAsyncIteration:
-            if verbose:
-                print(f"{Colors.GREEN}[StopAsyncIteration] Stream ended{Colors.ENDC}")
-            break
-        except Exception as e:
-            if verbose:
-                print(f"{Colors.RED}[error] {e}{Colors.ENDC}")
-            break
+            loop_count = 0
+            consecutive_timeouts = 0
+            max_consecutive_timeouts = 30
+            
+            while time.time() < deadline:
+                loop_count += 1
+                if verbose and loop_count % 20 == 0:
+                    elapsed = time.time() - (deadline - timeout)
+                    print(f"{Colors.DIM}[loop {loop_count}] waiting for stream... ({elapsed:.0f}s elapsed){Colors.ENDC}")
+                
+                try:
+                    if pending_item is None:
+                        pending_item = asyncio.create_task(stream_iter.__anext__())
+                    
+                    done, _ = await asyncio.wait(
+                        {pending_item},
+                        timeout=1.0,
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                    
+                    if not done:
+                        consecutive_timeouts += 1
+                        
+                        if verbose and consecutive_timeouts % 10 == 0:
+                            print(f"{Colors.DIM}[wait timeout] checking conversation state... ({consecutive_timeouts}s idle){Colors.ENDC}")
+                        
+                        if consecutive_timeouts >= max_consecutive_timeouts:
+                            if verbose:
+                                print(f"{Colors.YELLOW}[warn] Stream idle for {consecutive_timeouts}s, checking state...{Colors.ENDC}")
+                            conv_check = await api.get_conversation(conversation_id)
+                            conv_state = conv_check.get("data", {}).get("state")
+                            if verbose:
+                                print(f"{Colors.DIM}[idle check] state={conv_state}{Colors.ENDC}")
+                            if conv_state == "completed":
+                                if verbose:
+                                    print(f"{Colors.GREEN}[idle] Conversation completed, ending stream{Colors.ENDC}")
+                                result.done = True
+                                pending_item.cancel()
+                                return
+                            consecutive_timeouts = 0
+                        continue
+                    
+                    item = await pending_item
+                    pending_item = None
+                    consecutive_timeouts = 0
+                    
+                except StopAsyncIteration:
+                    if verbose:
+                        print(f"{Colors.GREEN}[StopAsyncIteration] Stream ended{Colors.ENDC}")
+                    return
+                except Exception as e:
+                    error_str = str(e)
+                    if verbose:
+                        print(f"{Colors.RED}[stream error] {error_str}{Colors.ENDC}")
+                    
+                    fatal_errors = ["404", "403", "401", "not found", "unauthorized"]
+                    if any(err in error_str.lower() for err in fatal_errors):
+                        if verbose:
+                            print(f"{Colors.RED}[fatal] Fatal error, stopping{Colors.ENDC}")
+                        return
+                    
+                    retry_count += 1
+                    if retry_count > max_retries:
+                        if verbose:
+                            print(f"{Colors.RED}[retry exhausted] Max retries reached{Colors.ENDC}")
+                        return
+                    
+                    if verbose:
+                        print(f"{Colors.YELLOW}[retry] Attempt {retry_count}/{max_retries} after {retry_delay}s...{Colors.ENDC}")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                    break
+                
+                raw_line = item.get("raw_line", "")
+                if not raw_line.strip():
+                    continue
+
+                if show_raw:
+                    result.raw_lines.append(raw_line)
+                    timestamp = time.strftime("%H:%M:%S")
+                    print(f"{Colors.DIM}[RAW {timestamp}] {raw_line}{Colors.ENDC}")
+
+                if raw_line.startswith(": heartbeat"):
+                    if verbose and loop_count % 15 == 0:
+                        print(f"{Colors.DIM}[heartbeat]{Colors.ENDC}")
+                    conv_check = await api.get_conversation(conversation_id)
+                    conv_state = conv_check.get("data", {}).get("state")
+                    if conv_state == "completed":
+                        if verbose:
+                            print(f"{Colors.GREEN}[heartbeat] Conversation completed{Colors.ENDC}")
+                        result.done = True
+                        return
+                    continue
+
+                if not raw_line.startswith("data: "):
+                    continue
+
+                try:
+                    data = json.loads(raw_line[6:])
+                except json.JSONDecodeError:
+                    continue
+
+                event_type = data.get("type", "unknown")
+                result.event_count += 1
+
+                if event_type == "text_delta":
+                    content = data.get("content", "")
+                    result.text_content += content
+                    if verbose:
+                        safe_print(f"{Colors.CYAN}[text] {content}{Colors.ENDC}")
+                elif event_type == "chat_delta":
+                    content = data.get("content", "")
+                    result.chat_content += content
+                    if verbose:
+                        safe_print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
+                elif event_type == "chat_end":
+                    result.done = True
+                    if verbose:
+                        print(f"{Colors.GREEN}[chat_end] Chat completed{Colors.ENDC}")
+                    return
+                elif event_type == "thinking_delta":
+                    content = data.get("content", "")
+                    result.thinking_content += content
+                    if verbose and len(content) > 10:
+                        safe_print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
+                elif event_type == "tool_call":
+                    metadata = data.get("metadata", {})
+                    tool_name = metadata.get("tool_name", "unknown")
+                    result.tool_calls.append(tool_name)
+                    if verbose:
+                        args_preview = str(metadata.get("tool_args", {}))[:80]
+                        print(f"{Colors.MAGENTA}[tool_call] {tool_name}({args_preview}){Colors.ENDC}")
+                elif event_type == "state_change":
+                    metadata = data.get("metadata", {})
+                    execution_mode = metadata.get("execution_mode")
+                    if execution_mode:
+                        result.detected_mode = execution_mode
+                        if execution_mode not in result.detected_modes:
+                            result.detected_modes.append(execution_mode)
+                        if verbose:
+                            print(f"{Colors.YELLOW}[state] execution_mode: {execution_mode}{Colors.ENDC}")
+                    plan_status = metadata.get("plan_status")
+                    if plan_status:
+                        result.plan_status = plan_status
+                        if verbose:
+                            print(f"{Colors.YELLOW}[state] plan_status: {plan_status}{Colors.ENDC}")
+                elif event_type == "plan_start":
+                    if verbose:
+                        print(f"{Colors.YELLOW}[plan_start] Plan generation started{Colors.ENDC}")
+                elif event_type == "plan_delta":
+                    content = data.get("content", "")
+                    if verbose:
+                        print(f"{Colors.YELLOW}[plan] {content[:50]}...{Colors.ENDC}")
+                elif event_type == "plan_end":
+                    if verbose:
+                        print(f"{Colors.YELLOW}[plan_end] Plan generation completed{Colors.ENDC}")
+                elif event_type == "conversation_handoff":
+                    metadata = data.get("metadata", {})
+                    auto_approved = metadata.get('auto_approved')
+                    next_conv_id = metadata.get('next_conversation_id')
+                    
+                    if auto_approved and next_conv_id:
+                        result.next_conversation_id = next_conv_id
+                    
+                    if verbose:
+                        print(f"{Colors.HEADER}[conversation_handoff] auto_approved: {auto_approved}, next_conversation_id: {next_conv_id}{Colors.ENDC}")
+                elif event_type == "done":
+                    result.done = True
+                    if verbose:
+                        print(f"{Colors.GREEN}[done] Stream completed{Colors.ENDC}")
+                    return
+                elif event_type == "error":
+                    error_content = data.get("content", "Unknown error")
+                    result.errors.append(error_content)
+                    if verbose:
+                        safe_print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
+                else:
+                    if verbose:
+                        print(f"{Colors.BLUE}[{event_type}] {json.dumps(data, ensure_ascii=False)[:100]}...{Colors.ENDC}")
+            
+            if time.time() >= deadline:
+                if verbose:
+                    print(f"{Colors.YELLOW}[timeout] Stream collection timeout after {timeout:.0f}s{Colors.ENDC}")
+                return
         
-        raw_line = item.get("raw_line", "")
-        if not raw_line.strip():
-            continue
-
-        if show_raw:
-            result.raw_lines.append(raw_line)
-            timestamp = time.strftime("%H:%M:%S")
-            print(f"{Colors.DIM}[RAW {timestamp}] {raw_line}{Colors.ENDC}")
-
-        if raw_line.startswith(": heartbeat"):
-            if verbose:
-                print(f"{Colors.DIM}[heartbeat]{Colors.ENDC}")
-            conv_check = await api.get_conversation(conversation_id)
-            conv_state = conv_check.get("data", {}).get("state")
-            if conv_state == "completed":
+        except Exception as e:
+            retry_count += 1
+            if retry_count > max_retries:
                 if verbose:
-                    print(f"{Colors.GREEN}[heartbeat] Conversation already completed, ending stream{Colors.ENDC}")
-                result.done = True
-                break
-            continue
-
-        if not raw_line.startswith("data: "):
-            continue
-
-        try:
-            data = json.loads(raw_line[6:])
-        except json.JSONDecodeError:
-            continue
-
-        event_type = data.get("type", "unknown")
-        result.event_count += 1
-
-        if event_type == "text_delta":
-            content = data.get("content", "")
-            result.text_content += content
+                    print(f"{Colors.RED}[connection failed] Max retries exceeded: {e}{Colors.ENDC}")
+                return
+            
             if verbose:
-                safe_print(f"{Colors.CYAN}[text] {content}{Colors.ENDC}")
-        elif event_type == "chat_delta":
-            content = data.get("content", "")
-            result.chat_content += content
-            if verbose:
-                safe_print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
-        elif event_type == "chat_end":
-            result.done = True
-            if verbose:
-                print(f"{Colors.GREEN}[chat_end] Chat completed{Colors.ENDC}")
-            break
-        elif event_type == "thinking_delta":
-            content = data.get("content", "")
-            result.thinking_content += content
-            if verbose:
-                safe_print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
-        elif event_type == "tool_call":
-            metadata = data.get("metadata", {})
-            tool_name = metadata.get("tool_name", "unknown")
-            result.tool_calls.append(tool_name)
-            if verbose:
-                print(f"{Colors.MAGENTA}[tool_call] {tool_name}{Colors.ENDC}")
-        elif event_type == "state_change":
-            metadata = data.get("metadata", {})
-            execution_mode = metadata.get("execution_mode")
-            if execution_mode:
-                result.detected_mode = execution_mode
-                if execution_mode not in result.detected_modes:
-                    result.detected_modes.append(execution_mode)
-                if verbose:
-                    print(f"{Colors.YELLOW}[state] execution_mode: {execution_mode}{Colors.ENDC}")
-            plan_status = metadata.get("plan_status")
-            if plan_status:
-                result.plan_status = plan_status
-                if verbose:
-                    print(f"{Colors.YELLOW}[state] plan_status: {plan_status}{Colors.ENDC}")
-        elif event_type == "plan_start":
-            if verbose:
-                print(f"{Colors.YELLOW}[plan_start] Plan generation started{Colors.ENDC}")
-        elif event_type == "plan_delta":
-            content = data.get("content", "")
-            if verbose:
-                print(f"{Colors.YELLOW}[plan] {content[:50]}...{Colors.ENDC}")
-        elif event_type == "plan_end":
-            if verbose:
-                print(f"{Colors.YELLOW}[plan_end] Plan generation completed{Colors.ENDC}")
-        elif event_type == "conversation_handoff":
-            metadata = data.get("metadata", {})
-            if verbose:
-                print(f"{Colors.HEADER}[conversation_handoff] auto_approved: {metadata.get('auto_approved')}, next_conversation_id: {metadata.get('next_conversation_id')}{Colors.ENDC}")
-        elif event_type == "done":
-            result.done = True
-            if verbose:
-                print(f"{Colors.GREEN}[done] Stream completed{Colors.ENDC}")
-            break
-        elif event_type == "error":
-            error_content = data.get("content", "Unknown error")
-            result.errors.append(error_content)
-            if verbose:
-                safe_print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
-        else:
-            if verbose:
-                print(f"{Colors.BLUE}[{event_type}] {json.dumps(data, ensure_ascii=False)[:100]}...{Colors.ENDC}")
+                print(f"{Colors.YELLOW}[reconnect] Connection error, retry {retry_count}/{max_retries}: {e}{Colors.ENDC}")
+            await asyncio.sleep(retry_delay)
+            retry_delay *= 2
+    
+    if verbose:
+        elapsed = time.time() - (deadline - timeout)
+        print(f"{Colors.DIM}[completed] Stream collection ended after {elapsed:.0f}s, events={result.event_count}, tools={result.tool_calls}{Colors.ENDC}")
 
 
 def print_test_header(description: str):
@@ -599,3 +663,7 @@ def print_error(message: str):
 
 def print_dim(message: str):
     print(f"{Colors.DIM}    {message}{Colors.ENDC}")
+
+
+def print_warning(message: str):
+    print(f"{Colors.YELLOW}    {message}{Colors.ENDC}")

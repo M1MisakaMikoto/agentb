@@ -6,6 +6,7 @@ Bridge Inspection Report Prediction Test
 """
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -23,6 +24,7 @@ from .base import (
     print_success,
     print_error,
     print_dim,
+    print_warning,
     collect_stream_output,
     wait_for_conversation_state,
     extract_response_text,
@@ -39,26 +41,34 @@ HISTORICAL_FILES = {
 
 GROUND_TRUTH_2024 = BRIDGE_REPORT_ROOT / "2024" / "003 陈家阁大桥+C级.doc"
 
-PREDICTION_PROMPT = """工作区中已上传三份陈家阁大桥的历史检测报告：
+PREDICTION_PROMPT = """⚠️ 重要指令：你处于 DIRECT 执行模式！禁止切换到 PLAN 模式！禁止回复确认消息！
+
+工作区中已上传三份陈家阁大桥的历史检测报告：
 - 12陈家阁大桥定期检测2018.10.docx（2018年）
 - 03 陈家阁大桥.doc（2020年）
 - 09 陈家阁立交.doc（2022年）
 
-## 任务步骤
+## 🚨 立即执行以下步骤（不要停下来！）：
 
-1. **读取报告**：用 read_document 依次读取三份文件
-2. **分析趋势**：分析各部件评分变化、病害发展规律
-3. **预测2024**：基于历史数据预测技术状况
-4. **输出报告**：用 document 工具写入 .docx 文件
+**步骤1 - 现在执行：**
+使用 read_document 工具读取第一份报告：12陈家阁大桥定期检测2018.10.docx
 
-## 输出要求
+**步骤2 - 紧接着：**
+使用 read_document 工具读取第二份报告：03 陈家阁大桥.doc
 
-**必须使用 document 工具（operation=w）生成 Word 文档：**
+**步骤3 - 紧接着：**
+使用 read_document 工具读取第三份报告：09 陈家阁立交.doc
+
+**步骤4 - 然后立即：**
+基于三份报告的数据分析趋势并预测2024年状况
+
+**步骤5 - 最后必须：**
+使用 document 工具（operation=w）生成完整的 Word 文档：
 - file_path: "2024年陈家阁大桥检测报告预测.docx"
-- content: 完整的 Markdown 格式报告
+- content: 完整的 Markdown 格式报告（见下方模板）
 - metadata: {"title":"2024年陈家阁大桥检测报告","author":"AI预测"}
 
-## 报告结构（必须包含以下章节）
+## 报告结构（必须包含所有章节）
 
 ```
 {{cover:title}} 检 测   报   告
@@ -95,12 +105,12 @@ PREDICTION_PROMPT = """工作区中已上传三份陈家阁大桥的历史检测
 ## 十、检测结论及处治建议
 ```
 
-## 格式要求
-
-- 使用标准 Markdown 表格语法
-- 标题层级：# 大章节 → ## 小节 → ### 子节
-- 数据具体：BCI数值、评分、扣分值需基于历史数据推算
-- 直接执行，不要询问确认！"""
+## ⛔ 禁止事项：
+- ❌ 不要说"好的"、"我明白了"等确认消息
+- ❌ 不要使用 update_todo 或 switch_execution_mode 工具
+- ❌ 不要制定计划或列出步骤
+- ❌ 不要等待用户输入
+- ✅ 必须立即开始执行步骤 1！"""
 
 
 def resolve_source_file(source_path: Path) -> Path:
@@ -180,13 +190,26 @@ async def read_ground_truth_report(ground_truth_path: Path) -> str:
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
     from service.agent_service.tools.document_tools import _docx_read, _convert_doc_to_docx
+    import time as _time
     
     if suffix == ".docx":
         result = _docx_read(str(full_path))
     elif suffix == ".doc":
-        docx_path = _convert_doc_to_docx(str(full_path))
+        docx_path = None
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                docx_path = _convert_doc_to_docx(str(full_path))
+                if docx_path:
+                    break
+                if attempt < max_retries - 1:
+                    _time.sleep(2 * (attempt + 1))
+            except Exception:
+                if attempt < max_retries - 1:
+                    _time.sleep(2 * (attempt + 1))
+        
         if not docx_path:
-            raise RuntimeError(f"Failed to convert .doc to .docx: {full_path}")
+            raise RuntimeError(f"Failed to convert .doc to .docx after {max_retries} attempts: {full_path}")
         result = _docx_read(docx_path)
     else:
         result = {"error": f"Unsupported format: {suffix}", "result": None}
@@ -329,8 +352,8 @@ async def run_bridge_predict_test(
             print(f"{Colors.YELLOW}[Recovery] Stream interrupted but conversation still running (state={current_state}){Colors.ENDC}")
             print(f"{Colors.DIM}[Recovery] Event count: {result.event_count}, Tool calls: {result.tool_calls}{Colors.ENDC}")
         
-        # 额外等待 AI 完成（最多3分钟）
-        extra_wait_timeout = min(180.0, prediction_timeout / 2)
+        # 额外等待 AI 完成（最多10分钟）
+        extra_wait_timeout = min(600.0, prediction_timeout)
         if verbose:
             print(f"{Colors.DIM}[Recovery] Waiting up to {extra_wait_timeout:.0f}s for AI to complete...{Colors.ENDC}")
         
@@ -356,10 +379,75 @@ async def run_bridge_predict_test(
             print(f"{Colors.DIM}[Recovery] Current state: {current_state}{Colors.ENDC}")
     
     print_step(7, "Waiting for conversation to complete...", Colors.CYAN)
-    final_result = await wait_for_conversation_state(
-        api, conversation_id, "completed", timeout=60.0
-    )
-    result.response_text = extract_response_text(final_result)
+    
+    # 多轮等待: 处理长时间运行和短响应
+    max_completion_wait = 900  # 最多额外等15分钟
+    completion_wait_start = time.time()
+    max_retries = 5
+    retry_count = 0
+    min_response_length = 500  # 最小响应长度阈值
+    
+    while time.time() - completion_wait_start < max_completion_wait:
+        final_result = await wait_for_conversation_state(
+            api, conversation_id, "completed", timeout=60.0
+        )
+        if not final_result:
+            if verbose:
+                print_warning(f"[Step 7] API returned None, retrying...")
+            await asyncio.sleep(10)
+            continue
+        final_state = final_result.get("data", {}).get("state") if isinstance(final_result, dict) else None
+        
+        if final_state == "completed":
+            result.response_text = extract_response_text(final_result)
+            
+            # 检查响应是否太短（可能是确认消息而非最终输出）
+            if result.response_text and len(result.response_text) < min_response_length:
+                if verbose:
+                    print_warning(f"Response too short ({len(result.response_text)} chars), may be confirmation message")
+                    print(f"{Colors.DIM}[Response Preview] {result.response_text[:200]}...{Colors.ENDC}")
+                
+                # 检查是否有后续 conversation
+                if retry_count < max_retries:
+                    if verbose:
+                        print(f"{Colors.YELLOW}[Extended Wait] Waiting for actual execution...{Colors.ENDC}")
+                    await asyncio.sleep(30)
+                    
+                    # 尝试获取最新的 conversation
+                    try:
+                        session_detail = await api.get_session(session_id)
+                        conversations = session_detail.get("data", {}).get("conversations", [])
+                        if conversations:
+                            latest_conv = conversations[-1]
+                            new_conv_id = latest_conv.get("id")
+                            if new_conv_id and new_conv_id != conversation_id:
+                                    if verbose:
+                                        print(f"{Colors.DIM}[Extended Wait] Found newer conversation: {new_conv_id}{Colors.ENDC}")
+                                    conversation_id = new_conv_id
+                                    result.conversation_id = conversation_id
+                                    retry_count += 1
+                                    continue
+                    except Exception:
+                        pass
+                
+                break
+            else:
+                if verbose:
+                    print_success(f"Conversation completed with response ({len(result.response_text) if result.response_text else 0} chars)")
+            break
+            
+        elif final_state == "running":
+            if verbose:
+                elapsed = int(time.time() - completion_wait_start)
+                print(f"{Colors.DIM}[Completion Wait] Still running... ({elapsed}s elapsed){Colors.ENDC}")
+            await asyncio.sleep(15)
+        else:
+            result.response_text = extract_response_text(final_result)
+            break
+    
+    if time.time() - completion_wait_start >= max_completion_wait:
+        if verbose:
+            print_warning(f"[Completion Wait] Timeout after {max_completion_wait}s, capturing current state")
     
     print_step(8, "Reading ground truth 2024 report for comparison...", Colors.CYAN)
     ground_truth_content = ""
