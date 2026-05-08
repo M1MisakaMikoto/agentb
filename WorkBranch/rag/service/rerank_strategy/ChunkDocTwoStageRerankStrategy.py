@@ -22,6 +22,8 @@ class ChunkDocTwoStageRerankStrategy(BaseRerankStrategy):
     2) rank docs first, then emit best chunk per doc in rounds
     """
 
+    order = 300
+    enabled = True
     SECONDARY_WEIGHT = 0.2
 
     @property

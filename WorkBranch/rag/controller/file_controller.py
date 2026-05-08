@@ -1,12 +1,11 @@
 ﻿from __future__ import annotations
 
-import asyncio
 import hashlib
 import mimetypes
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
 
 from rag.DAO.file_meta_dao import FileMetaDAO
@@ -36,6 +35,7 @@ from rag.model.vo.file.KnowledgeBaseMutationVO import KnowledgeBaseMutationVO
 from rag.service.document_delete_service import DocumentDeleteService
 from rag.service.file_system_service import FileSystemService
 from rag.service.ingestion import IngestionService
+from rag.service.ingestion.ingest_queue_service import IngestQueueService
 
 _DEFAULT_APP_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = _DEFAULT_APP_ROOT if (_DEFAULT_APP_ROOT / "backend").exists() else Path(__file__).resolve().parents[3]
@@ -56,8 +56,9 @@ INGEST_JOB_ASSEMBLER = IngestJobAssembler()
 KNOWLEDGE_BASE_ASSEMBLER = KnowledgeBaseAssembler()
 LOGGER = get_logger(__name__)
 
-# --- IngestionService 单例模式（类型只加载一次，避免每次请求重建）---
+# --- IngestionService / Queue 单例模式 ---
 _INGESTION_SERVICE: Optional[IngestionService] = None
+_INGEST_QUEUE_SERVICE: Optional[IngestQueueService] = None
 
 
 def _get_ingestion_service() -> IngestionService:
@@ -65,6 +66,13 @@ def _get_ingestion_service() -> IngestionService:
     if _INGESTION_SERVICE is None:
         _INGESTION_SERVICE = IngestionService()
     return _INGESTION_SERVICE
+
+
+def _get_ingest_queue_service() -> IngestQueueService:
+    global _INGEST_QUEUE_SERVICE
+    if _INGEST_QUEUE_SERVICE is None:
+        _INGEST_QUEUE_SERVICE = IngestQueueService(worker=_get_ingestion_service())
+    return _INGEST_QUEUE_SERVICE
 
 
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
@@ -93,6 +101,16 @@ def _ensure_schema() -> None:
 def on_rag_startup() -> None:
     """Called by backend app lifespan to initialize RAG storage."""
     _ensure_schema()
+    queue_service = _get_ingest_queue_service()
+    queue_service.start()
+    for job_id in _get_ingestion_service().recover_pending_jobs():
+        queue_service.enqueue(job_id)
+
+
+def on_rag_shutdown() -> None:
+    queue_service = _INGEST_QUEUE_SERVICE
+    if queue_service is not None:
+        queue_service.stop()
 
 
 @router.get("/")
@@ -252,19 +270,15 @@ async def upload_document(
         )
         raise HTTPException(status_code=500, detail=f"Failed to persist uploaded file: {exc}")
 
-    # collection_name 由 IngestionService 根据 doc ctx 中的 kb_id 自动推导，无需外显
-    # 同步 CPU 密集型处理放入线程池，避免阻塞 asyncio event loop
-    ingest_result = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: _get_ingestion_service().ingest_document(document_id=doc_id)
-    )
+    job_id = _get_ingestion_service().create_ingest_job(doc_id)
+    _get_ingest_queue_service().enqueue(job_id)
+    ingest_result = {"ok": True, "job_id": job_id, "status": "queued"}
     LOGGER.info(
-        "upload_ingest_result document_id=%s storage_key=%s ingest_ok=%s ingest_job_id=%s chunk_count=%s error=%s",
+        "upload_ingest_enqueued document_id=%s storage_key=%s ingest_job_id=%s status=%s",
         doc_id,
         storage_key,
-        ingest_result.get("ok"),
-        ingest_result.get("job_id"),
-        ingest_result.get("chunk_count"),
-        ingest_result.get("error"),
+        job_id,
+        ingest_result["status"],
     )
     return DocumentUploadVO(
         ok=True,
@@ -418,7 +432,14 @@ def list_files(path: str = Query(default="", description="Relative directory pat
 
 
 @router.get("/api/file", deprecated=True)
-def read_file(path: str = Query(..., description="Relative file path")) -> dict:
+def read_file(
+    response: Response,
+    path: str = Query(..., description="Relative file path"),
+) -> dict:
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "Mon, 30 Jun 2026 00:00:00 GMT"
+    response.headers["Link"] = '</rag/api/documents/{document_id}/file>; rel="successor-version"'
+    LOGGER.warning("deprecated_api_used endpoint=/rag/api/file path=%s", path)
     try:
         payload = FILE_SYSTEM_SERVICE.read_file(path=path)
         return FILE_RESPONSE_ASSEMBLER.to_read_vo(payload).model_dump()

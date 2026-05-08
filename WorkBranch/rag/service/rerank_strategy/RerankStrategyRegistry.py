@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, List
 
 from .BaseRerankStrategy import BaseRerankStrategy
 
@@ -18,3 +18,7 @@ class RerankStrategyRegistry:
         if strategy is None:
             raise ValueError(f"rerank strategy not found: {name}")
         return strategy
+
+    def get_enabled_ordered(self) -> List[BaseRerankStrategy]:
+        enabled = [strategy for strategy in self._strategies.values() if strategy.is_enabled()]
+        return sorted(enabled, key=lambda strategy: (strategy.order, strategy.name))

@@ -7,6 +7,9 @@ from .RetrievalCandidate import RetrievalCandidate
 
 
 class ChunkScoreRerankStrategy(BaseRerankStrategy):
+    order = 100
+    enabled = True
+
     @property
     def name(self) -> str:
         return "chunk_score_v1"

@@ -43,6 +43,56 @@ class IngestionMetaDAO:
             )
             return int(cur.lastrowid)
 
+    def find_active_job_id(self, document_id: int) -> Optional[int]:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT id
+                FROM ingest_jobs
+                WHERE document_id = ? AND status IN ('queued', 'running')
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (document_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return int(row["id"])
+
+    def list_recoverable_job_ids(self) -> list[int]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM ingest_jobs
+                WHERE status IN ('queued', 'running')
+                ORDER BY created_at ASC, id ASC
+                """
+            ).fetchall()
+        return [int(row["id"]) for row in rows]
+
+    def get_job(self, job_id: int) -> Dict[str, Any]:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT id, document_id, status, error_message, started_at, finished_at, created_at
+                FROM ingest_jobs
+                WHERE id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Ingest job {job_id} not found")
+        return {
+            "id": int(row["id"]),
+            "document_id": int(row["document_id"]),
+            "status": str(row["status"]),
+            "error_message": str(row["error_message"]) if row["error_message"] is not None else None,
+            "started_at": str(row["started_at"]) if row["started_at"] is not None else None,
+            "finished_at": str(row["finished_at"]) if row["finished_at"] is not None else None,
+            "created_at": str(row["created_at"]),
+        }
+
     def set_document_status(self, document_id: int, status: str) -> None:
         with self._conn() as conn:
             conn.execute(

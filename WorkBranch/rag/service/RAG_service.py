@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import time
 import unicodedata
@@ -18,6 +19,7 @@ from rag.service.rerank_strategy import (
     RetrievalCandidate,
     RerankStrategyRegistry,
     TitleBoostChunkDocRerankStrategy,
+    TitleBoostRerankStrategy,
 )
 from rag.tool_schema import (
     RAGChunkHit,
@@ -43,9 +45,19 @@ class RAG_service:
         self.embedding_engine = OllamaEmbeddingEngine(base_url="http://127.0.0.1:11434", model="bge-m3:latest")
         self.rerank_registry = RerankStrategyRegistry()
         self.rerank_registry.register(ChunkScoreRerankStrategy())
+        self.rerank_registry.register(TitleBoostRerankStrategy())
         self.rerank_registry.register(ChunkDocTwoStageRerankStrategy())
         self.rerank_registry.register(TitleBoostChunkDocRerankStrategy())
-        self.default_rerank_strategy_name = "title_boost_chunk_doc_v1"
+
+    @staticmethod
+    def _get_int_env(name: str, default: int, minimum: int = 1) -> int:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            return max(minimum, int(raw))
+        except ValueError:
+            return default
 
     @staticmethod
     def _normalize_distance(distance: float) -> float:
@@ -145,9 +157,20 @@ class RAG_service:
     def _compute_recall_k(top_k: int, mode: str, use_rerank: bool) -> int:
         if not use_rerank:
             return top_k
+
+        hybrid_multiplier = RAG_service._get_int_env("RAG_RECALL_K_HYBRID_MULTIPLIER", 6)
+        dense_multiplier = RAG_service._get_int_env("RAG_RECALL_K_DENSE_MULTIPLIER", 3)
+        max_recall_k = RAG_service._get_int_env("RAG_RECALL_K_MAX", 100)
         if mode == "hybrid":
-            return min(top_k * 6, 100)
-        return min(top_k * 3, 100)
+            return min(top_k * hybrid_multiplier, max_recall_k)
+        return min(top_k * dense_multiplier, max_recall_k)
+
+    @staticmethod
+    def _current_rerank_chain_name(registry: RerankStrategyRegistry) -> str:
+        processors = registry.get_enabled_ordered()
+        if not processors:
+            return "none"
+        return ">".join(processor.name for processor in processors)
 
     def rag_search(self, req: RAGSearchRequest | Dict[str, Any]) -> RAGSearchResponse:
         started_at = time.time()
@@ -176,7 +199,7 @@ class RAG_service:
             collection_name = KnowledgeBaseDAO.get_collection_name(request.kb_id)
             where = self._build_where(request.filters)
             
-            # 使用本地模型�?query 转换�?vector
+            # 使用本地模型�?query 转换�?vector
             query_vector = self.embedding_engine.embed_texts([rewritten_query])[0]
             
             raw = self.dao.search(
@@ -243,7 +266,7 @@ class RAG_service:
 
             if request.filters and request.filters.collection_ids:
                 wanted = {int(c) for c in request.filters.collection_ids}
-                # 一�?DB 往返同时取分类映射和标题（解决问题 6+7�?                live_cat_map, live_title_map = self._load_live_category_and_title_map(all_doc_ids)
+                # 一�?DB 往返同时取分类映射和标题（解决问题 6+7�?                live_cat_map, live_title_map = self._load_live_category_and_title_map(all_doc_ids)
                 for row in candidate_rows:
                     if row.hit.doc_id > 0 and row.hit.doc_id in live_cat_map:
                         if live_cat_map[row.hit.doc_id].intersection(wanted):
@@ -258,8 +281,16 @@ class RAG_service:
                     live_title_map = self._load_live_title_map(all_doc_ids)
 
             if request.use_rerank:
-                strategy = self.rerank_registry.get(self.default_rerank_strategy_name)
-                ranked_rows = strategy.rank(scored_rows, request.top_k)
+                ranked_rows = list(scored_rows)
+                processors = self.rerank_registry.get_enabled_ordered()
+                if processors:
+                    for processor in processors:
+                        ranked_rows = processor.rank(ranked_rows, top_k=len(ranked_rows))
+                        if not ranked_rows:
+                            break
+                    ranked_rows = ranked_rows[: request.top_k]
+                else:
+                    ranked_rows = sorted(scored_rows, key=lambda row: (-row.score, row.recall_index))[: request.top_k]
             else:
                 ranked_rows = sorted(scored_rows, key=lambda row: row.recall_index)[: request.top_k]
 
@@ -279,7 +310,7 @@ class RAG_service:
                 debug=RAGSearchDebugTrace(
                     rewritten_query=rewritten_query if request.rewrite_query else None,
                     recall_k=recall_k,
-                    rerank_model=self.default_rerank_strategy_name if request.use_rerank else None,
+                    rerank_model=self._current_rerank_chain_name(self.rerank_registry) if request.use_rerank else None,
                     latency_ms=int((time.time() - started_at) * 1000),
                 ),
             ) 

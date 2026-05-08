@@ -9,6 +9,9 @@ from .ChunkDocTwoStageRerankStrategy import ChunkDocTwoStageRerankStrategy
 
 
 class TitleBoostChunkDocRerankStrategy(BaseRerankStrategy):
+    order = 400
+    enabled = False
+
     def __init__(
         self,
         boost_keywords: set[str] | None = None,

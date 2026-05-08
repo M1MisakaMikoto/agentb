@@ -26,7 +26,7 @@ from controller.plan_api import router as plan_router
 from core.logging import bind_ctx, get_ctx
 from singleton import clear_all_singletons_async, get_logging_runtime, get_settings_service, get_user_service
 from middleware.auth import AuthMiddleware
-from rag.controller.file_controller import router as rag_router, on_rag_startup
+from rag.controller.file_controller import router as rag_router, on_rag_shutdown, on_rag_startup
 
 
 for stream_name in ('stdout', 'stderr'):
@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        on_rag_shutdown()
         app_logger.info(
             event="app.stopping",
             msg="application stopping",
