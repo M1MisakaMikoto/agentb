@@ -379,25 +379,41 @@ async def logging_middleware(request: Request, call_next):
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    runtime = get_logging_runtime()
-    request_ctx = {
-        "client_id": getattr(request.state, "client_id", None),
-        "conversation_id": getattr(request.state, "conversation_id", None),
-        "workspace_id": getattr(request.state, "workspace_id", None),
-        "user_id": getattr(request.state, "user_id", None),
-        "request_id": getattr(request.state, "request_id", None),
-    }
-    with bind_ctx(**request_ctx):
-        runtime.get_logger("app").error(
-            event="error.unhandled_exception",
-            msg="unhandled exception in api request",
-            extra={
-                "scope": "api",
-                "method": request.method,
-                "path": request.url.path,
-            },
-            exception="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
-        )
+    print(f"[ERROR] Unhandled exception: {type(exc).__name__}: {exc}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+    
+    try:
+        with open('error_details.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*60}\n")
+            f.write(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Request: {request.method} {request.url.path}\n")
+            f.write(f"Exception: {type(exc).__name__}: {exc}\n")
+            f.write(f"Traceback:\n{traceback.format_exc()}\n")
+    except Exception as log_error:
+        print(f"[ERROR] Failed to write error log: {log_error}", file=sys.stderr)
+    
+    try:
+        runtime = get_logging_runtime()
+        request_ctx = {
+            "client_id": getattr(request.state, "client_id", None),
+            "conversation_id": getattr(request.state, "conversation_id", None),
+            "workspace_id": getattr(request.state, "workspace_id", None),
+            "user_id": getattr(request.state, "user_id", None),
+            "request_id": getattr(request.state, "request_id", None),
+        }
+        with bind_ctx(**request_ctx):
+            runtime.get_logger("app").error(
+                event="error.unhandled_exception",
+                msg="unhandled exception in api request",
+                extra={
+                    "scope": "api",
+                    "method": request.method,
+                    "path": request.url.path,
+                },
+                exception="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            )
+    except Exception:
+        pass
     response = JSONResponse(
         status_code=500,
         content={"code": 500, "message": "Internal Server Error", "data": None},
@@ -410,7 +426,29 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 @app.get("/health", tags=["health"])
 def health_check():
-    return {"status": "ok"}
+    """增强的健康检查端点 - 返回资源使用情况"""
+    try:
+        import psutil
+        import os
+        
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        
+        return {
+            "status": "ok",
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "resources": {
+                "memory_mb": round(memory_info.rss / 1024 / 1024, 2),
+                "cpu_percent": process.cpu_percent(),
+                "threads": process.num_threads(),
+                "open_files": len(process.open_files()) if hasattr(process, 'open_files') else 0,
+            },
+            "uptime_seconds": int(time.time() - _start_time) if '_start_time' in dir() else None,
+        }
+    except ImportError:
+        return {"status": "ok", "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")}
+    except Exception as e:
+        return {"status": "warning", "message": str(e), "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")}
 
 
 app.include_router(user_router)

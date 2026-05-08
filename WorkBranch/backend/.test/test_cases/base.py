@@ -518,7 +518,15 @@ async def collect_stream_output(
                     if verbose:
                         print(f"{Colors.YELLOW}[warning] Received None from stream iterator, skipping{Colors.ENDC}")
                     continue
+                
+                if not isinstance(item, dict):
+                    if verbose:
+                        print(f"{Colors.YELLOW}[warning] Invalid item type: {type(item).__name__}, skipping{Colors.ENDC}")
+                    continue
+                
                 raw_line = item.get("raw_line", "")
+                if not raw_line or not isinstance(raw_line, str):
+                    continue
                 if not raw_line.strip():
                     continue
 
@@ -530,13 +538,20 @@ async def collect_stream_output(
                 if raw_line.startswith(": heartbeat"):
                     if verbose and loop_count % 15 == 0:
                         print(f"{Colors.DIM}[heartbeat]{Colors.ENDC}")
-                    conv_check = await api.get_conversation(conversation_id)
-                    conv_state = conv_check.get("data", {}).get("state")
-                    if conv_state == "completed":
+                    try:
+                        conv_check = await api.get_conversation(conversation_id)
+                        if conv_check and isinstance(conv_check, dict):
+                            conv_data = conv_check.get("data", {})
+                            if isinstance(conv_data, dict):
+                                conv_state = conv_data.get("state")
+                                if conv_state == "completed":
+                                    if verbose:
+                                        print(f"{Colors.GREEN}[heartbeat] Conversation completed{Colors.ENDC}")
+                                    result.done = True
+                                    return
+                    except Exception as heartbeat_err:
                         if verbose:
-                            print(f"{Colors.GREEN}[heartbeat] Conversation completed{Colors.ENDC}")
-                        result.done = True
-                        return
+                            print(f"{Colors.DIM}[heartbeat error] {heartbeat_err}{Colors.ENDC}")
                     continue
 
                 if not raw_line.startswith("data: "):
@@ -571,14 +586,18 @@ async def collect_stream_output(
                     if verbose and len(content) > 10:
                         safe_print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
                 elif event_type == "tool_call":
-                    metadata = data.get("metadata", {})
+                    metadata = data.get("metadata") or {}
+                    if not isinstance(metadata, dict):
+                        metadata = {}
                     tool_name = metadata.get("tool_name", "unknown")
                     result.tool_calls.append(tool_name)
                     if verbose:
                         args_preview = str(metadata.get("tool_args", {}))[:80]
                         print(f"{Colors.MAGENTA}[tool_call] {tool_name}({args_preview}){Colors.ENDC}")
                 elif event_type == "state_change":
-                    metadata = data.get("metadata", {})
+                    metadata = data.get("metadata") or {}
+                    if not isinstance(metadata, dict):
+                        metadata = {}
                     execution_mode = metadata.get("execution_mode")
                     if execution_mode:
                         result.detected_mode = execution_mode
@@ -602,7 +621,9 @@ async def collect_stream_output(
                     if verbose:
                         print(f"{Colors.YELLOW}[plan_end] Plan generation completed{Colors.ENDC}")
                 elif event_type == "conversation_handoff":
-                    metadata = data.get("metadata", {})
+                    metadata = data.get("metadata") or {}
+                    if not isinstance(metadata, dict):
+                        metadata = {}
                     auto_approved = metadata.get('auto_approved')
                     next_conv_id = metadata.get('next_conversation_id')
                     

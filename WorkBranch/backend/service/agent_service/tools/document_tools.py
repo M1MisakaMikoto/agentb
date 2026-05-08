@@ -4,10 +4,15 @@ import json
 import time
 import tempfile
 import shutil
-from typing import Optional, Dict, Any, Tuple
+import gc
+from typing import Optional, Dict, Any, Tuple, List, Generator
 
 from .registry import ToolDefinition, ToolRegistry
 from singleton import get_settings_service
+
+DOCUMENT_CHUNK_SIZE = 500
+DOCUMENT_MAX_MEMORY_MB = 300
+FORCE_GC_AFTER_CHUNKS = 3
 
 
 def _get_ext(file_path: str) -> str:
@@ -16,6 +21,44 @@ def _get_ext(file_path: str) -> str:
 
 def _make_result(data: Optional[dict] = None, error: Optional[str] = None) -> dict:
     return {"result": data, "error": error}
+
+
+def _split_content_into_chunks(content: str, chunk_size: int = DOCUMENT_CHUNK_SIZE) -> Generator[List[str], None, None]:
+    """将内容按行分割成块，降低峰值内存"""
+    lines = content.split('\n')
+    current_chunk = []
+    
+    for line in lines:
+        if line.strip():
+            current_chunk.append(line)
+        
+        if len(current_chunk) >= chunk_size:
+            yield current_chunk
+            current_chunk = []
+    
+    if current_chunk:
+        yield current_chunk
+
+
+def _check_memory_before_operation(threshold_mb: int = DOCUMENT_MAX_MEMORY_MB) -> bool:
+    """执行操作前检查内存，超阈值主动释放"""
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        memory_mb = process.memory_info().rss / 1024 / 1024
+        
+        if memory_mb > threshold_mb:
+            print(f"[MEMORY] 操作前内存偏高: {memory_mb:.1f}MB > {threshold_mb}MB")
+            collected = gc.collect()
+            
+            memory_after = process.memory_info().rss / 1024 / 1024
+            print(f"[MEMORY] GC 后: {memory_after:.1f}MB (释放: {memory_mb - memory_after:.1f}MB)")
+            
+            return memory_after <= threshold_mb * 1.5
+        
+        return True
+    except ImportError:
+        return True
 
 
 # ============================================================
@@ -420,16 +463,30 @@ def _set_east_asia_font(run, font_name: str):
 
 
 def _check_memory_usage(threshold_mb: int = 512) -> bool:
-    """检查当前进程内存使用情况"""
+    """检查当前进程内存使用情况，超过阈值主动释放"""
     try:
         import psutil
+        import gc
         import os
+        
         process = psutil.Process(os.getpid())
         memory_info = process.memory_info()
         memory_mb = memory_info.rss / 1024 / 1024
         
         if memory_mb > threshold_mb:
             print(f"[WARNING] 内存使用过高: {memory_mb:.1f}MB > {threshold_mb}MB")
+            print("[ACTION] 执行垃圾回收...")
+            
+            collected = gc.collect()
+            print(f"[GC] 回收了 {collected} 个对象")
+            
+            memory_info_after = process.memory_info()
+            memory_mb_after = memory_info_after.rss / 1024 / 1024
+            print(f"[MEMORY] GC 后内存: {memory_mb_after:.1f}MB (释放: {memory_mb - memory_mb_after:.1f}MB)")
+            
+            if memory_mb_after > threshold_mb * 1.5:
+                raise MemoryError(f"内存严重不足: {memory_mb_after:.1f}MB (阈值: {threshold_mb}MB)")
+            
             return False
         return True
     except ImportError:
@@ -673,6 +730,9 @@ def _docx_write(file_path: str, content: str, metadata: Optional[dict] = None) -
         return _make_result(error="缺少依赖: pip install python-docx")
     
     try:
+        if not _check_memory_before_operation():
+            return _make_result(error=f"内存不足，当前使用超过 {DOCUMENT_MAX_MEMORY_MB}MB")
+        
         ext = _get_ext(file_path)
         target_path = file_path if ext == ".docx" else tempfile.mktemp(suffix=".docx")
         
@@ -686,9 +746,50 @@ def _docx_write(file_path: str, content: str, metadata: Optional[dict] = None) -
         if meta.get("subject"):
             doc.core_properties.subject = meta["subject"]
         
-        _markdown_to_docx_content(content, doc)
+        total_chars = len(content)
+        print(f"[DOCX-CHUNKED] 开始分块处理文档 (总字符: {total_chars:,})")
+        
+        chunks = list(_split_content_into_chunks(content))
+        total_chunks = len(chunks)
+        print(f"[DOCX-CHUNKED] 分为 {total_chunks} 个块 (每块 ~{DOCUMENT_CHUNK_SIZE} 行)")
+        
+        processed_chunks = 0
+        
+        for chunk_idx, chunk in enumerate(chunks):
+            for line in chunk:
+                if line.strip():
+                    p = doc.add_paragraph(line)
+                    try:
+                        from docx.shared import Cm, Pt
+                        p.paragraph_format.first_line_indent = Cm(0.74) if any('\u4e00' <= c <= '\u9fff' for c in line) else None
+                        p.paragraph_format.line_spacing = 1.5
+                        for run in p.runs:
+                            run.font.name = 'SimSun'
+                            _set_east_asia_font(run, 'SimSun')
+                            run.font.size = Pt(12)
+                    except Exception:
+                        pass
+            
+            processed_chunks += 1
+            
+            if processed_chunks % FORCE_GC_AFTER_CHUNKS == 0:
+                progress_pct = (processed_chunks / total_chunks) * 100
+                print(f"[DOCX-CHUNKED] 处理进度: {progress_pct:.1f}% (块 {processed_chunks}/{total_chunks})")
+                
+                collected = gc.collect()
+                if collected > 0:
+                    print(f"[DOCX-CHUNKED] 执行 GC 回收了 {collected} 个对象")
+                
+                if not _check_memory_before_operation(DOCUMENT_MAX_MEMORY_MB * 1.5):
+                    print(f"[WARNING] 内存持续偏高，但继续处理...")
+        
+        print(f"[DOCX-CHUNKED] 所有块处理完成 ({processed_chunks}/{total_chunks})")
         
         doc.save(target_path)
+        print(f"[DOCX-CHUNKED] 文档已保存到: {target_path}")
+        
+        del doc
+        gc.collect()
         
         if ext == ".doc":
             try:
