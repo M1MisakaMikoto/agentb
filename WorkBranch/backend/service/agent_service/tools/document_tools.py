@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import json
 import time
@@ -1192,6 +1192,24 @@ def _excel_update(file_path: str, target: str, content: Any,
 # ============================================================
 # 统一入口：execute_document (类似 fopen)
 # ============================================================
+
+def _redirect_to_workspace(file_path: str) -> str:
+    if os.path.isabs(file_path):
+        return file_path
+    try:
+        settings = get_settings_service()
+        workspace_id = settings.get("current:workspace_id")
+        session_id = settings.get("current:session_id")
+        if workspace_id and session_id:
+            workspace_dir = os.path.join("workspaces", session_id, workspace_id)
+            os.makedirs(workspace_dir, exist_ok=True)
+            redirected = os.path.join(workspace_dir, file_path)
+            print(f"[PATH-REDIRECT] {file_path} -> {redirected}")
+            return redirected
+    except Exception as e:
+        print(f"[PATH-REDIRECT] Warning: cannot get workspace info: {e}")
+    return file_path
+
 
 def execute_document(tool_args: dict) -> dict:
     operation = tool_args.get("operation")

@@ -80,8 +80,75 @@ def memory_monitor_thread():
         time.sleep(MEMORY_CHECK_INTERVAL_SEC)
 
 
+def setup_signal_handlers():
+    """配置信号处理器以支持优雅关闭（用于独立启动模式）"""
+    logger.info("配置信号处理器...")
+    
+    def on_shutdown_signal(signum, frame):
+        """
+        处理关闭信号（SIGINT/SIGTERM/SIGBREAK）
+        当用户关闭 CMD 窗口或按 Ctrl+C 时触发
+        """
+        import datetime
+        
+        signal_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+        
+        logger.warning("=" * 60)
+        logger.warning(f"📡 接收到关闭信号: {signal_name} ({signum})")
+        logger.warning(f"   时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+        
+        try:
+            import psutil
+            proc = psutil.Process(os.getpid())
+            mem_mb = proc.memory_info().rss / 1024 / 1024
+            logger.warning(f"   当前内存: {mem_mb:.1f}MB")
+            logger.warning(f"   活跃线程: {threading.active_count()}")
+        except ImportError:
+            pass
+        
+        logger.warning("   正在通知 Uvicorn 优雅停止...")
+        logger.warning("=" * 60)
+    
+    def on_force_exit(signum, frame):
+        """处理强制退出信号（第二次 SIGINT）"""
+        logger.critical("=" * 60)
+        logger.critical("⚠️  收到强制退出信号！立即终止...")
+        logger.critical("=" * 60)
+        sys.exit(1)
+    
+    signals_configured = []
+    
+    try:
+        signal.signal(signal.SIGINT, on_shutdown_signal)
+        signals_configured.append('SIGINT')
+    except (OSError, ValueError) as e:
+        logger.warning(f"无法配置 SIGINT: {e}")
+    
+    try:
+        signal.signal(signal.SIGTERM, on_shutdown_signal)
+        signals_configured.append('SIGTERM')
+    except (OSError, ValueError) as e:
+        logger.warning(f"无法配置 SIGTERM: {e}")
+    
+    # Windows 特有：处理 CTRL+BREAK（窗口关闭时发送）
+    if hasattr(signal, 'SIGBREAK'):
+        try:
+            signal.signal(signal.SIGBREAK, on_shutdown_signal)
+            signals_configured.append('SIGBREAK')
+        except (OSError, ValueError) as e:
+            logger.warning(f"无法配置 SIGBREAK: {e}")
+    
+    if signals_configured:
+        logger.info(f"✅ 已配置信号处理器: {', '.join(signals_configured)}")
+        logger.info("   关闭窗口或按 Ctrl+C 可优雅停止服务")
+    else:
+        logger.warning("⚠️  未成功配置任何信号处理器")
+
+
 def run_server():
     """运行服务器单次实例"""
+    setup_signal_handlers()
+    
     uvicorn.run(
         app,
         host="127.0.0.1",

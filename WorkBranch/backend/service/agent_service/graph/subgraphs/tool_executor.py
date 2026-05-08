@@ -250,6 +250,16 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
                 tool_args["workspace_root"] = workspace_root
                 console.info(f"工作区根目录: {workspace_root}")
 
+        if tool_name in {"document", "read_document"} and workspace_service:
+            target_path = tool_args.get("file_path")
+            if target_path and not os.path.isabs(target_path):
+                allowed, resolved_path = workspace_service.resolve_path(workspace_id, target_path)
+                if allowed:
+                    tool_args["file_path"] = resolved_path
+                    console.info(f"[document] 路径已解析: {target_path} -> {resolved_path}")
+                else:
+                    console.error(f"[document] 路径解析失败: {resolved_path}")
+
         if tool_name in SPECIAL_TOOLS:
             tool_result = _execute_special_tool(
                 tool_name, tool_args, task_description, llm_service, message_context, token_callback
