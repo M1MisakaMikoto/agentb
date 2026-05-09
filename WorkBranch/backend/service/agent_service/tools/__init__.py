@@ -4,6 +4,7 @@ from .agent_tools import register_agent_tools, AGENT_TOOLS
 from .rag_tool import register_rag_tools
 from .document_tools import register_document_tools, DOCUMENT_TOOLS as DOC_TOOLS
 from .sql_tools import register_sql_tools, SQL_TOOLS as SQL_TOOLS_DEF
+from .prediction_tools import register_prediction_tools, PREDICTION_TOOLS_META
 from .executors import ToolExecutor
 
 __all__ = [
@@ -20,11 +21,13 @@ __all__ = [
     "WORKSPACE_TOOLS",
     "DOCUMENT_TOOLS",
     "SQL_TOOLS",
+    "PREDICTION_TOOLS_META",
     "register_plan_tools",
     "register_agent_tools",
     "register_rag_tools",
     "register_document_tools",
     "register_sql_tools",
+    "register_prediction_tools",
 ]
 
 def register_all_tools():
@@ -34,4 +37,5 @@ def register_all_tools():
     register_rag_tools()
     register_document_tools()
     register_sql_tools()
+    register_prediction_tools()
 

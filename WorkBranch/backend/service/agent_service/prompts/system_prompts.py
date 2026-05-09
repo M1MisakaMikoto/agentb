@@ -3,7 +3,8 @@ from .agent_prompts import (
     GENERAL_PURPOSE_PROMPT,
     EXPLORE_AGENT_PROMPT,
     PLAN_AGENT_PROMPT,
-    REVIEW_AGENT_PROMPT
+    REVIEW_AGENT_PROMPT,
+    PREDICTION_AGENT_PROMPT
 )
 
 
@@ -11,7 +12,8 @@ AGENT_PROMPTS = {
     "general-purpose": GENERAL_PURPOSE_PROMPT,
     "explore": EXPLORE_AGENT_PROMPT,
     "plan": PLAN_AGENT_PROMPT,
-    "review": REVIEW_AGENT_PROMPT
+    "review": REVIEW_AGENT_PROMPT,
+    "prediction": PREDICTION_AGENT_PROMPT
 }
 
 

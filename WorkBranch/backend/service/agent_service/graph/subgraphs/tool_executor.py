@@ -298,6 +298,29 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             tool_result = _execute_call_explore_agent(tool_args, llm_service, token_callback, message_context)
         elif tool_name == "call_review_agent":
             tool_result = _execute_call_review_agent(tool_args, llm_service, token_callback, message_context)
+        elif tool_name == "call_prediction_agent":
+            tool_result = _execute_call_prediction_agent(tool_args, llm_service, token_callback, message_context)
+        elif tool_name == "calculate_bci":
+            from service.agent_service.tools.prediction_tools import calculate_bci
+            try:
+                result = calculate_bci(**tool_args)
+                tool_result = {"result": result, "error": None}
+            except Exception as e:
+                tool_result = {"result": None, "error": f"BCI计算失败: {str(e)}"}
+        elif tool_name == "predict_trend":
+            from service.agent_service.tools.prediction_tools import predict_trend
+            try:
+                result = predict_trend(**tool_args)
+                tool_result = {"result": result, "error": None}
+            except Exception as e:
+                tool_result = {"result": None, "error": f"趋势预测失败: {str(e)}"}
+        elif tool_name == "query_standard":
+            from service.agent_service.tools.prediction_tools import query_standard
+            try:
+                result = query_standard(**tool_args)
+                tool_result = {"result": result, "error": None}
+            except Exception as e:
+                tool_result = {"result": None, "error": f"规范查询失败: {str(e)}"}
         elif tool_name == "rag_search":
             tool_result = execute_rag_search(tool_args)
         elif tool_name == "read_document":
@@ -1066,6 +1089,80 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
 
     except Exception as e:
         print(f"[ToolExec] call_review_agent 失败: {e}")
+        return {"result": None, "error": f"子代理执行失败: {str(e)}"}
+
+
+def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_callback=None, message_context: dict = None) -> dict:
+    """执行 call_prediction_agent 工具 - 切换到预测 Agent Graph"""
+    task_description = tool_args.get("task_description")
+    if not task_description:
+        return {"result": None, "error": "缺少 task_description 参数"}
+
+    print(f"[ToolExec] call_prediction_agent: {task_description}")
+
+    if llm_service is None:
+        return {"result": None, "error": "LLM 服务未配置，无法执行子代理任务"}
+
+    workspace_id = None
+    parent_chain_messages = []
+    current_conversation_messages = []
+    settings_service = None
+    if message_context:
+        workspace_id = message_context.get("workspace_id")
+        parent_chain_messages = message_context.get("parent_chain_messages") or []
+        current_conversation_messages = message_context.get("current_conversation_messages") or []
+        settings_service = message_context.get("settings_service")
+
+    if not workspace_id:
+        return {"result": None, "error": "缺少 workspace_id，无法切换到预测 Agent Graph"}
+
+    try:
+        from ..agent_graphs import run_agent_graph
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                run_agent_graph,
+                "prediction_agent",
+                task_description,
+                workspace_id,
+                llm_service,
+                token_callback,
+                "accumulate",
+                3,
+                settings_service,
+                message_context,
+                parent_chain_messages,
+                current_conversation_messages,
+                False,
+            )
+            try:
+                outcome = future.result(timeout=300)
+            except FutureTimeoutError:
+                future.cancel()
+                outcome = {
+                    "kind": "graph",
+                    "status": "failed",
+                    "payload": None,
+                    "produced_user_reply": False,
+                    "exit_info": {
+                        "code": "subgraph_timeout",
+                        "message": "prediction_agent 子图执行超时（5分钟）",
+                        "details": {"agent_type": "prediction_agent", "timeout_seconds": 300},
+                    },
+                }
+
+        if outcome.get("status") == "failed":
+            exit_info = outcome.get("exit_info") or {}
+            error_msg = exit_info.get("message") or exit_info.get("code") or "子代理执行失败"
+            print(f"[ToolExec] call_prediction_agent 失败: {error_msg}")
+            return {"result": None, "error": error_msg, "outcome": outcome}
+
+        result = outcome.get("payload") or ""
+        print(f"[ToolExec] call_prediction_agent 完成")
+        return {"result": result, "error": None, "outcome": outcome}
+
+    except Exception as e:
+        print(f"[ToolExec] call_prediction_agent 失败: {e}")
         return {"result": None, "error": f"子代理执行失败: {str(e)}"}
 
 

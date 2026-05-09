@@ -20,4 +20,8 @@ AGENT_GRAPH_CONFIG = {
         "execution_mode": ExecutionMode.DIRECT,
         "system_prompt_key": "REVIEW",
     },
+    "prediction_agent": {
+        "execution_mode": ExecutionMode.DIRECT,
+        "system_prompt_key": "PREDICTION",
+    },
 }

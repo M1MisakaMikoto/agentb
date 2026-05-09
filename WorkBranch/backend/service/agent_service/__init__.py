@@ -12,6 +12,7 @@ from .subagents import BaseSubAgent, ExploreAgent, ReviewAgent, get_subagent
 from .agents import AgentRegistry, AgentDefinition, AgentCapability
 from .prompts import (
     GENERAL_PURPOSE_PROMPT, EXPLORE_AGENT_PROMPT, PLAN_AGENT_PROMPT, REVIEW_AGENT_PROMPT,
+    PREDICTION_AGENT_PROMPT,
     AGENT_PROMPTS, get_agent_prompt, enhance_prompt_with_context
 )
 
@@ -49,6 +50,7 @@ __all__ = [
     "EXPLORE_AGENT_PROMPT",
     "PLAN_AGENT_PROMPT",
     "REVIEW_AGENT_PROMPT",
+    "PREDICTION_AGENT_PROMPT",
     "AGENT_PROMPTS",
     "get_agent_prompt",
     "enhance_prompt_with_context",
