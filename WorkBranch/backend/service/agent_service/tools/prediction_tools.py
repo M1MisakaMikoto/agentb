@@ -12,6 +12,8 @@ import math
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
+from .registry import ToolDefinition
+
 
 # ============================================================
 # 常量定义
@@ -527,6 +529,6 @@ def register_prediction_tools():
             name=tool_meta["name"],
             params=tool_meta["params"],
             description=tool_meta["description"],
-            returns=tool_meta.get("returns", ""),
+            category="prediction",
         )
         ToolRegistry.register(tool_def)
