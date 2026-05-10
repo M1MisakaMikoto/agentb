@@ -5,7 +5,6 @@ from service.session_service.message_content import (
     build_user_message,
     resolve_runtime_parts,
 )
-from service.agent_service.graph.subgraphs.tool_registry import generate_tool_prompt
 from singleton import get_workspace_service
 
 
@@ -351,6 +350,7 @@ def format_todo_prompt_block(todos: List[str], current_todo_index: int) -> str:
 
 
 def get_plan_system_prompt(agent_type: str = "director_agent", settings_service=None) -> str:
+    from service.agent_service.graph.subgraphs.tool_registry import generate_tool_prompt
     tool_prompt = generate_tool_prompt(agent_type, settings_service)
     return PLAN_SYSTEM_PROMPT_BASE.format(tool_prompt=tool_prompt)
 
@@ -453,6 +453,7 @@ def build_intent_analysis_messages(
     settings_service=None,
     message_context: Optional[dict] = None,
 ) -> tuple[str, List[dict]]:
+    from service.agent_service.graph.subgraphs.tool_registry import generate_tool_prompt
     tool_prompt = generate_tool_prompt(agent_type, settings_service)
     system_prompt = INTENT_ANALYSIS_PROMPT.format(tool_prompt=tool_prompt)
     prompt = (

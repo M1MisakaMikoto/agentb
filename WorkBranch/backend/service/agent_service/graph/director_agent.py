@@ -570,6 +570,24 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
 
         context_prompt = build_context_prompt(parent_chain_messages, current_conversation_messages, current_task)
 
+        try:
+            import datetime
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"[{timestamp}] === COMPLETE PROMPT FOR LLM CALL ===\n")
+                f.write(f"Agent Type: {current_agent_type}\n")
+                f.write(f"Mode: {'PLAN' if is_plan_mode else 'DIRECT'}\n")
+                f.write(f"Iteration: {iteration_count}/{max_iterations}\n")
+                f.write(f"\n{'='*40} SYSTEM PROMPT {'='*40}\n")
+                f.write(system_prompt)
+                f.write(f"\n\n{'='*40} USER MESSAGE {'='*40}\n")
+                f.write(context_prompt)
+                f.write(f"\n{'='*80}\n")
+                f.flush()
+        except Exception as e:
+            pass
+
         response = None
         try:
             response = llm_service.chat(
