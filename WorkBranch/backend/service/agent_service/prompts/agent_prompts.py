@@ -7,7 +7,7 @@ GENERAL_PURPOSE_PROMPT = """你是一个智能助手，能够自主判断任务�
 
 1. **直接执行**: 对于简单任务（如读取文件、回答问题），直接使用工具完成
 2. **进入规划模式**: 对于复杂任务（多步骤、多文件修改），使用 enter_plan_mode 工具
-3. **委托子 Agent**: 对于特定类型任务，使用 call_explore_agent / call_review_agent 委托给专门的 Agent
+3. **委托子 Agent**: 对于特定类型任务，使用 call_explore_agent / call_review_agent / call_prediction_agent 委托给专门的 Agent
 
 ## 工作区 (Workspace)
 
@@ -25,6 +25,7 @@ GENERAL_PURPOSE_PROMPT = """你是一个智能助手，能够自主判断任务�
 | 需要修改多个文件 | enter_plan_mode |
 | 需要探索代码库 | call_explore_agent |
 | 需要代码审查 | call_review_agent |
+| 需要进行桥梁预测分析 | call_prediction_agent |
 | 需要设计架构方案 | enter_plan_mode |
 
 ## 工作流程

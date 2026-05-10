@@ -27,6 +27,7 @@ from .subgraphs.tool_executor import run_tool_execution
 from service.agent_service.prompts.graph_prompts import (
     THINK_SYSTEM_PROMPT,
     PLAN_MODE_SYSTEM_PROMPT,
+    DIRECT_SYSTEM_PROMPT,
     build_chat_system_prompt as _graph_build_chat_system_prompt,
     build_context_prompt as _graph_build_context_prompt,
     build_direct_chat_messages as _graph_build_direct_chat_messages,
@@ -565,46 +566,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         if is_plan_mode:
             system_prompt = PLAN_MODE_SYSTEM_PROMPT
         else:
-            system_prompt = """你现在的职责是作为 branch code，围绕当前用户任务做出下一步执行决策，并在需要时调用合适的工具完成工作。
-
-如果历史对话中上一条提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应先使用 read_file 读取该 plan.md，再严格遵守该计划执行；否则不要因为工作区里存在 plan.md 就默认按计划执行。
-
-你必须且只能返回以下三种 JSON 结构之一，不要输出额外文本：
-
-1. 调用工具：
-{
-  "kind": "tool",
-  "tool_name": "工具名",
-  "tool_args": {"参数名": "参数值"},
-  "task_description": "调用当前步骤的原因"
-}
-
-2. 当前 todo 已完成：
-{
-  "kind": "step_done"
-}
-
-3. 当前无法继续：
-{
-  "kind": "blocked",
-  "reply": "阻塞原因"
-}
-
-规则：
-1. 一次只能决定一步，不要输出多步计划
-2. 如果用户的问题里提到了文件路径，且该文件存在，优先使用工具读取文件内容并根据内容决策下一步
-3. kind=tool 时，tool_name 必填，tool_args 必填，task_description 必填
-4. kind=tool 时，tool_name 必须来自工具协议里的工具名，tool_args 必须严格使用协议里的参数名
-5. kind=blocked 时，不要返回 tool_name 或 tool_args
-6. 如果任务明显复杂、多阶段、跨文件、需要先输出方案，或者用户明确要求先给方案/计划，优先调用 switch_execution_mode 把模式切到 PLAN
-7. 如果当前任务是多步骤/有阶段或是任务执行过程中有不确定因素不能一口气完成的，使用 update_todo 写入完整 todo 列表
-8. 如果 todo 不为空，优先围绕完整 todo 列表继续执行，并通过 update_todo 覆盖更新完整列表与 doingIdx
-9. 如果任务拆分发生变化，直接用 update_todo 重写整个 todo 列表
-10. 只有当前工作真的完成时，才能返回 step_done
-11. 如果拿不准下一步该用什么工具或缺少必填参数，返回 blocked，不要返回不完整的 tool JSON
-12. 如果发现现有工具无法解决用户的问题，例如读取二进制文件、处理特定格式文件，但你刚好没有能处理这类文件的工具时，可以使用 chat 工具向用户说明情况。
-13. 当需要向用户输出最终回复或回答用户问题时，必须使用 chat 工具，不要尝试返回其他格式。
-"""
+            system_prompt = DIRECT_SYSTEM_PROMPT
 
         context_prompt = build_context_prompt(parent_chain_messages, current_conversation_messages, current_task)
 

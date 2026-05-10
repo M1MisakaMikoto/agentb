@@ -130,7 +130,24 @@ def generate_tool_prompt(agent_type: str, settings_service=None) -> str:
         if tool["params"]:
             lines.append(tool["params"])
     result = "\n".join(lines)
-    print(f"[Tool Prompt] agent_type={agent_type}, tools={[t['name'] for t in tools]}")
+    
+    try:
+        import datetime
+        tool_names = [t['name'] for t in tools]
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"[{timestamp}] === TOOL LIST FOR {agent_type} ===\n")
+            f.write(f"Total tools: {len(tools)}\n")
+            f.write(f"Tool names: {tool_names}\n")
+            f.write(f"Has call_prediction_agent: {'call_prediction_agent' in tool_names}\n")
+            f.write(f"\n--- FULL TOOL PROMPT ---\n{result}\n")
+            f.write(f"{'='*80}\n")
+            f.flush()
+    except Exception as e:
+        pass
+    
     return result
 
 

@@ -109,6 +109,11 @@ ALL_TOOLS = {
         "description": "调用审查子代理",
         "params": 'call_review_agent:{"task_description":"(交给审查子代理的任务描述)"}'
     },
+    "call_prediction_agent": {
+        "name": "call_prediction_agent",
+        "description": "调用桥梁检测预测子代理，用于BCI计算、趋势预测和规范查询",
+        "params": 'call_prediction_agent:{"task_description":"(交给预测子代理的任务描述，例如：基于历史检测报告计算BCI并预测未来状况)"}'
+    },
     "update_todo": {
         "name": "update_todo",
         "description": "用完整列表覆盖更新 TODO 状态",
@@ -159,7 +164,7 @@ ALL_TOOLS = {
 
 FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir"}
 EXPLORE_TOOLS = {"explore_code", "explore_internet"}
-SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent"}
+SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent", "call_prediction_agent"}
 TODO_TOOLS = {"update_todo"}
 RAG_TOOLS = {"rag_search"}
 WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}

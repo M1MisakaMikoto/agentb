@@ -171,6 +171,22 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
 
     tool_name = state["tool_name"]
     tool_args = state["tool_args"].copy()
+    
+    # Log every tool call with full details
+    try:
+        import datetime
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"[{timestamp}] === TOOL CALL ===\n")
+            f.write(f"Tool Name: {tool_name}\n")
+            f.write(f"Tool Args: {tool_args}\n")
+            f.write(f"Task Description: {state.get('task_description', '')}\n")
+            f.write(f"Is Prediction Agent Call: {tool_name == 'call_prediction_agent'}\n")
+            f.flush()
+    except Exception as e:
+        pass
+    
     if "file_name" in tool_args and "file_path" not in tool_args and "path" not in tool_args:
         tool_args["file_path"] = tool_args.pop("file_name")
     if "file_content" in tool_args and "content" not in tool_args:
@@ -299,28 +315,63 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
         elif tool_name == "call_review_agent":
             tool_result = _execute_call_review_agent(tool_args, llm_service, token_callback, message_context)
         elif tool_name == "call_prediction_agent":
+            import datetime
+            log_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] 🎯 call_prediction_agent CALLED! Args: {tool_args}\n"
+            log_msg += f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✅ Prediction Sub-Agent is being invoked...\n"
+            with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:
+                f.write(log_msg)
+                f.flush()
+            print(f"[DEBUG-PREDICTION] 🎯 call_prediction_agent CALLED! Args: {tool_args}")
+            print(f"[DEBUG-PREDICTION] ✅ Prediction Sub-Agent is being invoked...")
             tool_result = _execute_call_prediction_agent(tool_args, llm_service, token_callback, message_context)
+            complete_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✓ Prediction Sub-Agent COMPLETED!\n"
+            with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:
+                f.write(complete_msg)
+                f.flush()
+            print(f"[DEBUG-PREDICTION] ✓ Prediction Sub-Agent COMPLETED!")
         elif tool_name == "calculate_bci":
+            import datetime
+            log_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] 🔢 calculate_bci CALLED! Args: {tool_args}\n"
+            with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:
+                f.write(log_msg)
+                f.flush()
+            print(f"[DEBUG-PREDICTION] 🔢 calculate_bci CALLED! Args: {tool_args}")
             from service.agent_service.tools.prediction_tools import calculate_bci
             try:
                 result = calculate_bci(**tool_args)
                 tool_result = {"result": result, "error": None}
+                success_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✓ BCI计算成功: {str(result)[:200]}\n"
+                with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:
+                    f.write(success_msg)
+                    f.flush()
+                print(f"[DEBUG-PREDICTION] ✓ BCI计算成功: {str(result)[:200]}")
             except Exception as e:
                 tool_result = {"result": None, "error": f"BCI计算失败: {str(e)}"}
+                error_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✗ BCI计算失败: {e}\n"
+                with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:
+                    f.write(error_msg)
+                    f.flush()
+                print(f"[DEBUG-PREDICTION] ✗ BCI计算失败: {e}")
         elif tool_name == "predict_trend":
+            print(f"[DEBUG-PREDICTION] 📈 predict_trend CALLED! Args: {tool_args}")
             from service.agent_service.tools.prediction_tools import predict_trend
             try:
                 result = predict_trend(**tool_args)
                 tool_result = {"result": result, "error": None}
+                print(f"[DEBUG-PREDICTION] ✓ 趋势预测成功: {str(result)[:200]}")
             except Exception as e:
                 tool_result = {"result": None, "error": f"趋势预测失败: {str(e)}"}
+                print(f"[DEBUG-PREDICTION] ✗ 趋势预测失败: {e}")
         elif tool_name == "query_standard":
+            print(f"[DEBUG-PREDICTION] 📚 query_standard CALLED! Args: {tool_args}")
             from service.agent_service.tools.prediction_tools import query_standard
             try:
                 result = query_standard(**tool_args)
                 tool_result = {"result": result, "error": None}
+                print(f"[DEBUG-PREDICTION] ✓ 规范查询成功: {str(result)[:200]}")
             except Exception as e:
                 tool_result = {"result": None, "error": f"规范查询失败: {str(e)}"}
+                print(f"[DEBUG-PREDICTION] ✗ 规范查询失败: {e}")
         elif tool_name == "rag_search":
             tool_result = execute_rag_search(tool_args)
         elif tool_name == "read_document":
@@ -389,6 +440,25 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             elif tool_result.get("result") == "":
                 tool_result["result"] = "[工具返回内容为空]"
 
+        # Log tool execution result
+        try:
+            import datetime
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            result_preview = str(tool_result.get('result', ''))[:500]
+            error_msg = tool_result.get('error')
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] === TOOL RESULT ===\n")
+                f.write(f"Tool: {tool_name}\n")
+                f.write(f"Success: {error_msg is None}\n")
+                if error_msg:
+                    f.write(f"Error: {error_msg}\n")
+                else:
+                    f.write(f"Result (first 500 chars): {result_preview}\n")
+                f.write(f"{'='*80}\n\n")
+                f.flush()
+        except Exception as e:
+            pass
+        
         return tool_result
     except Exception as exc:
         console.error(f"工具执行异常: {exc}")
