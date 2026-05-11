@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from service.session_service.message_content import (
     build_prompt_safe_text,

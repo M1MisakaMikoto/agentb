@@ -1164,6 +1164,8 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
 
 def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_callback=None, message_context: dict = None) -> dict:
     """执行 call_prediction_agent 工具 - 切换到预测 Agent Graph"""
+    import datetime
+    
     task_description = tool_args.get("task_description")
     if not task_description:
         return {"result": None, "error": "缺少 task_description 参数"}
@@ -1188,6 +1190,18 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
 
     try:
         from ..agent_graphs import run_agent_graph
+
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"[{timestamp}] === PREDICTION_AGENT CALL START ===\n")
+            f.write(f"Task Description: {task_description}\n")
+            f.write(f"Workspace ID: {workspace_id}\n")
+            f.write(f"Parent Chain Messages Count: {len(parent_chain_messages)}\n")
+            f.write(f"Current Conversation Messages Count: {len(current_conversation_messages)}\n")
+            f.write(f"LLM Service Available: {llm_service is not None}\n")
+            f.flush()
 
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
@@ -1221,6 +1235,26 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
                     },
                 }
 
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n[{timestamp}] === PREDICTION_AGENT CALL END ===\n")
+            f.write(f"Outcome Status: {outcome.get('status')}\n")
+            f.write(f"Outcome Kind: {outcome.get('kind')}\n")
+            f.write(f"Payload Type: {type(outcome.get('payload')).__name__ if outcome.get('payload') is not None else 'None'}\n")
+            f.write(f"Payload Length: {len(str(outcome.get('payload'))) if outcome.get('payload') else 0}\n")
+            f.write(f"Payload Preview: {str(outcome.get('payload'))[:500] if outcome.get('payload') else '(empty)'}\n")
+            f.write(f"Exit Info: {outcome.get('exit_info')}\n")
+            f.write(f"Final State Keys: {list(outcome.get('final_state', {}).keys()) if outcome.get('final_state') else 'N/A'}\n")
+            
+            final_state = outcome.get('final_state', {})
+            f.write(f"Final State - has_tool_use: {final_state.get('has_tool_use')}\n")
+            f.write(f"Final State - pending_tools: {final_state.get('pending_tools')}\n")
+            f.write(f"Final State - tool_history count: {len(final_state.get('tool_history', []))}\n")
+            f.write(f"Final State - final_reply: {str(final_state.get('final_reply'))[:200] if final_state.get('final_reply') else '(empty)'}\n")
+            f.write(f"{'='*80}\n")
+            f.flush()
+
         if outcome.get("status") == "failed":
             exit_info = outcome.get("exit_info") or {}
             error_msg = exit_info.get("message") or exit_info.get("code") or "子代理执行失败"
@@ -1228,10 +1262,15 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
             return {"result": None, "error": error_msg, "outcome": outcome}
 
         result = outcome.get("payload") or ""
-        print(f"[ToolExec] call_prediction_agent 完成")
+        print(f"[ToolExec] call_prediction_agent 完成, result length: {len(result)}")
         return {"result": result, "error": None, "outcome": outcome}
 
     except Exception as e:
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n[{timestamp}] === PREDICTION_AGENT EXCEPTION ===\n")
+            f.write(f"Exception: {type(e).__name__}: {e}\n")
+            f.flush()
         print(f"[ToolExec] call_prediction_agent 失败: {e}")
         return {"result": None, "error": f"子代理执行失败: {str(e)}"}
 

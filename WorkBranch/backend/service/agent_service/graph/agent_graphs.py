@@ -64,7 +64,12 @@ def _build_default_tools(agent_type: str, user_message: Any) -> list[dict]:
             {"tool": "thinking", "args": {"description": user_message}},
             {"tool": "chat", "args": {"description": user_message}},
         ]
-    return []
+    if agent_type == "prediction_agent":
+        return [
+            {"tool": "thinking", "args": {"description": user_message}},
+            {"tool": "chat", "args": {"description": user_message}},
+        ]
+    raise ValueError(f"未知的子代理类型: {agent_type}，请在 _build_default_tools 中配置默认工具")
 
 
 AGENT_GRAPH_CONFIG = {
@@ -77,6 +82,9 @@ AGENT_GRAPH_CONFIG = {
     "review_agent": {
         "execution_mode": ExecutionMode.DIRECT,
     },
+    "prediction_agent": {
+        "execution_mode": ExecutionMode.DIRECT,
+    },
 }
 
 
@@ -87,11 +95,25 @@ def create_child_agent_graph(
     settings_service=None,
     message_context: dict = None,
 ):
+    import datetime
+    
     graph = StateGraph(AgentState)
 
     def execute_child_node(state: AgentState) -> dict:
         pending_tools = state.get("pending_tools", []) or []
+        
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n[{timestamp}] === CHILD_AGENT EXECUTE ({agent_type}) ===\n")
+            f.write(f"Pending Tools Count: {len(pending_tools)}\n")
+            f.write(f"Pending Tools: {pending_tools}\n")
+            f.write(f"Final Reply (before): {str(state.get('final_reply'))[:100] if state.get('final_reply') else '(empty)'}\n")
+            f.flush()
+        
         if not pending_tools:
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] No pending tools, returning final_reply\n")
+                f.flush()
             return {
                 "final_reply": state.get("final_reply"),
                 "has_tool_use": False,
@@ -101,6 +123,12 @@ def create_child_agent_graph(
         tool_entry = pending_tools[0]
         tool_name = tool_entry.get("tool")
         tool_args = tool_entry.get("args", {})
+        
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] Executing tool: {tool_name}\n")
+            f.write(f"[{timestamp}] Tool args: {tool_args}\n")
+            f.flush()
+        
         tool_result = run_tool_execution(
             tool_name=tool_name,
             tool_args=tool_args,
@@ -122,11 +150,23 @@ def create_child_agent_graph(
             "args": tool_args,
             "result": tool_result.get("result")
         }]
+        
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] Tool Result - error: {tool_result.get('error')}\n")
+            f.write(f"[{timestamp}] Tool Result - result length: {len(result_str)}\n")
+            f.write(f"[{timestamp}] Tool Result - preview: {result_str[:200] if result_str else '(empty)'}\n")
+            f.flush()
 
         if tool_name == "thinking":
             remaining = pending_tools[1:]
             if not remaining:
                 remaining = [{"tool": "chat", "args": {"description": get_last_user_message_text(state)}}]
+            
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] Thinking done, next tools: {remaining}\n")
+                f.flush()
+                
             return {
                 "tool_history": new_history,
                 "pending_tools": remaining,
@@ -134,6 +174,9 @@ def create_child_agent_graph(
             }
 
         if tool_name == "chat":
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] Chat done, setting final_reply\n")
+                f.flush()
             return {
                 "tool_history": new_history,
                 "pending_tools": [],
@@ -142,6 +185,11 @@ def create_child_agent_graph(
             }
 
         remaining = pending_tools[1:]
+        
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] Other tool done, remaining: {len(remaining)}\n")
+            f.flush()
+            
         return {
             "tool_history": new_history,
             "pending_tools": remaining,
@@ -210,6 +258,7 @@ def run_agent_graph(
     current_conversation_messages: Optional[List[dict]] = None,
     persist_state: bool = False,
 ) -> dict:
+    import datetime
     from service.settings_service.settings_service import SettingsService
     from service.agent_service.service.llm_service import get_llm_service
 
@@ -238,12 +287,38 @@ def run_agent_graph(
 
     initial_state["agent_type"] = agent_type
 
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+    
+    with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        f.write(f"\n[{timestamp}] === RUN_AGENT_GRAPH ({agent_type}) ===\n")
+        f.write(f"Config: {config}\n")
+        f.write(f"Initial State - has_tool_use (before): {initial_state.get('has_tool_use')}\n")
+        f.write(f"Initial State - pending_tools (before): {initial_state.get('pending_tools')}\n")
+        f.flush()
+
     if config.get("execution_mode") is not None:
         initial_state["execution_mode"] = config["execution_mode"]
         initial_state["has_tool_use"] = bool(initial_state.get("pending_tools"))
+        
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] Setting execution_mode: {config['execution_mode']}\n")
+            f.write(f"[{timestamp}] has_tool_use after mode set: {initial_state.get('has_tool_use')}\n")
+            f.flush()
+            
         if not initial_state.get("pending_tools"):
-            initial_state["pending_tools"] = _build_default_tools(agent_type, get_last_user_message_text(initial_state))
-            initial_state["has_tool_use"] = bool(initial_state.get("pending_tools"))
+            default_tools = _build_default_tools(agent_type, get_last_user_message_text(initial_state))
+            
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] Building default tools: {default_tools}\n")
+                f.flush()
+                
+            initial_state["pending_tools"] = default_tools
+            initial_state["has_tool_use"] = bool(default_tools)
+            
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] Final pending_tools: {initial_state.get('pending_tools')}\n")
+                f.write(f"[{timestamp}] Final has_tool_use: {initial_state.get('has_tool_use')}\n")
+                f.flush()
 
     graph = create_agent_graph(
         agent_type=agent_type,
