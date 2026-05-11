@@ -445,6 +445,168 @@ def format_current_question(user_message: str) -> str:
 """
 
 
+def generate_prompt(
+    agent_type: str,
+    mode: str,
+    user_message: str,
+    workspace_id: str,
+    iteration_count: int,
+    max_iterations: int,
+    tool_schema_prompt: str,
+    tool_history: List[dict],
+    last_tool_result: Optional[str],
+    todos: List[str],
+    current_todo_index: int,
+    plan_content: Optional[str] = None,
+    parent_chain_messages: List[dict] = None,
+    current_conversation_messages: List[dict] = None,
+) -> Tuple[str, str]:
+    """
+    统一的提示词生成入口
+    
+    Args:
+        agent_type: agent类型 (director_agent, prediction_agent等)
+        mode: 执行模式 (DIRECT, PLAN)
+        user_message: 用户原始请求
+        workspace_id: 工作区ID
+        iteration_count: 当前执行轮次
+        max_iterations: 最大执行轮次
+        tool_schema_prompt: 工具列表提示词
+        tool_history: 工具执行历史
+        last_tool_result: 最近工具结果
+        todos: todo列表
+        current_todo_index: 当前todo索引
+        plan_content: 计划文件内容
+        parent_chain_messages: 父链消息
+        current_conversation_messages: 当前对话消息
+    
+    Returns:
+        Tuple[str, str]: (system_prompt, context_prompt)
+    """
+    system_prompt = _get_system_prompt(agent_type, mode)
+    
+    user_msg = _build_user_message(
+        agent_type=agent_type,
+        mode=mode,
+        user_message=user_message,
+        workspace_id=workspace_id,
+        iteration_count=iteration_count,
+        max_iterations=max_iterations,
+        tool_schema_prompt=tool_schema_prompt,
+        tool_history=tool_history,
+        last_tool_result=last_tool_result,
+        todos=todos,
+        current_todo_index=current_todo_index,
+        plan_content=plan_content,
+    )
+    
+    context_prompt = build_context_prompt(
+        parent_chain_messages or [],
+        current_conversation_messages or [],
+        user_msg,
+    )
+    
+    return system_prompt, context_prompt
+
+
+def _get_system_prompt(agent_type: str, mode: str) -> str:
+    """根据agent类型和模式获取system prompt"""
+    if agent_type == "director_agent":
+        if mode == "PLAN":
+            return PLAN_MODE_SYSTEM_PROMPT
+        return DIRECT_SYSTEM_PROMPT
+    return DIRECT_SYSTEM_PROMPT
+
+
+def _build_user_message(
+    agent_type: str,
+    mode: str,
+    user_message: str,
+    workspace_id: str,
+    iteration_count: int,
+    max_iterations: int,
+    tool_schema_prompt: str,
+    tool_history: List[dict],
+    last_tool_result: Optional[str],
+    todos: List[str],
+    current_todo_index: int,
+    plan_content: Optional[str] = None,
+) -> str:
+    """组装user message"""
+    static_content = (
+        f"{tool_schema_prompt}\n\n"
+        "注意：只有当 todo 列表非空时，你才应围绕 todo 执行；如果当前没有 todo 且任务明显多步骤/阶段化，可以先使用 update_todo 写入完整 todo 列表。"
+        "如果 todo 列表非空，你应继续通过 update_todo 覆盖更新完整 todo 列表和 doingIdx；如果任务拆分发生变化，也应通过 update_todo 一次性重写。"
+        "默认按 DIRECT 执行；如果你在执行过程中发现任务明显复杂、多阶段、跨文件、需要先输出方案，才调用 switch_execution_mode 把模式切到 PLAN。"
+        "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应先使用 read_file 读取该 plan.md，再严格遵守该计划执行。"
+        "除非用户明确要求查看计划文件，否则不要为了展示而读取 plan.md。"
+        "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果当前 todo 已完成，返回 kind=step_done；如果需要向用户输出最终回复，使用 chat 工具；如果无法继续，返回 kind=blocked。\n\n"
+    )
+    
+    history_block = _format_tool_history(tool_history)
+    last_result_block = _format_last_result(last_tool_result)
+    todo_intro = _format_todo_intro(todos, current_todo_index)
+    plan_intro = _format_plan_intro(plan_content)
+    
+    dynamic_content = (
+        f"原始用户请求: {user_message}\n\n"
+        f"当前工作区ID: {workspace_id}\n"
+        f"已执行轮次: {iteration_count}/{max_iterations}\n"
+        f"{plan_intro}"
+        f"{todo_intro}"
+        f"最近工具结果:\n{last_result_block}\n\n"
+        f"最近工具历史:\n{history_block}\n\n"
+    )
+    
+    if mode == "PLAN":
+        dynamic_content += (
+            "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果计划已完成，返回 kind=step_done；如果需要向用户输出回复，使用 chat 工具；如果无法继续，返回 kind=blocked。"
+        )
+    
+    return static_content + dynamic_content
+
+
+def _format_tool_history(tool_history: List[dict]) -> str:
+    """格式化工具历史"""
+    if not tool_history:
+        return "(暂无工具执行历史)"
+    
+    history_lines = []
+    for idx, item in enumerate(tool_history[-5:], 1):
+        result_text = str(item.get("result") or "")
+        if len(result_text) > 500:
+            result_text = result_text[:500] + "..."
+        history_lines.append(f"{idx}. tool={item.get('tool')} args={item.get('args')} result={result_text}")
+    return "\n".join(history_lines)
+
+
+def _format_last_result(last_tool_result: Optional[str]) -> str:
+    """格式化最近工具结果"""
+    if not last_tool_result:
+        return "(无)"
+    return last_tool_result if len(last_tool_result) <= 1000 else last_tool_result[:1000] + "..."
+
+
+def _format_todo_intro(todos: List[str], current_todo_index: int) -> str:
+    """格式化todo提示"""
+    if not todos:
+        return ""
+    todo_block = format_todo_prompt_block(todos, current_todo_index)
+    return f"\n\n{todo_block}\n\n"
+
+
+def _format_plan_intro(plan_content: Optional[str]) -> str:
+    """格式化计划文件提示"""
+    if not plan_content:
+        return ""
+    return (
+        f"\n\n当前工作区存在计划文件: plan.md\n"
+        "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，"
+        "那么你应主动使用 read_file 读取该 plan.md，再严格遵守该计划执行；否则不要因为计划文件存在就默认按计划执行。\n"
+    )
+
+
+
 def build_intent_analysis_messages(
     user_message: str,
     parent_chain_messages: List[dict],

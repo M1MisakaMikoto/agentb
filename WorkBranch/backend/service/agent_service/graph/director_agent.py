@@ -34,6 +34,7 @@ from service.agent_service.prompts.graph_prompts import (
     build_director_plan_messages,
     build_tool_schema_prompt as _graph_build_tool_schema_prompt,
     format_todo_prompt_block as _graph_format_todo_prompt_block,
+    generate_prompt,
 )
 from service.session_service.canonical import SegmentType
 from service.agent_service.service.plan_file_service import plan_file_service
@@ -511,64 +512,26 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         allowed_tools = get_allowed_tools(current_agent_type, settings_service)
         tool_schema_prompt = _build_tool_schema_prompt(allowed_tools)
 
-        history_lines = []
-        for idx, item in enumerate(tool_history[-5:], 1):
-            result_text = str(item.get("result") or "")
-            if len(result_text) > 500:
-                result_text = result_text[:500] + "..."
-            history_lines.append(f"{idx}. tool={item.get('tool')} args={item.get('args')} result={result_text}")
-        history_block = "\n".join(history_lines) if history_lines else "(暂无工具执行历史)"
-
-        last_result_block = "(无)"
-        if last_tool_result:
-            last_result_block = last_tool_result if len(last_tool_result) <= 1000 else last_tool_result[:1000] + "..."
-
-        current_todo_index = state.get("current_todo_index", 0) or 0
-        todo_block = _format_todo_prompt_block(todos, current_todo_index)
-        todo_intro = f"\n\n{todo_block}\n\n" if todo_block else ""
-        
-        plan_intro = ""
+        plan_content = None
         if not is_plan_mode:
             plan_content, _ = _load_plan_content_for_state(state)
-            if plan_content:
-                plan_file_display = "plan.md"
-                plan_intro = (
-                    f"\n\n当前工作区存在计划文件: {plan_file_display}\n"
-                    "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，"
-                    "那么你应主动使用 read_file 读取该 plan.md，再严格遵守该计划执行；否则不要因为计划文件存在就默认按计划执行。\n"
-                )
-        
-        current_task = (
-            f"原始用户请求: {user_message}\n\n"
-            f"当前工作区ID: {state['workspace_id']}\n"
-            f"已执行轮次: {iteration_count}/{max_iterations}\n"
-            f"{plan_intro}\n"
-            f"{tool_schema_prompt}\n"
-            f"{todo_intro}"
-            f"最近工具结果:\n{last_result_block}\n\n"
-            f"最近工具历史:\n{history_block}\n\n"
-        )
-        
-        if is_plan_mode:
-            current_task += (
-                "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果计划已完成，返回 kind=step_done；如果需要向用户输出回复，使用 chat 工具；如果无法继续，返回 kind=blocked。"
-            )
-        else:
-            current_task += (
-                "注意：只有当 todo 列表非空时，你才应围绕 todo 执行；如果当前没有 todo 且任务明显多步骤/阶段化，可以先使用 update_todo 写入完整 todo 列表。"
-                "如果 todo 列表非空，你应继续通过 update_todo 覆盖更新完整 todo 列表和 doingIdx；如果任务拆分发生变化，也应通过 update_todo 一次性重写。"
-                "默认按 DIRECT 执行；如果你在执行过程中发现任务明显复杂、多阶段、跨文件、需要先输出方案，才调用 switch_execution_mode 把模式切到 PLAN。"
-                "如果上一条历史对话提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应先使用 read_file 读取该 plan.md，再严格遵守该计划执行。"
-                "除非用户明确要求查看计划文件，否则不要为了展示而读取 plan.md。"
-                "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果当前 todo 已完成，返回 kind=step_done；如果需要向用户输出最终回复，使用 chat 工具；如果无法继续，返回 kind=blocked。"
-            )
-        
-        if is_plan_mode:
-            system_prompt = PLAN_MODE_SYSTEM_PROMPT
-        else:
-            system_prompt = DIRECT_SYSTEM_PROMPT
 
-        context_prompt = build_context_prompt(parent_chain_messages, current_conversation_messages, current_task)
+        system_prompt, context_prompt = generate_prompt(
+            agent_type=current_agent_type,
+            mode="PLAN" if is_plan_mode else "DIRECT",
+            user_message=user_message,
+            workspace_id=state['workspace_id'],
+            iteration_count=iteration_count,
+            max_iterations=max_iterations,
+            tool_schema_prompt=tool_schema_prompt,
+            tool_history=tool_history,
+            last_tool_result=last_tool_result,
+            todos=todos,
+            current_todo_index=state.get("current_todo_index", 0) or 0,
+            plan_content=plan_content,
+            parent_chain_messages=parent_chain_messages,
+            current_conversation_messages=current_conversation_messages,
+        )
 
         try:
             import datetime
