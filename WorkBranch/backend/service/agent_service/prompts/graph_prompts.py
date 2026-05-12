@@ -265,10 +265,68 @@ def build_chat_system_prompt(settings_service=None) -> str:
 
 
 def build_context_prompt(
-    parent_chain_messages: List[dict],
-    current_conversation_messages: List[dict],
+    parent_chain_messages,
+    current_conversation_messages,
+    current_task: str,
+    message_context=None,
+) -> str:
+    """
+    构建上下文提示词（已增强：支持自动压缩）
+    
+    新特性：
+    - ✅ 自动检测是否需要压缩
+    - ✅ 使用卷积压缩算法处理长对话
+    - ✅ 保持向后兼容
+    """
+    try:
+        from .base.message_processor import MessageProcessor
+        
+        processor = MessageProcessor(
+            message_context.get("settings_service") if message_context else None
+        )
+        
+        parts = []
+        
+        # 父链消息（带自动压缩）
+        if parent_chain_messages:
+            parent_section = processor.process_conversation_context(
+                messages=parent_chain_messages,
+                source_type="parent_chain",
+                message_context=message_context
+            )
+            if parent_section:
+                parts.append(parent_section)
+        
+        # 当前对话消息（带自动压缩）
+        if current_conversation_messages:
+            current_section = processor.process_conversation_context(
+                messages=current_conversation_messages,
+                source_type="current_conversation",
+                message_context=message_context
+            )
+            if current_section:
+                parts.append(current_section)
+        
+        # 当前任务
+        parts.append(f"[当前任务]\n{current_task}")
+        
+        return "\n\n".join(parts)
+        
+    except Exception as e:
+        print(f"[build_context_prompt] 新架构调用失败，回退到旧实现: {e}")
+        return _build_context_prompt_fallback(
+            parent_chain_messages=parent_chain_messages,
+            current_conversation_messages=current_conversation_messages,
+            current_task=current_task,
+        )
+
+
+def _build_context_prompt_fallback(
+    parent_chain_messages,
+    current_conversation_messages,
     current_task: str,
 ) -> str:
+    """回退到旧实现的上下文构建"""
     prompt_parts = []
 
     if parent_chain_messages:
@@ -462,14 +520,20 @@ def generate_prompt(
     current_conversation_messages: List[dict] = None,
 ) -> Tuple[str, str]:
     """
-    统一的提示词生成入口
+    统一的提示词生成入口（已重构：委托给DirectorPromptBuilder）
+    
+    新特性：
+    - ✅ 自动压缩对话上下文
+    - ✅ 工具历史去重合并
+    - ✅ 已执行轮次默认不显示（仅后台追踪）
+    - ✅ 优化的缓存命中率
     
     Args:
         agent_type: agent类型 (director_agent, prediction_agent等)
         mode: 执行模式 (DIRECT, PLAN)
         user_message: 用户原始请求
         workspace_id: 工作区ID
-        iteration_count: 当前执行轮次
+        iteration_count: 当前执行轮次（不再显示在prompt中）
         max_iterations: 最大执行轮次
         tool_schema_prompt: 工具列表提示词
         tool_history: 工具执行历史
@@ -483,6 +547,71 @@ def generate_prompt(
     Returns:
         Tuple[str, str]: (system_prompt, context_prompt)
     """
+    try:
+        from .builders.director_builder import DirectorPromptBuilder
+        
+        builder = DirectorPromptBuilder()
+        
+        return builder.build_full_prompt(
+            agent_type=agent_type,
+            mode=mode,
+            user_message=user_message,
+            workspace_id=workspace_id,
+            tool_schema_prompt=tool_schema_prompt,
+            tool_history=tool_history,
+            last_tool_result=last_tool_result,
+            todos=todos,
+            current_todo_index=current_todo_index,
+            plan_content=plan_content,
+            parent_chain_messages=parent_chain_messages or [],
+            current_conversation_messages=current_conversation_messages or [],
+        )
+    except Exception as e:
+        print(f"[generate_prompt] 新架构调用失败，回退到旧实现: {e}")
+        return _generate_prompt_fallback(
+            agent_type=agent_type,
+            mode=mode,
+            user_message=user_message,
+            workspace_id=workspace_id,
+            iteration_count=iteration_count,
+            max_iterations=max_iterations,
+            tool_schema_prompt=tool_schema_prompt,
+            tool_history=tool_history,
+            last_tool_result=last_tool_result,
+            todos=todos,
+            current_todo_index=current_todo_index,
+            plan_content=plan_content,
+            parent_chain_messages=parent_chain_messages,
+            current_conversation_messages=current_conversation_messages,
+        )
+
+
+def _get_system_prompt(agent_type: str, mode: str) -> str:
+    """根据agent类型和模式获取system prompt"""
+    if agent_type == "director_agent":
+        if mode == "PLAN":
+            return PLAN_MODE_SYSTEM_PROMPT
+        return DIRECT_SYSTEM_PROMPT
+    return DIRECT_SYSTEM_PROMPT
+
+
+def _generate_prompt_fallback(
+    agent_type: str,
+    mode: str,
+    user_message: str,
+    workspace_id: str,
+    iteration_count: int,
+    max_iterations: int,
+    tool_schema_prompt: str,
+    tool_history: List[dict],
+    last_tool_result: Optional[str],
+    todos: List[str],
+    current_todo_index: int,
+    plan_content: Optional[str] = None,
+    parent_chain_messages: List[dict] = None,
+    current_conversation_messages: List[dict] = None,
+) -> Tuple[str, str]:
+    """回退到旧实现的提示词生成（保持向后兼容）"""
     system_prompt = _get_system_prompt(agent_type, mode)
     
     user_msg = _build_user_message(
@@ -507,15 +636,6 @@ def generate_prompt(
     )
     
     return system_prompt, context_prompt
-
-
-def _get_system_prompt(agent_type: str, mode: str) -> str:
-    """根据agent类型和模式获取system prompt"""
-    if agent_type == "director_agent":
-        if mode == "PLAN":
-            return PLAN_MODE_SYSTEM_PROMPT
-        return DIRECT_SYSTEM_PROMPT
-    return DIRECT_SYSTEM_PROMPT
 
 
 def _build_user_message(

@@ -531,6 +531,7 @@ def _execute_thinking_tool(
         })
 
     try:
+        import datetime
         from service.agent_service.prompts.graph_prompts import build_context_prompt
         full_prompt = build_context_prompt(
             parent_chain_messages,
@@ -538,6 +539,22 @@ def _execute_thinking_tool(
             next_task,
         )
         messages = [{"role": "user", "content": full_prompt}]
+
+        agent_type_for_log = message_context.get("agent_type", "child_agent") if message_context else "child_agent"
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"[{timestamp}] === COMPLETE PROMPT FOR LLM CALL (CHILD AGENT) ===\n")
+            f.write(f"Agent Type: {agent_type_for_log}\n")
+            f.write(f"Tool: thinking\n")
+            f.write(f"Task Description: {next_task[:200]}...\n")
+            f.write(f"\n{'='*40} SYSTEM PROMPT {'='*40}\n")
+            f.write(THINK_SYSTEM_PROMPT)
+            f.write(f"\n\n{'='*40} USER MESSAGE {'='*40}\n")
+            f.write(full_prompt)
+            f.write(f"\n{'='*80}\n")
+            f.flush()
 
         def thinking_token_callback(token: str):
             if send_message:
@@ -599,12 +616,30 @@ def _execute_chat_tool(
         })
 
     try:
+        import datetime
         messages = build_special_tool_messages(
             task_description=task_description,
             previous_results=previous_results,
             final_instruction="请向用户输出回复。",
             parent_chain_messages=parent_chain_messages,
         )
+
+        agent_type_for_log = message_context.get("agent_type", "child_agent") if message_context else "child_agent"
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"[{timestamp}] === COMPLETE PROMPT FOR LLM CALL (CHILD AGENT) ===\n")
+            f.write(f"Agent Type: {agent_type_for_log}\n")
+            f.write(f"Tool: chat\n")
+            f.write(f"Task Description: {task_description[:200]}...\n")
+            f.write(f"\n{'='*40} SYSTEM PROMPT {'='*40}\n")
+            f.write(CHAT_SYSTEM_PROMPT)
+            f.write(f"\n\n{'='*40} USER MESSAGE {'='*40}\n")
+            for msg in messages:
+                f.write(f"[{msg.get('role', 'unknown')}]: {str(msg.get('content', ''))[:3000]}\n")
+            f.write(f"\n{'='*80}\n")
+            f.flush()
 
         def chat_token_callback(token: str):
             if send_message:
