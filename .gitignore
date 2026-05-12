@@ -51,3 +51,4 @@ mime.types
 prediction_test_result.json
 conversation_export.json
 *_plan.md
+*.log

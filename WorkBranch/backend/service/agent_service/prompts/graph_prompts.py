@@ -552,7 +552,7 @@ def generate_prompt(
         
         builder = DirectorPromptBuilder()
         
-        return builder.build_full_prompt(
+        result = builder.build_full_prompt(
             agent_type=agent_type,
             mode=mode,
             user_message=user_message,
@@ -566,8 +566,13 @@ def generate_prompt(
             parent_chain_messages=parent_chain_messages or [],
             current_conversation_messages=current_conversation_messages or [],
         )
+        
+        print(f"[generate_prompt] ✅ 新架构调用成功")
+        return result
     except Exception as e:
-        print(f"[generate_prompt] 新架构调用失败，回退到旧实现: {e}")
+        import traceback
+        print(f"[generate_prompt] ❌ 新架构调用失败，回退到旧实现: {e}")
+        traceback.print_exc()
         return _generate_prompt_fallback(
             agent_type=agent_type,
             mode=mode,
