@@ -3,10 +3,13 @@ from typing import List, Dict, Optional, Any
 from langgraph.graph import StateGraph, END
 
 from singleton import get_workspace_service
+from core.logging import console
 
 from .director_agent import build_initial_state, create_orchestrator_graph_v3, get_last_user_message_text
 from .decision.complexity_analyzer import ExecutionMode
 from .subgraphs import run_tool_execution
+from .react_agent_base import ReActAgentBase
+from .definitions import get_definition
 from ..persistence import PersistenceService
 from ..state import AgentState
 
@@ -53,39 +56,9 @@ def build_agent_outcome(agent_type: str, final_state: dict) -> dict:
     }
 
 
-def _build_default_tools(agent_type: str, user_message: Any) -> list[dict]:
-    if agent_type == "explore_agent":
-        return [
-            {"tool": "thinking", "args": {"description": user_message}},
-            {"tool": "chat", "args": {"description": user_message}},
-        ]
-    if agent_type == "review_agent":
-        return [
-            {"tool": "thinking", "args": {"description": user_message}},
-            {"tool": "chat", "args": {"description": user_message}},
-        ]
-    if agent_type == "prediction_agent":
-        return [
-            {"tool": "thinking", "args": {"description": user_message}},
-            {"tool": "chat", "args": {"description": user_message}},
-        ]
-    raise ValueError(f"未知的子代理类型: {agent_type}，请在 _build_default_tools 中配置默认工具")
-
-
-AGENT_GRAPH_CONFIG = {
-    "director_agent": {
-        "execution_mode": None,
-    },
-    "explore_agent": {
-        "execution_mode": ExecutionMode.DIRECT,
-    },
-    "review_agent": {
-        "execution_mode": ExecutionMode.DIRECT,
-    },
-    "prediction_agent": {
-        "execution_mode": ExecutionMode.DIRECT,
-    },
-}
+    # 注意：_build_default_tools 和 AGENT_GRAPH_CONFIG 已删除
+    # 统一从 AgentDefinition 获取配置
+    # 符合 REFACTORING_PLAN.md 方案要求：消除双轨制配置
 
 
 def create_child_agent_graph(
@@ -97,22 +70,24 @@ def create_child_agent_graph(
 ):
     import datetime
     
+    try:
+        definition = get_definition(agent_type)
+        child_base = ReActAgentBase(definition=definition)
+        console.info(f"[create_child_agent_graph] ✅ 使用 ReActAgentBase 初始化 {agent_type}")
+    except (ValueError, KeyError) as e:
+        console.warning(f"[create_child_agent_graph] ⚠️ 未找到 {agent_type} 定义: {e}，使用默认配置")
+        child_base = None
+    
     graph = StateGraph(AgentState)
 
     def execute_child_node(state: AgentState) -> dict:
         pending_tools = state.get("pending_tools", []) or []
         
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-            f.write(f"\n[{timestamp}] === CHILD_AGENT EXECUTE ({agent_type}) ===\n")
-            f.write(f"Pending Tools Count: {len(pending_tools)}\n")
-            f.write(f"Pending Tools: {pending_tools}\n")
-            f.write(f"Final Reply (before): {str(state.get('final_reply'))[:100] if state.get('final_reply') else '(empty)'}\n")
-            f.flush()
         
         if not pending_tools:
             with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-                f.write(f"[{timestamp}] No pending tools, returning final_reply\n")
+                f.write(f"[{timestamp}] ✅ No pending tools, returning final_reply\n")
                 f.flush()
             return {
                 "final_reply": state.get("final_reply"),
@@ -120,89 +95,70 @@ def create_child_agent_graph(
                 "pending_tools": [],
             }
 
-        tool_entry = pending_tools[0]
-        tool_name = tool_entry.get("tool")
-        tool_args = tool_entry.get("args", {})
-        
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-            f.write(f"[{timestamp}] Executing tool: {tool_name}\n")
-            f.write(f"[{timestamp}] Tool args: {tool_args}\n")
-            f.flush()
-        
-        tool_result = run_tool_execution(
-            tool_name=tool_name,
-            tool_args=tool_args,
-            workspace_id=state["workspace_id"],
-            previous_calls=state.get("tool_history", []),
-            workspace_service=get_workspace_service(),
-            llm_service=llm_service,
-            token_callback=token_callback,
-            task_description=tool_args.get("description", ""),
-            previous_results=[item.get("result") for item in state.get("tool_history", []) if item.get("result")],
-            agent_type=agent_type,
-            settings_service=settings_service,
-            message_context=message_context,
-        )
-
-        result_str = str(tool_result.get("result", "")) if tool_result.get("result") is not None else ""
-        new_history = state.get("tool_history", []) + [{
-            "tool": tool_name,
-            "args": tool_args,
-            "result": tool_result.get("result")
-        }]
+        if child_base:
+            state['llm_service'] = llm_service
+            state['message_context'] = message_context or {}
+            
+            execution_result = child_base.execute_child_step(
+                state=state,
+                llm_service=llm_service,
+                message_context=message_context,
+            )
+            
+            if execution_result.get("last_execution", {}).get("memory_was_injected"):
+                with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                    f.write(f"[timestamp] ✅ [ReActAgentBase] 记忆已注入到 {execution_result['last_execution']['tool_name']}\n")
+                    f.flush()
+            
+            result = {
+                "final_reply": execution_result.get("final_reply"),
+                "has_tool_use": bool(execution_result.get("pending_tools")),
+                "pending_tools": execution_result.get("pending_tools", []),
+                "tool_history": execution_result.get("tool_history", []),
+            }
+            
+            return result
         
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
         with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-            f.write(f"[{timestamp}] Tool Result - error: {tool_result.get('error')}\n")
-            f.write(f"[{timestamp}] Tool Result - result length: {len(result_str)}\n")
-            f.write(f"[{timestamp}] Tool Result - preview: {result_str[:200] if result_str else '(empty)'}\n")
+            f.write(f"[{timestamp}] ❌ [execute_child_node] Agent definition not found: {agent_type}\n")
             f.flush()
-
-        if tool_name == "thinking":
-            remaining = pending_tools[1:]
-            if not remaining:
-                remaining = [{"tool": "chat", "args": {"description": get_last_user_message_text(state)}}]
-            
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-                f.write(f"[{timestamp}] Thinking done, next tools: {remaining}\n")
-                f.flush()
-                
-            return {
-                "tool_history": new_history,
-                "pending_tools": remaining,
-                "has_tool_use": bool(remaining),
-            }
-
-        if tool_name == "chat":
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-                f.write(f"[{timestamp}] Chat done, setting final_reply\n")
-                f.flush()
-            return {
-                "tool_history": new_history,
-                "pending_tools": [],
-                "has_tool_use": False,
-                "final_reply": result_str,
-            }
-
-        remaining = pending_tools[1:]
         
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-            f.write(f"[{timestamp}] Other tool done, remaining: {len(remaining)}\n")
-            f.flush()
-            
-        return {
-            "tool_history": new_history,
-            "pending_tools": remaining,
-            "has_tool_use": bool(remaining),
-            "final_reply": result_str or state.get("final_reply"),
-        }
+        raise RuntimeError(
+            f"Agent definition not found for agent_type: {agent_type}. "
+            f"Please ensure the agent is registered in definitions/__init__.py. "
+            f"Available agents: director_agent, prediction_agent, explore_agent, review_agent"
+        )
 
     def route_child(state: AgentState) -> str:
-        if state.get("final_reply"):
-            return "done"
-        if state.get("pending_tools"):
-            return "execute"
-        return "done"
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        
+        final_reply = state.get("final_reply")
+        pending_tools = state.get("pending_tools", []) or []
+        
+        decision = "done"
+        reason = ""
+        
+        if final_reply:
+            decision = "done"
+            reason = f"final_reply exists (length: {len(str(final_reply))})"
+        elif pending_tools:
+            decision = "execute"
+            reason = f"has {len(pending_tools)} pending tools: {[t.get('tool') for t in pending_tools[:3]]}"
+        else:
+            decision = "done"
+            reason = "no final_reply and no pending_tools"
+        
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n[{timestamp}] === 🔍 DIAGNOSTIC: ROUTE DECISION ===\n")
+            f.write(f"[{timestamp}] ➡️  Decision: {decision}\n")
+            f.write(f"[{timestamp}] 📝 Reason: {reason}\n")
+            f.write(f"[{timestamp}] 📊 State at routing time:\n")
+            f.write(f"  - final_reply: {str(final_reply)[:80] if final_reply else '(empty)'}\n")
+            f.write(f"  - pending_tools count: {len(pending_tools)}\n")
+            f.flush()
+        
+        return decision
 
     graph.add_node("execute", execute_child_node)
     graph.set_conditional_entry_point(route_child, {
@@ -262,7 +218,11 @@ def run_agent_graph(
     from service.settings_service.settings_service import SettingsService
     from service.agent_service.service.llm_service import get_llm_service
 
-    config = AGENT_GRAPH_CONFIG.get(agent_type, AGENT_GRAPH_CONFIG["director_agent"])
+    try:
+        definition = get_definition(agent_type)
+        config = {"execution_mode": definition.get_execution_mode()}
+    except (ValueError, KeyError):
+        config = {"execution_mode": None}
 
     if settings_service is None:
         settings_service = SettingsService()
@@ -306,7 +266,14 @@ def run_agent_graph(
             f.flush()
             
         if not initial_state.get("pending_tools"):
-            default_tools = _build_default_tools(agent_type, get_last_user_message_text(initial_state))
+            try:
+                definition = get_definition(agent_type)
+                default_tools = definition.meta.get_default_tools(get_last_user_message_text(initial_state))
+            except (ValueError, KeyError):
+                default_tools = [
+                    {"tool": "thinking", "args": {"description": get_last_user_message_text(initial_state)}},
+                    {"tool": "chat", "args": {"description": get_last_user_message_text(initial_state)}},
+                ]
             
             with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
                 f.write(f"[{timestamp}] Building default tools: {default_tools}\n")

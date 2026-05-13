@@ -429,6 +429,7 @@ async def collect_stream_output(
     show_raw: bool = False,
     use_v2: bool = False,
     timeout: float = 300.0,
+    stream_log_file: Optional[str] = None,
 ):
     import asyncio
     
@@ -436,6 +437,24 @@ async def collect_stream_output(
     max_retries = 3
     retry_count = 0
     retry_delay = 2.0
+    
+    stream_log_fh = None
+    if stream_log_file:
+        try:
+            log_path = Path(stream_log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            stream_log_fh = open(log_path, "w", encoding="utf-8")
+            
+            header = "=" * 80 + "\n"
+            header += f"E2E Stream Trace Log\n"
+            header += f"Conversation ID: {conversation_id}\n"
+            header += f"Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            header += "=" * 80 + "\n\n"
+            
+            _write_stream_log(stream_log_fh, header)
+        except Exception as e:
+            print(f"{Colors.YELLOW}[stream_log] ⚠ Failed to open log file: {e}{Colors.ENDC}")
+            stream_log_fh = None
     
     while retry_count <= max_retries and time.time() < deadline:
         try:
@@ -536,6 +555,7 @@ async def collect_stream_output(
                     print(f"{Colors.DIM}[RAW {timestamp}] {raw_line}{Colors.ENDC}")
 
                 if raw_line.startswith(": heartbeat"):
+                    _write_stream_log(stream_log_fh, f"[{time.strftime('%H:%M:%S.%f')[:-3]}] [HEARTBEAT]\n")
                     if verbose and loop_count % 15 == 0:
                         print(f"{Colors.DIM}[heartbeat]{Colors.ENDC}")
                     try:
@@ -564,25 +584,33 @@ async def collect_stream_output(
 
                 event_type = data.get("type", "unknown")
                 result.event_count += 1
+                timestamp = time.strftime("%H:%M:%S.%f")[:-3]
+                
+                _write_stream_log(stream_log_fh, f"[{timestamp}] [SEQ:{result.event_count:04d}] [{event_type}]\n")
 
                 if event_type == "text_delta":
                     content = data.get("content", "")
                     result.text_content += content
+                    _write_stream_log(stream_log_fh, f"  Content: {content}\n")
                     if verbose:
                         safe_print(f"{Colors.CYAN}[text] {content}{Colors.ENDC}")
                 elif event_type == "chat_delta":
                     content = data.get("content", "")
                     result.chat_content += content
+                    _write_stream_log(stream_log_fh, f"  Content: {content}\n")
                     if verbose:
                         safe_print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
                 elif event_type == "chat_end":
                     result.done = True
+                    _write_stream_log(stream_log_fh, f"  → Chat completed ✓\n")
                     if verbose:
                         print(f"{Colors.GREEN}[chat_end] Chat completed{Colors.ENDC}")
                     return
                 elif event_type == "thinking_delta":
                     content = data.get("content", "")
                     result.thinking_content += content
+                    preview = content[:100] + ("..." if len(content) > 100 else "")
+                    _write_stream_log(stream_log_fh, f"  Thinking: {preview}\n")
                     if verbose and len(content) > 10:
                         safe_print(f"{Colors.DIM}[thinking] {content[:50]}...{Colors.ENDC}")
                 elif event_type == "tool_call":
@@ -591,33 +619,42 @@ async def collect_stream_output(
                         metadata = {}
                     tool_name = metadata.get("tool_name", "unknown")
                     result.tool_calls.append(tool_name)
+                    args_preview = str(metadata.get("tool_args", {}))[:150]
+                    _write_stream_log(stream_log_fh, f"  Tool: {tool_name}({args_preview})\n")
                     if verbose:
-                        args_preview = str(metadata.get("tool_args", {}))[:80]
-                        print(f"{Colors.MAGENTA}[tool_call] {tool_name}({args_preview}){Colors.ENDC}")
+                        args_preview_short = args_preview[:80]
+                        print(f"{Colors.MAGENTA}[tool_call] {tool_name}({args_preview_short}){Colors.ENDC}")
                 elif event_type == "state_change":
                     metadata = data.get("metadata") or {}
                     if not isinstance(metadata, dict):
                         metadata = {}
                     execution_mode = metadata.get("execution_mode")
+                    plan_status = metadata.get("plan_status")
+                    log_line = f"  State: mode={execution_mode}, plan={plan_status}"
+                    _write_stream_log(stream_log_fh, log_line + "\n")
+                    
                     if execution_mode:
                         result.detected_mode = execution_mode
                         if execution_mode not in result.detected_modes:
                             result.detected_modes.append(execution_mode)
                         if verbose:
                             print(f"{Colors.YELLOW}[state] execution_mode: {execution_mode}{Colors.ENDC}")
-                    plan_status = metadata.get("plan_status")
                     if plan_status:
                         result.plan_status = plan_status
                         if verbose:
                             print(f"{Colors.YELLOW}[state] plan_status: {plan_status}{Colors.ENDC}")
                 elif event_type == "plan_start":
+                    _write_stream_log(stream_log_fh, f"  → Plan generation started\n")
                     if verbose:
                         print(f"{Colors.YELLOW}[plan_start] Plan generation started{Colors.ENDC}")
                 elif event_type == "plan_delta":
                     content = data.get("content", "")
+                    preview = content[:150] + ("..." if len(content) > 150 else "")
+                    _write_stream_log(stream_log_fh, f"  Plan delta: {preview}\n")
                     if verbose:
                         print(f"{Colors.YELLOW}[plan] {content[:50]}...{Colors.ENDC}")
                 elif event_type == "plan_end":
+                    _write_stream_log(stream_log_fh, f"  → Plan generation completed\n")
                     if verbose:
                         print(f"{Colors.YELLOW}[plan_end] Plan generation completed{Colors.ENDC}")
                 elif event_type == "conversation_handoff":
@@ -630,21 +667,26 @@ async def collect_stream_output(
                     if auto_approved and next_conv_id:
                         result.next_conversation_id = next_conv_id
                     
+                    _write_stream_log(stream_log_fh, f"  Handoff: approved={auto_approved}, next={next_conv_id}\n")
                     if verbose:
                         print(f"{Colors.HEADER}[conversation_handoff] auto_approved: {auto_approved}, next_conversation_id: {next_conv_id}{Colors.ENDC}")
                 elif event_type == "done":
                     result.done = True
+                    _write_stream_log(stream_log_fh, f"  → Stream completed ✓\n")
                     if verbose:
                         print(f"{Colors.GREEN}[done] Stream completed{Colors.ENDC}")
                     return
                 elif event_type == "error":
                     error_content = data.get("content", "Unknown error")
                     result.errors.append(error_content)
+                    _write_stream_log(stream_log_fh, f"  ✗ ERROR: {error_content}\n")
                     if verbose:
                         safe_print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
                 else:
+                    preview = json.dumps(data, ensure_ascii=False)[:200]
+                    _write_stream_log(stream_log_fh, f"  Raw: {preview}\n")
                     if verbose:
-                        print(f"{Colors.BLUE}[{event_type}] {json.dumps(data, ensure_ascii=False)[:100]}...{Colors.ENDC}")
+                        print(f"{Colors.BLUE}[{event_type}] {preview}...{Colors.ENDC}")
             
             if time.time() >= deadline:
                 if verbose:
@@ -666,6 +708,31 @@ async def collect_stream_output(
     if verbose:
         elapsed = time.time() - (deadline - timeout)
         print(f"{Colors.DIM}[completed] Stream collection ended after {elapsed:.0f}s, events={result.event_count}, tools={result.tool_calls}{Colors.ENDC}")
+    
+    if stream_log_fh and not stream_log_fh.closed:
+        footer = "\n" + "=" * 80 + "\n"
+        footer += f"Ended: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        footer += f"Total Events: {result.event_count} | Tools: {result.tool_calls}\n"
+        footer += f"Duration: {elapsed:.1f}s\n"
+        footer += "=" * 80 + "\n"
+        
+        try:
+            _write_stream_log(stream_log_fh, footer)
+            stream_log_fh.close()
+            print(f"{Colors.GREEN}[stream_log] ✅ Log saved: {stream_log_file} ({result.event_count} events){Colors.ENDC}")
+        except Exception as e:
+            print(f"{Colors.YELLOW}[stream_log] ⚠ Error closing log: {e}{Colors.ENDC}")
+
+
+def _write_stream_log(fh, content: str):
+    """辅助函数：安全写入流式日志"""
+    if fh is None or fh.closed:
+        return
+    try:
+        fh.write(content)
+        fh.flush()
+    except Exception as e:
+        pass
 
 
 def print_test_header(description: str):

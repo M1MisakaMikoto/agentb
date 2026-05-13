@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs (keep only essential)
+logs/*.log
+*.log
+!server.log  # Keep main server log if needed
+
+# Debug files
+debug_*.log
+*_v[0-9]*.log
+e2e_*.log
+validation_results.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Local configuration
+.env
+.env.local
+*.local
+
+# Workspace data (generated at runtime)
+workspaces/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak

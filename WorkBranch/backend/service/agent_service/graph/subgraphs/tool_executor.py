@@ -18,7 +18,7 @@ from ...tools.rag_tool import execute_rag_search
 from ...tools.document_tools import execute_document
 from ...tools.sql_tools import execute_sql_query
 from .tool_registry import (
-    FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS, SQL_TOOLS,
+    FILE_TOOLS, EXPLORE_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS, SQL_TOOLS,
     generate_tool_prompt, is_tool_allowed, get_allowed_tools, _write_tool_event
 )
 from service.agent_service.prompts.graph_prompts import (
@@ -31,6 +31,21 @@ from core.logging import console
 
 TOOL_EXECUTION_TIMEOUT_SECONDS = 30
 SPECIAL_TOOL_TIMEOUT_SECONDS = 120
+
+SPECIAL_TOOLS_CONFIG = {
+    "thinking": {
+        "start_type": SegmentType.THINKING_START,
+        "delta_type": SegmentType.THINKING_DELTA,
+        "end_type": SegmentType.THINKING_END,
+        "content_field": "thinking_content"
+    },
+    "chat": {
+        "start_type": SegmentType.CHAT_START,
+        "delta_type": SegmentType.CHAT_DELTA,
+        "end_type": SegmentType.CHAT_END,
+        "content_field": "chat_content"
+    }
+}
 
 
 def _build_tool_failure_result(
@@ -556,18 +571,60 @@ def _execute_thinking_tool(
             f.write(f"\n{'='*80}\n")
             f.flush()
 
+        thinking_call_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        token_count = 0
+        total_chars = 0
+        thinking_start_time = datetime.datetime.now()
+        
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n[{timestamp}] === 🔍 DIAGNOSTIC: THINKING TOOL START ===\n")
+            f.write(f"[{timestamp}] 🆔 Call ID: {thinking_call_id}\n")
+            f.write(f"[{timestamp}] 📝 Task: {next_task[:150]}...\n")
+            f.write(f"[{timestamp}] 📊 Context size:\n")
+            f.write(f"  - parent_chain_messages: {len(parent_chain_messages)} msgs\n")
+            f.write(f"  - current_conversation_messages: {len(current_conversation_messages)} msgs\n")
+            f.write(f"[{timestamp}] ⚙️  Config: start_type={config['start_type'].value}, delta_type={config['delta_type'].value}, end_type={config['end_type'].value}\n")
+            f.flush()
+
         def thinking_token_callback(token: str):
+            nonlocal token_count, total_chars
+            token_count += 1
+            total_chars += len(token)
+            
             if send_message:
                 send_message(token, config["delta_type"], {
                     "task_description": next_task,
                     "is_delta": True
                 })
+                
+                if token_count % 50 == 0:  # 每50个token记录一次
+                    cb_timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+                    with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                        f.write(f"[{cb_timestamp}] 🔄 THINKING TOKEN CALLBACK [{thinking_call_id}]\n")
+                        f.write(f"  - token #{token_count}, chars so far: {total_chars}\n")
+                        f.write(f"  - current token preview: {token[:80]}...\n")
+                        f.flush()
 
         result = ""
         for chunk in llm_service.chat_stream(messages, THINK_SYSTEM_PROMPT, thinking_token_callback):
             result += chunk
 
+        thinking_end_time = datetime.datetime.now()
+        thinking_duration = (thinking_end_time - thinking_start_time).total_seconds()
+        
         console.success("思考完成")
+
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            end_ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            f.write(f"\n[{end_ts}] === 🔍 DIAGNOSTIC: THINKING TOOL COMPLETE ===\n")
+            f.write(f"[{end_ts}] 🆔 Call ID: {thinking_call_id}\n")
+            f.write(f"[{end_ts}] ⏱️  Duration: {thinking_duration:.3f}s\n")
+            f.write(f"[{end_ts}] 📊 Token stats:\n")
+            f.write(f"  - total tokens sent: {token_count}\n")
+            f.write(f"  - total characters: {total_chars}\n")
+            f.write(f"  - result length: {len(result)} chars\n")
+            f.write(f"[{end_ts}] 📝 Result preview: {result[:200]}\n")
+            f.flush()
 
         if send_message:
             send_message("", config["end_type"], {
@@ -1532,7 +1589,11 @@ def run_tool_execution(
     auto_approve: bool = False,
 ) -> dict:
     """
-    运行工具执行子图
+    运行工具执行子图（已废弃）
+
+    .. deprecated::
+        请使用 ReActAgentBase.execute() 或 ReActAgentBase.execute_child_step()
+        本函数保留仅为兼容 agent_graphs.py 的 fallback 路径
 
     Args:
         tool_name: 工具名称
@@ -1551,6 +1612,13 @@ def run_tool_execution(
     Returns:
         执行结果
     """
+    import warnings
+    warnings.warn(
+        "run_tool_execution() is deprecated, use ReActAgentBase instead",
+        DeprecationWarning,
+        stacklevel=2
+    )
+
     print("\n" + "="*60)
     print("[Subgraph] 工具执行子图启动")
     print("="*60)

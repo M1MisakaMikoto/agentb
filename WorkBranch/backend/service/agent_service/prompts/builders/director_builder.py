@@ -39,10 +39,9 @@ class DirectorPromptBuilder:
         新结构顺序（按缓存优化）：
         1. System Prompt（静态）
         2. User Message:
-           a. 工具列表 + 规则（静态）
-           b. 元数据（低频）
-           c. 工具执行记录（中频，去重合并）
-           d. 对话上下文（高频，自动压缩）
+           a. 静态规则（低频变化）
+           b. 元数据（中频变化）
+           c. 操作上下文（高频变化，自动压缩+步骤式格式）
         """
         
         # 1. 获取System Prompt
@@ -67,13 +66,7 @@ class DirectorPromptBuilder:
             include_iteration=False  # 已执行轮次默认不显示
         )
         
-        # 2c. 工具执行记录（自动去重合并）
-        tool_history_section = self.processor.process_tool_history(
-            tool_history=tool_history,
-            last_tool_result=last_tool_result
-        )
-        
-        # 2d. 对话上下文（智能压缩）
+        # 2c. 操作上下文（智能压缩 + 步骤式格式）
         conversation_context = ""
         
         # 父链消息（如果有）
@@ -102,7 +95,6 @@ class DirectorPromptBuilder:
         user_message_text = self.processor.build_full_user_message(
             static_content=static_section,
             dynamic_content=dynamic_section,
-            tool_history_section=tool_history_section,
             conversation_context=conversation_context.strip()
         )
         

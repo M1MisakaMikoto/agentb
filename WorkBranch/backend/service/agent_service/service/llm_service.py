@@ -129,6 +129,35 @@ class LLMService:
         )
         try:
             result = invoke_fn()
+        except (OSError, ConnectionError, httpx.ConnectError, httpx.ReadError) as oe:
+            error_detail = f"System/Network Error during LLM call: {type(oe).__name__}: {oe}"
+            full_traceback = "".join(traceback.format_exception(type(oe), oe, oe.__traceback__))
+            
+            self._log_llm_event(
+                "ERROR",
+                "llm.call.os_error",
+                error_detail,
+                extra=self._build_llm_extra(operation, start_time, error=str(oe), error_type=type(oe).__name__),
+                exception=full_traceback,
+            )
+            
+            import datetime
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            try:
+                with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                    f.write(f"\n{'='*80}\n")
+                    f.write(f"[{timestamp}] === ❌ LLM SERVICE OS ERROR ===\n")
+                    f.write(f"Operation: {operation}\n")
+                    f.write(f"Exception Type: {type(oe).__name__}\n")
+                    f.write(f"Exception Message: {str(oe)}\n")
+                    f.write(f"Error Code: {getattr(oe, 'errno', 'N/A')}\n")
+                    f.write(f"Full Traceback:\n{full_traceback}\n")
+                    f.write(f"{'='*80}\n")
+                    f.flush()
+            except Exception:
+                pass
+            
+            raise TypeError(error_detail) from oe
         except Exception as exc:
             self._log_llm_event(
                 "ERROR",

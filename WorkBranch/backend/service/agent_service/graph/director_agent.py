@@ -24,6 +24,8 @@ from .subgraphs.tool_registry import (
     is_tool_allowed, get_allowed_tools, _write_tool_event
 )
 from .subgraphs.tool_executor import run_tool_execution
+from .react_agent_base import ReActAgentBase, MemoryManager
+from .definitions import get_definition
 from service.agent_service.prompts.graph_prompts import (
     THINK_SYSTEM_PROMPT,
     PLAN_MODE_SYSTEM_PROMPT,
@@ -568,6 +570,22 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             response_text = response_text.strip()
             decision_data = json.loads(response_text)
         except Exception as e:
+            import traceback
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            try:
+                with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                    f.write(f"\n{'='*80}\n")
+                    f.write(f"[{timestamp}] === ❌ DIRECTOR AGENT DECISION EXCEPTION ===\n")
+                    f.write(f"Exception Type: {type(e).__name__}\n")
+                    f.write(f"Exception Message: {str(e)}\n")
+                    f.write(f"Error Code (errno): {getattr(e, 'errno', 'N/A')}\n")
+                    f.write(f"Response Text: {response_text if 'response_text' in locals() else (response if response else 'No response')}\n")
+                    f.write(f"Full Traceback:\n{traceback.format_exc()}\n")
+                    f.write(f"{'='*80}\n")
+                    f.flush()
+            except Exception:
+                pass
+            
             console.box("决策解析失败", response_text if 'response_text' in locals() else str(response) if response else "No response")
             reply = f"当前无法自动决策下一步：{e}；原始回复：{response_text if 'response_text' in locals() else (response if response else 'No response')}"
             _emit_final_reply(reply, message_context)
@@ -1430,13 +1448,24 @@ def _execute_workspace_tool(tool_name: str, tool_args: dict, workspace_id: str, 
         return {"result": None, "error": f"未知的 workspace 工具: {tool_name}"}
 
 
-def _execute_thinking_tool_direct(
+# ============================================================================
+# Director Agent 特殊工具策略（用于覆盖 ReActAgentBase 默认策略）
+# ============================================================================
+
+def _director_thinking_strategy(
+    tool_name: str,
+    tool_args: dict,
     task_description: str,
     llm_service,
     message_context: dict,
-    parent_chain_messages: List[dict],
-    current_conversation_messages: List[dict],
+    config: dict,
 ) -> dict:
+    """Director Agent 的 thinking 工具策略
+    
+    与子Agent的差异：
+    - 使用 THINK_SYSTEM_PROMPT（而非通用提示词）
+    - 使用 build_context_prompt 构建上下文
+    """
     if not llm_service:
         result = f"思考任务: {task_description} (LLM 服务未配置)"
         console.info(f"结果: {result}")
@@ -1452,6 +1481,9 @@ def _execute_thinking_tool_direct(
         })
 
     try:
+        parent_chain_messages = message_context.get("parent_chain_messages", []) if message_context else []
+        current_conversation_messages = message_context.get("current_conversation_messages", []) if message_context else []
+        
         full_prompt = build_context_prompt(
             parent_chain_messages,
             current_conversation_messages,
@@ -1492,15 +1524,21 @@ def _execute_thinking_tool_direct(
         return {"result": f"思考失败: {e}", "error": str(e)}
 
 
-def _execute_chat_tool_direct(
+def _director_chat_strategy(
+    tool_name: str,
+    tool_args: dict,
     task_description: str,
     llm_service,
     message_context: dict,
-    parent_chain_messages: List[dict],
-    current_conversation_messages: List[dict],
-    tool_args: Optional[dict] = None,
-    multimodal_parts: Optional[List[dict]] = None,
+    config: dict,
 ) -> dict:
+    """Director Agent 的 chat 工具策略
+    
+    与子Agent的差异：
+    - 支持多模态内容 (multimodal_parts)
+    - 使用 _build_direct_chat_messages() 构建消息
+    - 从 settings_service 动态获取系统提示词
+    """
     if not llm_service:
         result = f"回复任务: {task_description} (LLM 服务未配置)"
         console.info(f"结果: {result}")
@@ -1520,6 +1558,10 @@ def _execute_chat_tool_direct(
         })
 
     try:
+        parent_chain_messages = message_context.get("parent_chain_messages", []) if message_context else []
+        current_conversation_messages = message_context.get("current_conversation_messages", []) if message_context else []
+        multimodal_parts = tool_args.get("multimodal_parts")
+        
         messages = _build_direct_chat_messages(
             task_description=next_task,
             parent_chain_messages=parent_chain_messages,
@@ -1563,6 +1605,14 @@ def _execute_chat_tool_direct(
 
 
 def create_execute_node(llm_service=None, token_callback=None, settings_service=None, message_context=None):
+    director_definition = get_definition("director_agent")
+    director_base = ReActAgentBase(definition=director_definition)
+    
+    # 注入 Director Agent 特殊策略（覆盖默认的子Agent实现）
+    # 这是策略模式的核心：不同Agent可以使用不同的工具执行策略
+    director_base.thinking_strategy = _director_thinking_strategy
+    director_base.chat_strategy = _director_chat_strategy
+    
     def execute_node(state: AgentState) -> dict:
         if message_context:
             cancel_check = message_context.get("cancel_check")
@@ -1591,34 +1641,33 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                 "工具参数": tool_args
             })
 
-            if tool_name == "chat":
-                tool_result = _execute_chat_tool_direct(
-                    task_description=task_description,
-                    llm_service=llm_service,
-                    message_context=message_context,
-                    parent_chain_messages=parent_chain_messages,
-                    current_conversation_messages=current_conversation_messages,
-                    tool_args=tool_args,
-                    multimodal_parts=tool_args.get("multimodal_parts"),
-                )
-            else:
-                enhanced_message_context = dict(message_context) if message_context else {}
-                enhanced_message_context["parent_chain_messages"] = parent_chain_messages
-                enhanced_message_context["current_conversation_messages"] = current_conversation_messages
-                tool_result = run_tool_execution(
-                    tool_name=tool_name,
-                    tool_args=tool_args,
-                    workspace_id=workspace_id,
-                    previous_calls=state.get("tool_history", []),
-                    workspace_service=workspace_service,
-                    llm_service=llm_service,
-                    token_callback=token_callback,
-                    task_description=task_description,
-                    previous_results=[item.get("result") for item in state.get("tool_history", []) if item.get("result")],
-                    agent_type=current_agent_type,
-                    settings_service=settings_service,
-                    message_context=enhanced_message_context,
-                )
+            enhanced_tool_args = director_base.memory_manager.inject_memory(
+                tool_args=tool_args,
+                state=state,
+                memory_mode=director_base.definition.meta.memory_mode
+            )
+            
+            if enhanced_tool_args.get("previous_results"):
+                console.info(f"[ReActAgentBase] ✅ 已注入 {len(enhanced_tool_args['previous_results'])} 条历史记录到 {tool_name}")
+
+            enhanced_message_context = dict(message_context) if message_context else {}
+            enhanced_message_context["parent_chain_messages"] = parent_chain_messages
+            enhanced_message_context["current_conversation_messages"] = current_conversation_messages
+            
+            tool_result = run_tool_execution(
+                tool_name=tool_name,
+                tool_args=enhanced_tool_args,
+                workspace_id=workspace_id,
+                previous_calls=state.get("tool_history", []),
+                workspace_service=workspace_service,
+                llm_service=llm_service,
+                token_callback=token_callback,
+                task_description=task_description,
+                previous_results=[item.get("result") for item in state.get("tool_history", []) if item.get("result")],
+                agent_type=current_agent_type,
+                settings_service=settings_service,
+                message_context=enhanced_message_context,
+            )
 
             result_str = str(tool_result.get("result", "")) if tool_result.get("result") is not None else ""
             if len(result_str) > 4000:

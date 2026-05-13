@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
 
@@ -81,6 +82,7 @@ def resolve_source_file(source_path: Path) -> Path:
     if not source_path.exists():
         raise FileNotFoundError(f"Source file not found: {source_path}")
     return source_path
+
 
 
 async def upload_historical_reports(
@@ -191,6 +193,10 @@ async def run_bridge_predict_test(
 ) -> TestResult:
     result = TestResult("bridge_predict", scenario_config)
     
+    stream_log_dir = get_project_root() / "logs" / "e2e_stream_traces"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stream_log_file = str(stream_log_dir / f"bridge_predict_{timestamp}.log")
+    
     print_test_header(scenario_config.get(
         "description",
         "Bridge Inspection Report - Historical Data Prediction Test"
@@ -261,7 +267,7 @@ async def run_bridge_predict_test(
     
     print_step(6, "Streaming prediction response...", Colors.CYAN)
     prediction_timeout = scenario_config.get("prediction_timeout", 600.0)
-    await collect_stream_output(api, conversation_id, result, verbose=verbose, timeout=prediction_timeout)
+    await collect_stream_output(api, conversation_id, result, verbose=verbose, timeout=prediction_timeout, stream_log_file=stream_log_file)
     
     max_followups = 3
     followup_count = 0
@@ -275,7 +281,7 @@ async def run_bridge_predict_test(
             conversation_id = next_conv_id
             result.conversation_id = conversation_id
             await wait_for_conversation_state(api, conversation_id, "processing", timeout=10.0)
-            await collect_stream_output(api, conversation_id, result, verbose=verbose, timeout=prediction_timeout)
+            await collect_stream_output(api, conversation_id, result, verbose=verbose, timeout=prediction_timeout, stream_log_file=stream_log_file)
         elif result.detected_mode == "PLAN":
             if verbose:
                 print(f"{Colors.YELLOW}[Follow-up #{followup_count}] PLAN mode detected, sending approval...{Colors.ENDC}")
@@ -294,7 +300,7 @@ async def run_bridge_predict_test(
                     result.conversation_id = conversation_id
                     result.detected_mode = None
                     await wait_for_conversation_state(api, conversation_id, "processing", timeout=10.0)
-                    await collect_stream_output(api, conversation_id, result, verbose=verbose, timeout=prediction_timeout)
+                    await collect_stream_output(api, conversation_id, result, verbose=verbose, timeout=prediction_timeout, stream_log_file=stream_log_file)
                 else:
                     break
             else:

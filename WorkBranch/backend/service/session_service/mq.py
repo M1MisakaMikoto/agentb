@@ -167,7 +167,28 @@ class HybridMessageQueue:
 
     def publish_sync(self, message: Message) -> bool:
         try:
+            import datetime as dt
+            publish_timestamp = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            
             seq = self._get_next_seq(message.conversation_id)
+            
+            is_thinking_delta = message.type.value == "thinking_delta"
+            content_preview = str(message.content)[:100] if message.content else "(empty)"
+            
+            diagnostic_log_lines = []
+            diagnostic_log_lines.append(f"\n[{publish_timestamp}] === 🔍 DIAGNOSTIC: MQ PUBLISH_SYNC ===")
+            diagnostic_log_lines.append(f"[{publish_timestamp}] 📤 Message details:")
+            diagnostic_log_lines.append(f"  - conversation_id: {message.conversation_id}")
+            diagnostic_log_lines.append(f"  - seq: {seq}")
+            diagnostic_log_lines.append(f"  - type: {message.type.value}")
+            diagnostic_log_lines.append(f"  - content length: {len(str(message.content)) if message.content else 0} chars")
+            diagnostic_log_lines.append(f"  - content preview: {content_preview}")
+            diagnostic_log_lines.append(f"  - subscribers count: {len(self._subscribers.get(message.conversation_id, []))}")
+            
+            if is_thinking_delta:
+                diagnostic_log_lines.append(f"[{publish_timestamp}] ⚠️  THINKING_DELTA DETECTED!")
+                diagnostic_log_lines.append(f"[{publish_timestamp}] 📊 This is thinking token #{seq} for this conversation")
+            
             self._save_to_sqlite(message, seq)
             self._sync_queue.put_nowait((message, seq))
             
@@ -178,6 +199,12 @@ class HybridMessageQueue:
                     if message.conversation_id in self._stream_states:
                         self._stream_states[message.conversation_id].is_completed = True
                 self._cleanup_conversation(message.conversation_id)
+                
+                diagnostic_log_lines.append(f"[{publish_timestamp}] ✅ DONE signal sent, cleaning up conversation")
+
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write('\n'.join(diagnostic_log_lines) + '\n')
+                f.flush()
 
             self._log_event(
                 "INFO", "mq.message.published", "Message published",

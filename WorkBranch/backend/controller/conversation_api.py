@@ -1,7 +1,10 @@
 import asyncio
 import json
+import os
 import time
 import traceback
+from datetime import datetime
+from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -18,6 +21,94 @@ from service.session_service.message_content import MessageContentError, normali
 
 router = APIRouter(prefix="/session/conversations", tags=["conversations"])
 STREAM_MAX_TIMEOUT_TICKS = 300
+
+STREAM_LOG_DIR = Path(__file__).resolve().parents[1] / "logs" / "stream_traces"
+STREAM_LOG_ENABLED = os.environ.get("STREAM_TRACE_LOG", "true").lower() in ("true", "1", "yes")
+
+
+class StreamTraceLogger:
+    """流式数据追踪日志器 - 记录所有后端发给前端的SSE事件"""
+    
+    _instances: dict[str, "StreamTraceLogger"] = {}
+    
+    def __init__(self, conversation_id: str):
+        self.conversation_id = conversation_id
+        self.event_count = 0
+        self.start_time = None
+        self.log_file = None
+        
+        if STREAM_LOG_ENABLED:
+            try:
+                STREAM_LOG_DIR.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                log_filename = f"stream_trace_{conversation_id}_{timestamp}.log"
+                self.log_file = open(STREAM_LOG_DIR / log_filename, "w", encoding="utf-8")
+                self.start_time = time.perf_counter()
+                
+                header = "=" * 80 + "\n"
+                header += f"Stream Trace Log\n"
+                header += f"Conversation ID: {conversation_id}\n"
+                header += f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}\n"
+                header += "=" * 80 + "\n\n"
+                self._write(header)
+            except Exception as e:
+                print(f"[StreamLogger] ⚠ Failed to init logger: {e}")
+    
+    @classmethod
+    def get(cls, conversation_id: str) -> "StreamTraceLogger":
+        if conversation_id not in cls._instances:
+            cls._instances[conversation_id] = cls(conversation_id)
+        return cls._instances[conversation_id]
+    
+    def log(self, event_data: dict, seq: int):
+        if not STREAM_LOG_ENABLED or not self.log_file:
+            return
+        
+        self.event_count += 1
+        event_type = event_data.get("type", "unknown")
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        
+        line = f"[{timestamp}] [SEQ:{seq:04d}] [{event_type}]\n"
+        self._write(line)
+        
+        json_str = json.dumps(event_data, ensure_ascii=False, indent=2)
+        self._write(json_str + "\n\n")
+        
+        print(f"[STREAM-TRACE] ✓ SEQ:{seq:04d} | type={event_type} | events={self.event_count}")
+    
+    def log_heartbeat(self, timeout_counter: int):
+        if not STREAM_LOG_ENABLED or not self.log_file:
+            return
+        
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        line = f"[{timestamp}] [HEARTBEAT] timeout=#{timeout_counter}\n"
+        self._write(line)
+    
+    def close(self):
+        if self.log_file and not self.log_file.closed:
+            duration_ms = round((time.perf_counter() - self.start_time) * 1000) if self.start_time else 0
+            
+            footer = "\n" + "=" * 80 + "\n"
+            footer += f"Ended: {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}\n"
+            footer += f"Total Events: {self.event_count} | Duration: {duration_ms:.3f}ms\n"
+            footer += "=" * 80 + "\n"
+            
+            try:
+                self._write(footer)
+                self.log_file.close()
+                print(f"[STREAM-TRACE] ✅ Log closed: {self.event_count} events, {duration_ms:.0f}ms")
+            except Exception as e:
+                print(f"[STREAM-TRACE] ⚠ Error closing log: {e}")
+        
+        self._instances.pop(self.conversation_id, None)
+    
+    def _write(self, content: str):
+        try:
+            if self.log_file and not self.log_file.closed:
+                self.log_file.write(content)
+                self.log_file.flush()
+        except Exception as e:
+            print(f"[StreamLogger] Write error: {e}")
 
 
 class SendConversationMessageBody(BaseModel):
@@ -119,8 +210,9 @@ async def stream_conversation_message(
         done_received = False
         timeout_counter = 0
         max_timeout = STREAM_MAX_TIMEOUT_TICKS
-
         subscriber = None
+        
+        stream_logger = StreamTraceLogger.get(conversation_id)
 
         with bind_ctx(**request_ctx):
             logger.info(
@@ -133,11 +225,18 @@ async def stream_conversation_message(
                 if stream_state["is_completed"]:
                     messages_after = mq.get_messages_after(conversation_id, last_seq)
                     if messages_after:
-                        for msg in messages_after:
+                        for idx, msg in enumerate(messages_after):
+                            event_data = msg.to_dict()
+                            event_data["seq"] = last_seq + idx + 1
+                            stream_logger.log(event_data, event_data["seq"])
                             yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
                     else:
-                        yield f"data: {json.dumps({'type': 'stream_completed', 'conversation_id': conversation_id, 'last_seq': last_seq, 'message': '对话已完成，请调用历史API获取完整数据'}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                        done_event = {'type': 'stream_completed', 'conversation_id': conversation_id, 'last_seq': last_seq, 'message': '对话已完成，请调用历史API获取完整数据'}
+                        stream_logger.log(done_event, 0)
+                        yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+                    end_event = {'type': 'done'}
+                    stream_logger.log(end_event, 0)
+                    yield f"data: {json.dumps(end_event, ensure_ascii=False)}\n\n"
                     logger.info(
                         event="stream.completed_from_history",
                         msg="stream completed from history",
@@ -197,6 +296,8 @@ async def stream_conversation_message(
                         event_data = message.to_dict()
                         event_data["seq"] = seq
 
+                        stream_logger.log(event_data, seq)
+
                         if not first_chunk_logged:
                             logger.info(
                                 event="stream.first_chunk",
@@ -227,6 +328,9 @@ async def stream_conversation_message(
                     except asyncio.TimeoutError:
                         timeout_counter += 1
                         print(f"[STREAM-DEBUG] ✗ Timeout #{timeout_counter}, sending heartbeat")
+                        
+                        stream_logger.log_heartbeat(timeout_counter)
+                        
                         yield ": heartbeat\n\n"
 
                         current = await service.get_conversation(conversation_id)
@@ -240,6 +344,8 @@ async def stream_conversation_message(
                         elif state == "failed":
                             done_received = True
                             error_message = current.get("error") or state
+                            error_event = {'type': 'error', 'content': error_message}
+                            stream_logger.log(error_event, -1)
                             logger.error(
                                 event="stream.failed",
                                 msg="conversation stream failed from state",
@@ -250,9 +356,11 @@ async def stream_conversation_message(
                                     "conversation_error": error_message,
                                 },
                             )
-                            yield f"data: {json.dumps({'type': 'error', 'content': error_message}, ensure_ascii=False)}\n\n"
+                            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
                         elif state == "cancelled":
                             done_received = True
+                            cancel_event = {'type': 'error', 'content': state}
+                            stream_logger.log(cancel_event, -1)
                             logger.error(
                                 event="stream.failed",
                                 msg="conversation stream cancelled from state",
@@ -262,9 +370,11 @@ async def stream_conversation_message(
                                     "latency_ms": round((time.perf_counter() - stream_start) * 1000),
                                 },
                             )
-                            yield f"data: {json.dumps({'type': 'error', 'content': state}, ensure_ascii=False)}\n\n"
+                            yield f"data: {json.dumps(cancel_event, ensure_ascii=False)}\n\n"
 
                 if not done_received:
+                    timeout_event = {'type': 'error', 'content': 'Timeout'}
+                    stream_logger.log(timeout_event, -1)
                     logger.error(
                         event="stream.failed",
                         msg="conversation stream timed out",
@@ -274,9 +384,11 @@ async def stream_conversation_message(
                             "latency_ms": round((time.perf_counter() - stream_start) * 1000),
                         },
                     )
-                    yield f"data: {json.dumps({'type': 'error', 'content': 'Timeout'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(timeout_event, ensure_ascii=False)}\n\n"
 
             except Exception as e:
+                exception_event = {'type': 'error', 'content': str(e)}
+                stream_logger.log(exception_event, -1)
                 logger.error(
                     event="stream.failed",
                     msg="conversation stream raised exception",
@@ -287,10 +399,11 @@ async def stream_conversation_message(
                     },
                     exception="".join(traceback.format_exception(type(e), e, e.__traceback__)),
                 )
-                yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(exception_event, ensure_ascii=False)}\n\n"
             finally:
                 if subscriber is not None:
                     mq.unsubscribe(conversation_id, subscriber)
+                stream_logger.close()
 
     return RawStreamingResponse(
         event_generator(),

@@ -15,7 +15,6 @@ from service.session_service.canonical import SegmentType
 
 FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir", "read_document"}
 EXPLORE_TOOLS = {"explore_code", "explore_internet"}
-SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent", "call_prediction_agent"}
 WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}
 TODO_TOOLS = {"update_todo"}
 MODE_TOOLS = {"switch_execution_mode"}
@@ -106,12 +105,16 @@ def get_allowed_tools(agent_type: str, settings_service=None) -> List[str]:
     except KeyError:
         pass
 
+    try:
+        from ..definitions import get_definition
+        definition = get_definition(agent_type)
+        console.info(f"[tool_registry] ✅ 从 AgentDefinition 获取 {agent_type} 的工具权限")
+        return definition.meta.get_allowed_tools()
+    except (ValueError, KeyError, ImportError) as e:
+        console.warning(f"[tool_registry] ⚠️ 未找到 {agent_type} 的定义: {e}，使用默认权限")
+
     default_permissions = {
         "director_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "call_prediction_agent", "list_workspace_files", "get_workspace_info", "search_files", "update_todo", "switch_execution_mode", "rag_search", "read_document", "document", "sql_query"],
-        "plan_agent": ["read_file", "write_file", "list_dir", "explore_code", "thinking", "chat", "call_explore_agent", "call_review_agent", "call_prediction_agent", "rag_search", "read_document", "document", "sql_query", "switch_execution_mode"],
-        "review_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat", "sql_query"],
-        "explore_agent": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files", "sql_query"],
-        "prediction_agent": ["read_document", "document", "thinking", "chat", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info"],
         "admin_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files", "sql_query"]
     }
     return default_permissions.get(agent_type, default_permissions["director_agent"])

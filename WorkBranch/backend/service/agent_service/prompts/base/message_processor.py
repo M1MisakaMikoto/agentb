@@ -34,7 +34,7 @@ class MessageProcessor:
         title: str = None
     ) -> str:
         """
-        处理对话上下文（自动压缩）
+        处理对话上下文（自动压缩 + 步骤式格式）
         
         Args:
             messages: 消息列表
@@ -43,7 +43,7 @@ class MessageProcessor:
             title: 区块标题
         
         Returns:
-            格式化后的文本块
+            格式化后的文本块（步骤式格式，工具执行消息自动转换）
         """
         if not messages:
             return ""
@@ -54,82 +54,44 @@ class MessageProcessor:
         
         lines = [title, ""]
         
+        step_counter = 0
+        
         for msg in compressed_messages:
             role = msg.get("role", "unknown")
             
             if msg.get("compressed"):
                 content = msg.get("content", "")
                 role_label = "用户" if role == "user" else "助手"
-                lines.append(f"{role_label}: {content}")
+                
+                if role == "assistant" and content.startswith("[工具执行:"):
+                    step_counter += 1
+                    lines.append(f"  → 第{step_counter}步: {self._extract_tool_name(content)} ✓")
+                    lines.append(content)
+                else:
+                    lines.append(f"{role_label}: {content}")
+                
                 original_len = msg.get("original_length", 0)
                 lines.append(f"*(已压缩，原始长度: {original_len}字符)*")
             else:
                 content = self._safe_text(msg)
-                role_label = f"{role}"
-                lines.append(f"{role_label}: {content}")
+                
+                if role == "assistant" and content.startswith("[工具执行:"):
+                    step_counter += 1
+                    lines.append(f"  → 第{step_counter}步: {self._extract_tool_name(content)} ✓")
+                    lines.append(content)
+                else:
+                    role_label = f"{role}"
+                    lines.append(f"{role_label}: {content}")
             
             lines.append("")
         
         return "\n".join(lines)
     
-    def process_tool_history(
-        self,
-        tool_history: List[dict],
-        last_tool_result: Optional[str] = None,
-        max_items: int = 5,
-        max_summary_length: int = 200,
-        max_detail_length: int = 1000
-    ) -> str:
-        """
-        处理工具执行记录（自动去重合并）
-        
-        输出格式：
-        📋 执行摘要：
-          → 第N步: tool_name ✓ 结果概要（一行）
-        
-        📄 最新详情：
-          [最近一次的完整结果]
-        """
-        if not tool_history and not last_tool_result:
-            return ""
-        
-        parts = []
-        
-        # 执行摘要（最近N步）
-        recent_history = tool_history[-max_items:] if tool_history else []
-        if recent_history:
-            summary_lines = ["📋 执行摘要：", ""]
-            for idx, item in enumerate(recent_history, 1):
-                tool_name = item.get("tool", "unknown")
-                result = str(item.get("result") or "")
-                
-                # 生成一行摘要
-                result_preview = self._truncate_text(result, max_summary_length)
-                status = "✓" if result else "✗"
-                summary_lines.append(f"  → 第{idx}步: {tool_name} {status} {result_preview}")
-            
-            summary_lines.append("")
-            parts.append("\n".join(summary_lines))
-        
-        # 最新详情（仅最后一步）
-        if last_tool_result:
-            detail_lines = ["📄 最新结果详情：", ""]
-            detail_text = self._truncate_text(last_tool_result, max_detail_length)
-            detail_lines.append(detail_text)
-            detail_lines.append("")
-            parts.append("\n".join(detail_lines))
-        elif recent_history:
-            # 如果没有单独的最后结果，使用历史的最后一个
-            last_item = recent_history[-1]
-            last_result = str(last_item.get("result") or "")
-            if last_result:
-                detail_lines = ["📄 最新结果详情：", ""]
-                detail_text = self._truncate_text(last_result, max_detail_length)
-                detail_lines.append(detail_text)
-                detail_lines.append("")
-                parts.append("\n".join(detail_lines))
-        
-        return "\n\n".join(parts) if parts else ""
+    def _extract_tool_name(self, content: str) -> str:
+        """从工具执行消息中提取工具名"""
+        import re
+        match = re.search(r'\[工具执行:\s*(\w+)', content)
+        return match.group(1) if match else "unknown"
     
     def build_dynamic_section(
         self,
@@ -176,13 +138,12 @@ class MessageProcessor:
         self,
         static_content: str,
         dynamic_content: str,
-        tool_history_section: str = "",
         conversation_context: str = ""
     ) -> str:
         """
         构建完整的User Message（按优先级拼接）
         
-        顺序：静态 → 元数据 → 工具记录 → 对话上下文
+        顺序：静态 → 元数据 → 操作上下文
         """
         sections = []
         
@@ -191,9 +152,6 @@ class MessageProcessor:
         
         if dynamic_content:
             sections.append(dynamic_content)
-        
-        if tool_history_section:
-            sections.append(tool_history_section)
         
         if conversation_context:
             sections.append(conversation_context)
@@ -233,7 +191,7 @@ class MessageProcessor:
         """获取默认标题"""
         titles = {
             "parent_chain": "[历史对话]",
-            "current_conversation": "[当前对话内历史]"
+            "current_conversation": "💬 操作上下文"
         }
         return titles.get(source_type, "[对话历史]")
     
