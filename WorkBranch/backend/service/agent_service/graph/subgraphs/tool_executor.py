@@ -18,7 +18,7 @@ from ...tools.rag_tool import execute_rag_search
 from ...tools.document_tools import execute_document
 from ...tools.sql_tools import execute_sql_query
 from .tool_registry import (
-    FILE_TOOLS, EXPLORE_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS, SQL_TOOLS,
+    FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS, SQL_TOOLS,
     generate_tool_prompt, is_tool_allowed, get_allowed_tools, _write_tool_event
 )
 from service.agent_service.prompts.graph_prompts import (
@@ -1589,11 +1589,7 @@ def run_tool_execution(
     auto_approve: bool = False,
 ) -> dict:
     """
-    运行工具执行子图（已废弃）
-
-    .. deprecated::
-        请使用 ReActAgentBase.execute() 或 ReActAgentBase.execute_child_step()
-        本函数保留仅为兼容 agent_graphs.py 的 fallback 路径
+    运行工具执行子图
 
     Args:
         tool_name: 工具名称
@@ -1612,13 +1608,6 @@ def run_tool_execution(
     Returns:
         执行结果
     """
-    import warnings
-    warnings.warn(
-        "run_tool_execution() is deprecated, use ReActAgentBase instead",
-        DeprecationWarning,
-        stacklevel=2
-    )
-
     print("\n" + "="*60)
     print("[Subgraph] 工具执行子图启动")
     print("="*60)

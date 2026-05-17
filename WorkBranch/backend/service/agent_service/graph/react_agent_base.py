@@ -20,7 +20,7 @@ class MemoryManager:
     @staticmethod
     def extract_tool_history(state: AgentState) -> List[Dict[str, Any]]:
         """从 state 中提取 tool_history"""
-        return getattr(state, 'tool_history', []) or []
+        return state.get('tool_history', []) or []
     
     @staticmethod
     def format_previous_results(tool_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -113,7 +113,7 @@ class LoopController:
         if self._iteration_count > self.max_iterations:
             return False
         
-        pending_tools = getattr(state, 'pending_tools', [])
+        pending_tools = state.get('pending_tools', [])
         if not pending_tools or len(pending_tools) == 0:
             return False
         
@@ -234,20 +234,20 @@ class ReActAgentBase:
         Returns:
             执行结果字典
         """
-        pending_tools = getattr(state, 'pending_tools', [])
+        pending_tools = state.get('pending_tools', [])
         
         if not pending_tools:
             return {
                 "status": "completed",
                 "message": "没有待执行的工具",
-                "final_reply": getattr(state, 'final_reply', None),
+                "final_reply": state.get('final_reply'),
             }
         
         current_tool = pending_tools[0]
         tool_name = current_tool.get("tool", "") if isinstance(current_tool, dict) else str(current_tool)
         tool_args = current_tool.get("args", {}) if isinstance(current_tool, dict) else {}
         
-        task_description = getattr(state, 'task_description', "")
+        task_description = state.get('task_description', '')
         
         print(f"[ReActAgentBase] 执行工具: {tool_name}")
         print(f"[ReActAgentBase] 任务描述: {task_description[:100]}...")
@@ -325,19 +325,19 @@ class ReActAgentBase:
         """
         from .subgraphs.tool_executor import run_tool_execution
         
-        pending_tools = getattr(state, 'pending_tools', [])
+        pending_tools = state.get('pending_tools', [])
         if not pending_tools:
             return {
-                "final_reply": getattr(state, 'final_reply', None),
+                "final_reply": state.get('final_reply'),
                 "pending_tools": [],
-                "tool_history": getattr(state, 'tool_history', []),
+                "tool_history": state.get('tool_history', []),
             }
         
         current_tool = pending_tools[0]
         tool_name = current_tool.get("tool", "") if isinstance(current_tool, dict) else str(current_tool)
         original_args = current_tool.get("args", {}) if isinstance(current_tool, dict) else {}
         
-        task_description = getattr(state, 'task_description', "")
+        task_description = state.get('task_description', '')
         
         enhanced_args = self.memory_manager.inject_memory(
             tool_args=original_args,
@@ -351,12 +351,13 @@ class ReActAgentBase:
         execution_result = run_tool_execution(
             tool_name=tool_name,
             tool_args=enhanced_args,
+            workspace_id=state.get('workspace_id'),
             task_description=task_description,
             llm_service=llm_service,
             message_context=message_context,
         )
         
-        new_tool_history = list(getattr(state, 'tool_history', []) or [])
+        new_tool_history = list(state.get('tool_history', []) or [])
         history_entry = {
             "tool_name": tool_name,
             "args": enhanced_args,
@@ -407,8 +408,8 @@ class ReActAgentBase:
         """
         from .subgraphs.tool_executor import SPECIAL_TOOLS_CONFIG
         
-        llm_service = getattr(state, 'llm_service', None)
-        message_context = getattr(state, 'message_context', {})
+        llm_service = state.get('llm_service')
+        message_context = state.get('message_context', {})
         
         config = SPECIAL_TOOLS_CONFIG.get(tool_name, {})
         
@@ -462,13 +463,14 @@ class ReActAgentBase:
         """
         from .subgraphs.tool_executor import run_tool_execution
         
-        task_description = getattr(state, 'task_description', "")
-        llm_service = getattr(state, 'llm_service', None)
-        message_context = getattr(state, 'message_context', {})
+        task_description = state.get('task_description', '')
+        llm_service = state.get('llm_service')
+        message_context = state.get('message_context', {})
         
         return run_tool_execution(
             tool_name=tool_name,
             tool_args=tool_args,
+            workspace_id=state.get('workspace_id'),
             task_description=task_description,
             llm_service=llm_service,
             message_context=message_context,
@@ -485,7 +487,7 @@ class ReActAgentBase:
         
         将执行结果记录到 tool_history 中
         """
-        new_tool_history = list(getattr(state, 'tool_history', []) or [])
+        new_tool_history = list(state.get('tool_history', []) or [])
         
         history_entry = {
             "tool_name": tool_name,
@@ -498,15 +500,15 @@ class ReActAgentBase:
         
         new_tool_history.append(history_entry)
         
-        setattr(state, 'tool_history', new_tool_history)
+        state['tool_history'] = new_tool_history
         
-        remaining_tools = list(getattr(state, 'pending_tools', []) or [])
+        remaining_tools = list(state.get('pending_tools', []) or [])
         if remaining_tools and len(remaining_tools) > 0:
             remaining_tools = remaining_tools[1:]
-        setattr(state, 'pending_tools', remaining_tools)
+        state['pending_tools'] = remaining_tools
         
         if tool_name == "chat" and not result.get("error"):
-            setattr(state, 'final_reply', result.get("result"))
+            state['final_reply'] = result.get("result")
         
         return state
     

@@ -119,16 +119,96 @@ def create_child_agent_graph(
             
             return result
         
-        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        tool_entry = pending_tools[0]
+        tool_name = tool_entry.get("tool")
+        tool_args = tool_entry.get("args", {})
+        
+        exec_start_time = datetime.datetime.now()
+        
         with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-            f.write(f"[{timestamp}] ❌ [execute_child_node] Agent definition not found: {agent_type}\n")
+            f.write(f"[{timestamp}] 🔧 Executing tool (fallback): {tool_name}\n")
+            f.write(f"[{timestamp}] 🔧 Tool args: {tool_args}\n")
             f.flush()
         
-        raise RuntimeError(
-            f"Agent definition not found for agent_type: {agent_type}. "
-            f"Please ensure the agent is registered in definitions/__init__.py. "
-            f"Available agents: director_agent, prediction_agent, explore_agent, review_agent"
+        tool_result = run_tool_execution(
+            tool_name=tool_name,
+            tool_args=tool_args,
+            workspace_id=state["workspace_id"],
+            previous_calls=state.get("tool_history", []),
+            workspace_service=get_workspace_service(),
+            llm_service=llm_service,
+            token_callback=token_callback,
+            task_description=tool_args.get("description", ""),
+            previous_results=[item.get("result") for item in state.get("tool_history", []) if item.get("result")],
+            agent_type=agent_type,
+            settings_service=settings_service,
+            message_context=message_context,
         )
+
+        exec_end_time = datetime.datetime.now()
+        exec_duration = (exec_end_time - exec_start_time).total_seconds()
+
+        result_str = str(tool_result.get("result", "")) if tool_result.get("result") is not None else ""
+        new_history = state.get("tool_history", []) + [{
+            "tool": tool_name,
+            "args": tool_args,
+            "result": tool_result.get("result")
+        }]
+        
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n[{timestamp}] === 🔍 DIAGNOSTIC: TOOL EXECUTION COMPLETE ===\n")
+            f.write(f"[{timestamp}] ⏱️  Execution duration: {exec_duration:.3f}s\n")
+            f.write(f"[{timestamp}] 📤 Tool: {tool_name}\n")
+            f.write(f"[{timestamp}] 📊 Result stats:\n")
+            f.write(f"  - error: {tool_result.get('error')}\n")
+            f.write(f"  - result length: {len(result_str)} chars\n")
+            f.write(f"  - preview: {result_str[:200] if result_str else '(empty)'}\n")
+            f.write(f"[{timestamp}] 📈 State update:\n")
+            f.write(f"  - tool_history count (before→after): {len(state.get('tool_history', []))} → {len(new_history)}\n")
+            f.write(f"  - pending_tools remaining: {len(pending_tools) - 1}\n")
+            f.flush()
+
+        if tool_name == "thinking":
+            remaining = pending_tools[1:]
+            if not remaining:
+                remaining = [{"tool": "chat", "args": {"description": get_last_user_message_text(state)}}]
+            
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] 💭 Thinking done, next tools:\n")
+                for idx, tool in enumerate(remaining):
+                    f.write(f"  [{idx}] {tool.get('tool')}: {str(tool.get('args', {}))[:100]}\n")
+                f.flush()
+                
+            return {
+                "tool_history": new_history,
+                "pending_tools": remaining,
+                "has_tool_use": bool(remaining),
+            }
+
+        if tool_name == "chat":
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] 💬 Chat done, setting final_reply\n")
+                f.flush()
+            return {
+                "tool_history": new_history,
+                "pending_tools": [],
+                "has_tool_use": False,
+                "final_reply": result_str,
+            }
+
+        remaining = pending_tools[1:]
+        
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] Other tool done, remaining: {len(remaining)}\n")
+            f.flush()
+            
+        return {
+            "tool_history": new_history,
+            "pending_tools": remaining,
+            "has_tool_use": bool(remaining),
+            "final_reply": result_str or state.get("final_reply"),
+        }
 
     def route_child(state: AgentState) -> str:
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
