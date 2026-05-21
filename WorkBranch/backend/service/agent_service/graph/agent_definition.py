@@ -40,6 +40,13 @@ class AgentMeta:
     allowed_tools: List[str]
     default_tools: List[Dict[str, Any]] = field(default_factory=list)
     timeout_seconds: int = 300
+    # max_iterations: Agent 最大工具调用轮次限制（达到后强制停止）
+    # 每个 Agent 应该有独立的配置，建议值：
+    #   - director_agent: 15（主 Agent，功能复杂）
+    #   - explore_agent: 8（轻量搜索）
+    #   - review_agent: 8（轻量审查）
+    #   - prediction_agent: 10（需要更多推理）
+    # 注意：director_agent.py 会读取此值作为实际运行时的限制
     max_iterations: int = 10
     memory_mode: str = "accumulate"  # accumulate 或 window
     agent_type: str = ""
@@ -87,8 +94,8 @@ class AgentDefinition:
     
     使用示例：
         definition = AgentDefinition(
-            prompt=DirectorPrompt(...),
-            meta=DirectorMeta(...)
+            prompt=AgentPrompt(system_prompt=DIRECT_SYSTEM_PROMPT, mode="DIRECT"),
+            meta=AgentMeta(allowed_tools=[...], timeout_seconds=300, ...)
         )
         base = ReActAgentBase(definition=definition)
         result = base.execute(state)

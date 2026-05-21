@@ -19,7 +19,7 @@ from ...tools.document_tools import execute_document
 from ...tools.sql_tools import execute_sql_query
 from .tool_registry import (
     FILE_TOOLS, EXPLORE_TOOLS, SUBAGENT_TOOLS, WORKSPACE_TOOLS, SPECIAL_TOOLS, SQL_TOOLS,
-    generate_tool_prompt, is_tool_allowed, get_allowed_tools, _write_tool_event
+    is_tool_allowed, get_allowed_tools, _write_tool_event
 )
 from service.agent_service.prompts.graph_prompts import (
     CHAT_SYSTEM_PROMPT,
@@ -389,8 +389,6 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
                 print(f"[DEBUG-PREDICTION] ✗ 规范查询失败: {e}")
         elif tool_name == "rag_search":
             tool_result = execute_rag_search(tool_args)
-        elif tool_name == "read_document":
-            tool_result = execute_document({**tool_args, "operation": "r"})
         elif tool_name == "document":
             tool_result = execute_document(tool_args)
         elif tool_name == "sql_query":
@@ -1295,9 +1293,20 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
             f.write(f"LLM Service Available: {llm_service is not None}\n")
             f.flush()
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                run_agent_graph,
+        # 直接同步调用，不再使用子线程
+        _prediction_timeout = 600
+        if settings_service:
+            _prediction_timeout = settings_service.get("agent:special_tool_timeout_seconds") or 600
+
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n[{timestamp}] === PREDICTION_AGENT SYNC CALL START ===\n")
+            f.write(f"Timeout: {_prediction_timeout}s\n")
+            f.flush()
+
+        try:
+            # 同步串行执行，等待完成后继续
+            outcome = run_agent_graph(
                 "prediction_agent",
                 task_description,
                 workspace_id,
@@ -1311,26 +1320,28 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
                 current_conversation_messages,
                 False,
             )
-            try:
-                outcome = future.result(timeout=300)
-            except FutureTimeoutError:
-                future.cancel()
-                outcome = {
-                    "kind": "graph",
-                    "status": "failed",
-                    "payload": None,
-                    "produced_user_reply": False,
-                    "exit_info": {
-                        "code": "subgraph_timeout",
-                        "message": "prediction_agent 子图执行超时（5分钟）",
-                        "details": {"agent_type": "prediction_agent", "timeout_seconds": 300},
-                    },
-                }
+        except TimeoutError:
+            # 超时处理
+            outcome = {
+                "kind": "graph",
+                "status": "failed",
+                "payload": None,
+                "produced_user_reply": False,
+                "exit_info": {
+                    "code": "subgraph_timeout",
+                    "message": f"prediction_agent 子图执行超时（{_prediction_timeout}秒）",
+                    "details": {"agent_type": "prediction_agent", "timeout_seconds": _prediction_timeout},
+                },
+            }
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] === PREDICTION_AGENT TIMEOUT ===\n")
+                f.flush()
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        
+
         with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-            f.write(f"\n[{timestamp}] === PREDICTION_AGENT CALL END ===\n")
+            f.write(f"\n[{timestamp}] === PREDICTION_AGENT SYNC CALL END ===\n")
             f.write(f"Outcome Status: {outcome.get('status')}\n")
             f.write(f"Outcome Kind: {outcome.get('kind')}\n")
             f.write(f"Payload Type: {type(outcome.get('payload')).__name__ if outcome.get('payload') is not None else 'None'}\n")
@@ -1338,7 +1349,7 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
             f.write(f"Payload Preview: {str(outcome.get('payload'))[:500] if outcome.get('payload') else '(empty)'}\n")
             f.write(f"Exit Info: {outcome.get('exit_info')}\n")
             f.write(f"Final State Keys: {list(outcome.get('final_state', {}).keys()) if outcome.get('final_state') else 'N/A'}\n")
-            
+
             final_state = outcome.get('final_state', {})
             f.write(f"Final State - has_tool_use: {final_state.get('has_tool_use')}\n")
             f.write(f"Final State - pending_tools: {final_state.get('pending_tools')}\n")
@@ -1370,11 +1381,11 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
 def _execute_workspace_tool(tool_name: str, tool_args: dict, workspace_id: str, workspace_service=None) -> dict:
     """执行 workspace 相关工具"""
     console.section(f"Workspace 工具: {tool_name}")
-    
+
     if workspace_service is None:
         from singleton import get_workspace_service
         workspace_service = get_workspace_service()
-    
+
     if tool_name == "list_workspace_files":
         return _execute_list_workspace_files(workspace_id, workspace_service)
     elif tool_name == "get_workspace_info":
@@ -1518,7 +1529,7 @@ def check_doom_loop(state: ToolExecutionState) -> dict:
     
     duplicate_count = 0
     for call in previous_calls:
-        if call["tool"] == tool_name and call["args"] == tool_args:
+        if call.get("tool_name") == tool_name and call.get("args") == tool_args:
             duplicate_count += 1
     
     if duplicate_count >= 3:

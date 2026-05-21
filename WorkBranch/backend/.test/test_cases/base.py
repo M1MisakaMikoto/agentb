@@ -88,7 +88,14 @@ def wait_for_backend(host: str = "127.0.0.1", port: int = 8000, timeout: float =
 
 def start_backend() -> Optional[subprocess.Popen]:
     backend_dir = Path(__file__).parent.parent.parent.resolve()
-    python_executable = sys.executable
+    workspace_root = backend_dir.parent  # WorkBranch/
+    project_root = workspace_root.parent  # agentb/
+    
+    python_executable = str(Path(sys.executable))
+    venv_python = project_root / ".venv" / "Scripts" / "python.exe"
+    if venv_python.exists():
+        python_executable = str(venv_python)
+        print(f"{Colors.CYAN}Using virtual environment: {python_executable}{Colors.ENDC}")
 
     run_server = backend_dir / "run_server.py"
     command = [

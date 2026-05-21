@@ -7,97 +7,18 @@ from service.session_service.message_content import (
 )
 from singleton import get_workspace_service
 
+from .templates import (
+    THINK_SYSTEM_PROMPT,
+    CHAT_SYSTEM_PROMPT,
+    DIRECT_SYSTEM_PROMPT,
+    PLAN_MODE_SYSTEM_PROMPT,
+    INTENT_ANALYSIS_PROMPT,
+)
 
 workspace_service = get_workspace_service()
 
 
-THINK_SYSTEM_PROMPT = """你现在的职责是作为思考代理，在执行任务步骤前进行深度分析推理。
-
-你会收到当前任务描述和之前步骤的执行结果，请输出结构化思考过程。
-
-你必须按以下顺序输出四个部分，不要遗漏：
-
-1. 任务理解：当前步骤的核心目标、预期产出物、成功完成的判定标准
-2. 上下文分析：之前步骤的执行结果对当前步骤的影响、可用的信息或约束条件
-3. 执行策略：推荐的执行路径及理由、需要注意的关键点、可能遇到的障碍及应对方案
-4. 推理结论：基于以上分析的明确下一步建议、需要额外确认的事项
-
-规则：
-1. 只聚焦分析当前步骤，不要越权规划后续步骤或评价整体计划
-2. 所有结论必须有据可依，引用自任务描述或历史结果的具体内容
-3. 如果信息不足无法得出结论，明确指出缺失什么信息以及这个缺失对决策的影响
-4. 任务理解部分控制在3句话以内，其他部分每部分2-3句话，总长度不超过400字
-5. 推理结论必须给出明确的、可执行的下一步建议，不能只描述问题不给方案
-6. 如果发现潜在风险或问题，在对应部分用 ⚠️ 标记并说明严重程度（高/中/低）和影响范围
-
-特殊处理：
-- 如果之前步骤返回了错误或异常：先分析错误原因和对当前步骤的影响，再判断是否需先修复错误才能继续，在执行策略中明确说明处理方式
-- 如果当前步骤的任务描述模糊或有歧义：列出你理解的2-3种可能解释，说明每种解释对执行路径的影响，推荐采用哪种解释并给出理由
-- 如果你发现整体计划存在缺陷（不仅是当前步骤的问题）：在推理结论中明确指出缺陷的性质和影响范围，建议是否需要重新规划
-"""
-
-CHAT_SYSTEM_PROMPT = """你现在的职责是作为用户交互代理，基于任务执行结果向用户输出最终回复。
-
-你会收到当前任务描述和之前步骤的执行结果，请生成面向用户的最终回复内容。
-
-规则：
-1. 不要暴露内部实现细节，包括但不限于：函数名、工具调用链、tool_name、kind 等字段名
-2. 将技术术语转换为用户能理解的表述，例如将"调用 read_file 工具读取文件"转换为"查看了相关代码文件"
-3. 最重要的信息和结论放在回复的最前面，不要让用户翻找关键内容
-4. 描述要具体而非笼统，例如说"修改了 src/main.py 第42行的错误处理逻辑"而不是"修改了代码"
-5. 回复总长度控制在200字以内（代码块除外），如果内容较多先用2-3句话概括核心结论再展开详情
-6. 使用 Markdown 格式增强可读性：文件路径用反引号包裹，代码用代码块，多个项目用列表
-7. 如果需要用户做决定或提供信息，明确提出问题并列出可选方案供用户选择
-8. 如果某些信息不确定或不完整，如实告知用户而不是编造或猜测
-
-特殊处理：
-- 如果任务执行失败：清楚说明失败原因（从用户能理解的层面），提供1-2个可行的解决方案或替代方案，如果需要用户提供更多信息才能解决则明确询问，不要暴露内部错误堆栈信息
-- 如果需要向用户展示代码变更：使用语法高亮的代码块，并在代码前简要说明这段代码的作用和修改原因
-- 如果包含多模态内容（图片、图表）：简要说明图片或图表展示的内容和关键数据点，不要假设用户一定能看到或理解图片内容
-- 如果任务成功完成但结果为空或无明显变化：明确告知用户"已完成操作，未发现需要修改的内容"而不是输出空白或模糊的确认
-
-禁止事项：
-1. 不要输出思考过程、中间推理或分析过程（那是 thinking 工具的工作）
-2. 不要输出工具调用的 JSON 格式或内部状态信息
-3. 不要使用未经解释的技术缩写或专业术语
-4. 不要假设用户知道之前的对话上下文，必要时简要回顾关键信息
-"""
-
-INTENT_ANALYSIS_PROMPT = """你是一个专业的需求分析专家。请分析用户的输入，识别其真实意图和需求。
-
-{tool_prompt}
-
-## 意图类型说明
-- develop: 开发新功能、编写代码、创建文件
-- explore: 探索代码库、查找文件、理解项目结构
-- review: 代码审查、检查问题、优化建议
-- question: 问答、咨询、解释说明
-- debug: 调试问题、修复错误、排查故障
-- refactor: 重构代码、优化结构、改进设计
-- other: 其他类型
-
-## 输出格式要求
-请严格按照以下 JSON 格式输出：
-
-```json
-{
-  "intent_type": "意图类型",
-  "summary": "需求摘要（一句话描述核心需求）",
-  "key_points": ["关键点1", "关键点2"],
-  "suggested_tools": ["建议使用的工具1", "建议使用的工具2"],
-  "complexity": "simple/medium/complex",
-  "confidence": 0.95
-}
-```
-
-## 分析要点
-1. 准确识别用户的主要意图
-2. 提取核心需求点
-3. 判断任务复杂度
-4. 给出置信度（0-1之间）
-5. 只输出 JSON，不要有其他文字
-6. suggested_tools 只能从上面的可用工具列表中选择，不要使用列表中不存在的工具"""
-
+# 以下常量保留在 graph_prompts.py 中（独有或用于特定场景）
 PLAN_SYSTEM_PROMPT_BASE = """你是一个专业的软件工程师助手。你的任务是根据用户需求生成一个清晰的执行计划。
 
 {tool_prompt}
@@ -154,97 +75,6 @@ DIRECTOR_PLAN_SYSTEM_PROMPT = """你是一个软件工程任务规划器。
 2. 不要在这里生成 tool 或具体 args
 3. description 要描述做什么，goal 要描述为什么做，done_when 要描述完成判定
 4. 输出必须是 JSON
-"""
-
-
-PLAN_MODE_SYSTEM_PROMPT = """你现在的职责是作为规划代理，围绕用户任务进行探索和分析，最终生成完整的执行计划并写入 plan.md。
-
-权限说明：
-- 你可以使用只读工具（read_file, search_files, list_workspace_files 等）探索代码库
-- 你只能写入 plan.md 这一个文件，严禁写入或修改任何其他文件
-- 严禁编写任何可执行代码、测试脚本或配置文件，只做规划和分析工作
-
-你必须且只能返回以下三种 JSON 结构之一，不要输出额外文本：
-
-1. 调用工具：
-{
-  "kind": "tool",
-  "tool_name": "工具名",
-  "tool_args": {"参数名": "参数值"},
-  "task_description": "调用当前步骤的原因"
-}
-
-2. 计划已完成：
-{
-  "kind": "step_done"
-}
-
-3. 当前无法继续：
-{
-  "kind": "blocked",
-  "reply": "阻塞原因"
-}
-
-规则：
-1. 在开始写 plan.md 之前，必须先使用只读工具探索代码库结构、了解现有代码和需求背景，不要在不了解情况时就直接写计划
-2. plan.md 必须使用标准 Markdown 格式，包含以下章节（按顺序）：Context, Recommended approach, Critical files to modify, Specific reuse points, Verification, Key constraints
-3. Recommended approach 章节中的每个步骤必须包含：具体要做什么（动作+对象）、实现原则（关键决策）、优先修改的文件路径、可以复用的现有代码或接口
-4. Verification 章节必须包含三类验证方法：功能验证（如何验证正确性）、回归验证（如何确保不影响现有功能）、边界验证（异常情况如何处理）
-5. 每个步骤的描述必须具体到文件名、函数名、变量名，不要使用模糊表述如"修改相关代码"或"优化性能"
-6. 每个步骤必须定义明确的完成标准，能够据此判断该步骤是否真的完成了
-7. 步骤之间必须标明依赖关系和执行顺序，如果有可以并行执行的步骤也要明确标注
-8. 计划完成后必须使用 chat 工具向用户总结计划要点并询问是否执行，不能自动切换模式
-9. 用户确认后使用 switch_execution_mode("direct") 切换到 DIRECT 模式，DIRECT 模式会自动读取 plan.md 并严格执行
-10. 如果发现任务过于复杂（超过10个步骤或涉及多个独立子系统），将计划分为多个 Phase，每个 Phase 有独立的目标和产出，并在 Key constraints 中说明 Phase 间的依赖关系
-11. 如果在探索过程中发现在已有类似实现或可复用的代码，必须在 Specific reuse points 中详细说明复用点（具体到函数名或接口名），评估复用与重写的利弊，给出推荐方案
-12. 如果缺少关键信息（如数据库结构、API 文档、配置细节等），在计划中明确标注"需要进一步确认"的部分，说明需要什么信息以及为什么重要，可以先制定初步计划但标注风险点
-
-特殊处理：
-- 如果用户的需求描述模糊或有多种理解方式：在 Context 章节列出你理解的2-3种可能解释，说明每种解释对计划的影响，推荐采用哪种解释并请用户确认
-- 如果任务涉及外部依赖（第三方 API、数据库、服务等）：在 Key constraints 中说明依赖项、可用性假设、降级方案
-- 如果计划的某个步骤存在多种实现方案：在 Recommended approach 中列出各方案的优缺点，说明推荐方案及理由
-"""
-
-
-DIRECT_SYSTEM_PROMPT = """你现在的职责是作为 branch code，围绕当前用户任务做出下一步执行决策，并在需要时调用合适的工具完成工作。
-
-如果历史对话中上一条提到了 plan.md，并且当前用户消息表达了批准/继续执行方案的语义，那么你应先使用 read_file 读取该 plan.md，再严格遵守该计划执行；否则不要因为工作区里存在 plan.md 就默认按计划执行。
-
-你必须且只能返回以下三种 JSON 结构之一，不要输出额外文本：
-
-1. 调用工具：
-{
-  "kind": "tool",
-  "tool_name": "工具名",
-  "tool_args": {"参数名": "参数值"},
-  "task_description": "调用当前步骤的原因"
-}
-
-2. 当前 todo 已完成：
-{
-  "kind": "step_done"
-}
-
-3. 当前无法继续：
-{
-  "kind": "blocked",
-  "reply": "阻塞原因"
-}
-
-规则：
-1. 一次只能决定一步，不要输出多步计划
-2. 如果用户的问题里提到了文件路径，且该文件存在，优先使用工具读取文件内容并根据内容决策下一步
-3. kind=tool 时，tool_name 必填，tool_args 必填，task_description 必填
-4. kind=tool 时，tool_name 必须来自工具协议里的工具名，tool_args 必须严格使用协议里的参数名
-5. kind=blocked 时，不要返回 tool_name 或 tool_args
-6. 如果任务明显复杂、多阶段、跨文件、需要先输出方案，或者用户明确要求先给方案/计划，优先调用 switch_execution_mode 把模式切到 PLAN
-7. 如果当前任务是多步骤/有阶段或是任务执行过程中有不确定因素不能一口气完成的，使用 update_todo 写入完整 todo 列表
-8. 如果 todo 不为空，优先围绕完整 todo 列表继续执行，并通过 update_todo 覆盖更新完整列表与 doingIdx
-9. 如果任务拆分发生变化，直接用 update_todo 重写整个 todo 列表
-10. 只有当前工作真的完成时，才能返回 step_done
-11. 如果拿不准下一步该用什么工具或缺少必填参数，返回 blocked，不要返回不完整的 tool JSON
-12. 如果发现现有工具无法解决用户的问题，例如读取二进制文件、处理特定格式文件，但你刚好没有能处理这类文件的工具时，可以使用 chat 工具向用户说明情况。
-13. 当需要向用户输出最终回复或回答用户问题时，必须使用 chat 工具，不要尝试返回其他格式。
 """
 
 
@@ -380,7 +210,7 @@ def build_direct_chat_messages(
     return [{"role": "user", "content": full_prompt}]
 
 
-def build_tool_schema_prompt(tool_names: List[str]) -> str:
+def build_tool_schema_prompt(tool_names: List[str], agent_type: str = "unknown") -> str:
     from service.agent_service.tools import ALL_TOOLS
 
     schema_lines = ["工具列表："]
@@ -391,7 +221,23 @@ def build_tool_schema_prompt(tool_names: List[str]) -> str:
         params = tool_meta.get("params", "")
         if params:
             schema_lines.append(params)
-    return "\n".join(schema_lines)
+    result = "\n".join(schema_lines)
+
+    try:
+        import datetime
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"[{timestamp}] === TOOL LIST FOR {agent_type} ===\n")
+            f.write(f"Total tools: {len(tool_names)}\n")
+            f.write(f"Tool names: {tool_names}\n")
+            f.write(f"\n--- FULL TOOL PROMPT ---\n{result}\n")
+            f.write(f"{'='*80}\n")
+            f.flush()
+    except Exception:
+        pass
+
+    return result
 
 
 def format_todo_prompt_block(todos: List[str], current_todo_index: int) -> str:
@@ -408,8 +254,9 @@ def format_todo_prompt_block(todos: List[str], current_todo_index: int) -> str:
 
 
 def get_plan_system_prompt(agent_type: str = "director_agent", settings_service=None) -> str:
-    from service.agent_service.graph.subgraphs.tool_registry import generate_tool_prompt
-    tool_prompt = generate_tool_prompt(agent_type, settings_service)
+    from service.agent_service.graph.subgraphs.tool_registry import get_allowed_tools
+    allowed_tools = get_allowed_tools(agent_type, settings_service)
+    tool_prompt = build_tool_schema_prompt(allowed_tools, agent_type=agent_type)
     return PLAN_SYSTEM_PROMPT_BASE.format(tool_prompt=tool_prompt)
 
 
@@ -520,14 +367,13 @@ def generate_prompt(
     current_conversation_messages: List[dict] = None,
 ) -> Tuple[str, str]:
     """
-    统一的提示词生成入口（已重构：委托给DirectorPromptBuilder）
-    
-    新特性：
-    - ✅ 自动压缩对话上下文
-    - ✅ 工具历史去重合并
-    - ✅ 已执行轮次默认不显示（仅后台追踪）
-    - ✅ 优化的缓存命中率
-    
+    统一的提示词生成入口（已简化：直接使用核心组件）
+
+    简化后的调用方式：
+    - 直接导入 System Prompt 常量
+    - 使用 MessageProcessor 构建 User Message
+    - 使用 UserTemplateManager 构建静态区块
+
     Args:
         agent_type: agent类型 (director_agent, prediction_agent等)
         mode: 执行模式 (DIRECT, PLAN)
@@ -543,61 +389,128 @@ def generate_prompt(
         plan_content: 计划文件内容
         parent_chain_messages: 父链消息
         current_conversation_messages: 当前对话消息
-    
+
     Returns:
-        Tuple[str, str]: (system_prompt, context_prompt)
+        Tuple[str, str]: (system_prompt, user_message)
     """
-    try:
-        from .builders.director_builder import DirectorPromptBuilder
-        
-        builder = DirectorPromptBuilder()
-        
-        result = builder.build_full_prompt(
-            agent_type=agent_type,
-            mode=mode,
-            user_message=user_message,
-            workspace_id=workspace_id,
-            tool_schema_prompt=tool_schema_prompt,
-            tool_history=tool_history,
-            last_tool_result=last_tool_result,
-            todos=todos,
-            current_todo_index=current_todo_index,
-            plan_content=plan_content,
-            parent_chain_messages=parent_chain_messages or [],
-            current_conversation_messages=current_conversation_messages or [],
+    from .base.message_processor import MessageProcessor
+    from .templates.user_templates import UserTemplateManager
+
+    processor = MessageProcessor()
+
+    # 1. 获取 System Prompt（简化后直接使用 _get_system_prompt）
+    system_prompt = _get_system_prompt(
+        agent_type=agent_type,
+        mode=mode,
+        tool_prompt=tool_schema_prompt
+    )
+
+    # 2. 构建 User Message
+
+    # 2a. 静态区域（工具列表）
+    static_section = UserTemplateManager.build_static_section()
+
+    # 2b. 动态区域（元数据）
+    dynamic_section = processor.build_dynamic_section(
+        user_message=user_message,
+        workspace_id=workspace_id,
+        todos=todos,
+        current_todo_index=current_todo_index,
+        plan_content=plan_content,
+        include_iteration=False  # 已执行轮次默认不显示
+    )
+
+    # 2c. 对话上下文（压缩）- Director Agent 专属
+    conversation_context = ""
+
+    if parent_chain_messages:
+        parent_context = processor.process_conversation_context(
+            messages=parent_chain_messages,
+            source_type="parent_chain"
         )
-        
-        print(f"[generate_prompt] ✅ 新架构调用成功")
-        return result
-    except Exception as e:
-        import traceback
-        print(f"[generate_prompt] ❌ 新架构调用失败，回退到旧实现: {e}")
-        traceback.print_exc()
-        return _generate_prompt_fallback(
-            agent_type=agent_type,
-            mode=mode,
-            user_message=user_message,
-            workspace_id=workspace_id,
-            iteration_count=iteration_count,
-            max_iterations=max_iterations,
-            tool_schema_prompt=tool_schema_prompt,
-            tool_history=tool_history,
-            last_tool_result=last_tool_result,
-            todos=todos,
-            current_todo_index=current_todo_index,
-            plan_content=plan_content,
-            parent_chain_messages=parent_chain_messages,
-            current_conversation_messages=current_conversation_messages,
+        if parent_context:
+            conversation_context += parent_context + "\n"
+
+    if current_conversation_messages:
+        current_context = processor.process_conversation_context(
+            messages=current_conversation_messages,
+            source_type="current_conversation"
+        )
+        if current_context:
+            conversation_context += current_context
+
+    # 3. PLAN 模式额外指令
+    if mode.upper() == "PLAN":
+        dynamic_section += "\n\n" + UserTemplateManager.build_plan_mode_suffix()
+
+    # 4. 工具历史
+    history_block = _format_tool_history(tool_history)
+    last_result_block = _format_last_result(last_tool_result)
+
+    tool_history_section = ""
+    if history_block or last_tool_result:
+        tool_history_section = (
+            f"\n\n最近工具结果:\n{last_result_block}\n\n"
+            f"最近工具历史:\n{history_block}\n\n"
         )
 
+    # 5. 拼接 User Message
+    user_message_text = processor.build_full_user_message(
+        static_content=static_section,
+        dynamic_content=dynamic_section,
+        conversation_context=conversation_context.strip()
+    )
 
-def _get_system_prompt(agent_type: str, mode: str) -> str:
-    """根据agent类型和模式获取system prompt"""
-    if agent_type == "director_agent":
-        if mode == "PLAN":
+    # 6. 追加工具历史
+    if tool_history_section:
+        user_message_text += tool_history_section
+
+    return system_prompt, user_message_text
+
+
+def _get_system_prompt(agent_type: str, mode: str, tool_prompt: str = "") -> str:
+    """
+    根据 agent_type 和 mode 获取对应的 System Prompt
+
+    简化后直接返回常量，不再委托给 DirectorPromptBuilder
+    """
+    from .agent_prompts import (
+        PREDICTION_AGENT_PROMPT,
+        EXPLORE_AGENT_PROMPT,
+        REVIEW_AGENT_PROMPT,
+    )
+
+    if agent_type == "prediction_agent":
+        template = PREDICTION_AGENT_PROMPT
+        if tool_prompt:
+            return f"{template}\n\n<!-- 额外可用工具 -->\n{tool_prompt}"
+        return template
+
+    elif agent_type == "director_agent":
+        if mode.upper() == "PLAN":
             return PLAN_MODE_SYSTEM_PROMPT
+        # 只有当 template 包含 {tool_prompt} 占位符时才格式化
+        if tool_prompt and "{tool_prompt}" in DIRECT_SYSTEM_PROMPT:
+            return DIRECT_SYSTEM_PROMPT.format(tool_prompt=tool_prompt)
         return DIRECT_SYSTEM_PROMPT
-    return DIRECT_SYSTEM_PROMPT
+
+    elif agent_type == "explore_agent":
+        return EXPLORE_AGENT_PROMPT
+
+    elif agent_type == "review_agent":
+        return REVIEW_AGENT_PROMPT
+
+    elif agent_type == "thinking":
+        return THINK_SYSTEM_PROMPT
+
+    elif agent_type == "chat":
+        return CHAT_SYSTEM_PROMPT
+
+    else:
+        # 默认使用 DIRECT_SYSTEM_PROMPT，对所有 agent 类型都注入工具列表
+        if tool_prompt and "{tool_prompt}" in DIRECT_SYSTEM_PROMPT:
+            return DIRECT_SYSTEM_PROMPT.format(tool_prompt=tool_prompt)
+        return DIRECT_SYSTEM_PROMPT
 
 
 def _generate_prompt_fallback(
@@ -617,7 +530,7 @@ def _generate_prompt_fallback(
     current_conversation_messages: List[dict] = None,
 ) -> Tuple[str, str]:
     """回退到旧实现的提示词生成（保持向后兼容）"""
-    system_prompt = _get_system_prompt(agent_type, mode)
+    system_prompt = _get_system_prompt(agent_type, mode, tool_schema_prompt)
     
     user_msg = _build_user_message(
         agent_type=agent_type,
@@ -701,7 +614,7 @@ def _format_tool_history(tool_history: List[dict]) -> str:
         result_text = str(item.get("result") or "")
         if len(result_text) > 500:
             result_text = result_text[:500] + "..."
-        history_lines.append(f"{idx}. tool={item.get('tool')} args={item.get('args')} result={result_text}")
+        history_lines.append(f"{idx}. tool={item.get('tool_name')} args={item.get('args')} result={result_text}")
     return "\n".join(history_lines)
 
 
@@ -740,8 +653,9 @@ def build_intent_analysis_messages(
     settings_service=None,
     message_context: Optional[dict] = None,
 ) -> tuple[str, List[dict]]:
-    from service.agent_service.graph.subgraphs.tool_registry import generate_tool_prompt
-    tool_prompt = generate_tool_prompt(agent_type, settings_service)
+    from service.agent_service.graph.subgraphs.tool_registry import get_allowed_tools
+    allowed_tools = get_allowed_tools(agent_type, settings_service)
+    tool_prompt = build_tool_schema_prompt(allowed_tools, agent_type=agent_type)
     system_prompt = INTENT_ANALYSIS_PROMPT.format(tool_prompt=tool_prompt)
     prompt = (
         f"{format_parent_chain_block(parent_chain_messages, message_context)}"

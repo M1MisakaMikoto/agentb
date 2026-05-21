@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 import time
 import tempfile
 import shutil
@@ -398,35 +399,36 @@ def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
             cleanup = True
         
         doc = Document(actual_path)
-        
+
         paragraphs = []
         structure = []
-        
+
         for i, para in enumerate(doc.paragraphs):
             text = para.text.strip()
             if text:
                 paragraphs.append(text)
+                style_name = para.style.name if para.style else None
                 structure.append({
                     "type": "paragraph",
-                    "index": i,
-                    "style": para.style.name if para.style else None,
+                    "index": int(i),
+                    "style": str(style_name) if style_name is not None else None,
                     "content": text[:100] + "..." if len(text) > 100 else text
                 })
-        
+
         full_text = "\n\n".join(paragraphs)
         total_length = len(full_text)
         end_idx = min(start_idx + max_length, total_length)
         content = full_text[start_idx:end_idx]
-        
+
         metadata = {}
         if include_metadata:
             core_props = doc.core_properties
             metadata = {
-                "file_type": _get_ext(file_path).lstrip("."),
-                "paragraph_count": len(paragraphs),
-                "author": core_props.author,
-                "title": core_props.title,
-                "subject": core_props.subject,
+                "file_type": str(_get_ext(file_path).lstrip(".")),
+                "paragraph_count": int(len(paragraphs)),
+                "author": str(core_props.author) if core_props.author else None,
+                "title": str(core_props.title) if core_props.title else None,
+                "subject": str(core_props.subject) if core_props.subject else None,
             }
         
         if cleanup and actual_path != file_path:
@@ -444,7 +446,213 @@ def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
         return _make_result(error=f"Word文档读取失败: {str(e)}")
 
 
-def _set_cell_text(cell, text, bold=False):
+def _docx_search(file_path: str, pattern: str, case_sensitive: bool = False,
+                  context: int = 2, max_results: int = 50) -> dict:
+    """在 Word 文档中搜索匹配的行"""
+    try:
+        from docx import Document
+    except ImportError:
+        return _make_result(error="缺少依赖: pip install python-docx")
+
+    try:
+        ext = _get_ext(file_path)
+        actual_path = file_path
+
+        if ext == ".doc":
+            converted = _convert_doc_to_docx(file_path)
+            if not converted:
+                return _make_result(error=".doc格式转换失败")
+            actual_path = converted
+
+        doc = Document(actual_path)
+
+        # 编译正则表达式
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            regex = re.compile(pattern, flags)
+        except re.error as e:
+            return _make_result(error=f"正则表达式错误: {e}")
+
+        matches = []
+        for para_idx, para in enumerate(doc.paragraphs):
+            text = para.text
+            if not text.strip():
+                continue
+
+            # 查找所有匹配
+            for match in regex.finditer(text):
+                start = max(0, match.start() - context)
+                end = min(len(text), match.end() + context)
+                snippet = text[start:end]
+
+                # 高亮匹配部分
+                matched_text = match.group()
+
+                matches.append({
+                    "para_index": para_idx,
+                    "line": text,
+                    "matched_text": matched_text,
+                    "snippet": snippet,
+                    "position": match.start()
+                })
+
+                if len(matches) >= max_results:
+                    break
+
+            if len(matches) >= max_results:
+                break
+
+        if ext == ".doc" and actual_path != file_path and os.path.exists(actual_path):
+            os.unlink(actual_path)
+
+        return _make_result({
+            "matches": matches,
+            "total_matches": len(matches),
+            "pattern": pattern,
+            "file": file_path
+        })
+    except Exception as e:
+        return _make_result(error=f"Word文档搜索失败: {str(e)}")
+
+
+def _pdf_search(file_path: str, pattern: str, case_sensitive: bool = False,
+                context: int = 2, max_results: int = 50, use_llm_parsing: bool = True) -> dict:
+    """在 PDF 文档中搜索匹配的行"""
+    try:
+        import pypdf
+    except ImportError:
+        return _make_result(error="缺少依赖: pip install pypdf")
+
+    try:
+        if use_llm_parsing:
+            try:
+                import pymupdf4llm
+                md_text = pymupdf4llm.to_markdown(file_path)
+                full_text = md_text
+            except ImportError:
+                return _make_result(error="缺少依赖: pip install pymupdf4llm")
+        else:
+            with open(file_path, "rb") as f:
+                reader = pypdf.PdfReader(f)
+                text_parts = []
+                for page in reader.pages:
+                    text_parts.append(page.extract_text() or "")
+                full_text = "\n".join(text_parts)
+
+        # 编译正则表达式
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            regex = re.compile(pattern, flags)
+        except re.error as e:
+            return _make_result(error=f"正则表达式错误: {e}")
+
+        lines = full_text.split('\n')
+        matches = []
+
+        for line_idx, line in enumerate(lines):
+            if not line.strip():
+                continue
+
+            for match in regex.finditer(line):
+                start = max(0, match.start() - context * 50)  # 粗略按50字符计算上下文
+                end = min(len(line), match.end() + context * 50)
+                snippet = line[start:end]
+
+                matches.append({
+                    "line_index": line_idx,
+                    "line": line,
+                    "matched_text": match.group(),
+                    "snippet": snippet,
+                    "position": match.start()
+                })
+
+                if len(matches) >= max_results:
+                    break
+
+            if len(matches) >= max_results:
+                break
+
+        return _make_result({
+            "matches": matches,
+            "total_matches": len(matches),
+            "pattern": pattern,
+            "file": file_path
+        })
+    except Exception as e:
+        return _make_result(error=f"PDF搜索失败: {str(e)}")
+
+
+def _excel_search(file_path: str, pattern: str, case_sensitive: bool = False,
+                  context: int = 2, max_results: int = 50) -> dict:
+    """在 Excel 文档中搜索匹配的内容"""
+    try:
+        import pandas as pd
+        import re
+    except ImportError:
+        return _make_result(error="缺少依赖: pip install pandas")
+
+    try:
+        xl_file = pd.ExcelFile(file_path)
+
+        # 编译正则表达式
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            regex = re.compile(pattern, flags)
+        except re.error as e:
+            return _make_result(error=f"正则表达式错误: {e}")
+
+        matches = []
+
+        for sheet_idx, sheet_name in enumerate(xl_file.sheet_names):
+            df = pd.read_excel(xl_file, sheet_name=sheet_name, header=None)
+
+            for row_idx, row in df.iterrows():
+                for col_idx, cell in enumerate(row):
+                    if pd.isna(cell):
+                        continue
+
+                    cell_str = str(cell)
+                    cell_matches = list(regex.finditer(cell_str))
+
+                    if cell_matches:
+                        for match in cell_matches:
+                            # 获取上下文行
+                            context_rows = []
+                            for ctx_offset in range(-context, context + 1):
+                                ctx_row_idx = row_idx + ctx_offset
+                                if 0 <= ctx_row_idx < len(df):
+                                    ctx_row = df.iloc[ctx_row_idx]
+                                    ctx_str = " | ".join([str(c) if pd.notna(c) else "" for c in ctx_row])
+                                    context_rows.append(ctx_str)
+
+                            matches.append({
+                                "sheet": sheet_name,
+                                "sheet_index": sheet_idx,
+                                "row": int(row_idx),
+                                "col": int(col_idx),
+                                "cell_value": cell_str,
+                                "matched_text": match.group(),
+                                "context_rows": context_rows
+                            })
+
+                            if len(matches) >= max_results:
+                                break
+                    if len(matches) >= max_results:
+                        break
+                if len(matches) >= max_results:
+                    break
+            if len(matches) >= max_results:
+                break
+
+        return _make_result({
+            "matches": matches,
+            "total_matches": len(matches),
+            "pattern": pattern,
+            "file": file_path,
+            "sheets_searched": xl_file.sheet_names
+        })
+    except Exception as e:
+        return _make_result(error=f"Excel搜索失败: {str(e)}")
     cell.text = ""
     run = cell.paragraphs[0].add_run(text)
     run.bold = bold
@@ -1221,7 +1429,7 @@ def execute_document(tool_args: dict) -> dict:
     if not file_path:
         return _make_result(error="缺少 file_path 参数")
     
-    valid_ops = {"r", "w", "a", "u"}
+    valid_ops = {"r", "w", "a", "u", "s"}
     if operation not in valid_ops:
         return _make_result(error=f"无效操作类型: {operation}，支持: {'|'.join(sorted(valid_ops))}")
     
@@ -1310,10 +1518,10 @@ def execute_document(tool_args: dict) -> dict:
         target = tool_args.get("target")
         content = tool_args.get("content")
         field = tool_args.get("field")
-        
+
         if not target:
             return _make_result(error="update操作需要target参数(定位信息)")
-        
+
         if ext == ".pdf":
             result = _pdf_update(file_path, target, content, field or "metadata")
         elif ext in {".doc", ".docx"}:
@@ -1325,6 +1533,25 @@ def execute_document(tool_args: dict) -> dict:
             result = _excel_update(file_path, target, content, sheet_name)
         else:
             result = _make_result(error=f"更新暂不支持: {ext}")
+
+    # ---- SEARCH (grep) ----
+    elif operation == "s":
+        pattern = tool_args.get("pattern")
+        if not pattern:
+            return _make_result(error="search操作需要pattern参数(搜索正则表达式)")
+
+        case_sensitive = tool_args.get("case_sensitive", False)
+        context = tool_args.get("context", 2)
+        max_results = tool_args.get("max_results", 50)
+
+        if ext == ".pdf":
+            result = _pdf_search(file_path, pattern, case_sensitive, context, max_results, use_llm_parsing)
+        elif ext in {".doc", ".docx"}:
+            result = _docx_search(file_path, pattern, case_sensitive, context, max_results)
+        elif ext in {".xls", ".xlsx"}:
+            result = _excel_search(file_path, pattern, case_sensitive, context, max_results)
+        else:
+            result = _make_result(error=f"搜索暂不支持: {ext}")
     
     else:
         result = _make_result(error=f"未知操作: {operation}")
@@ -1340,17 +1567,10 @@ def execute_document(tool_args: dict) -> dict:
 DOCUMENT_TOOLS = {
     "document": ToolDefinition(
         name="document",
-        description="统一文档操作工具(类似fopen)，支持PDF/DOC/DOCX/XLS/XLSX的读写追加修改。操作类型: r=读 w=写 a=追加 u=修改",
-        params='document:{"operation":"(必填)r|w|a|u","file_path":"(必填)文档路径","content":"(文本内容)","data":"(Excel用JSON数组)","target":"(update定位)","field":"(字段类型)","metadata":"(文档元数据)","start_idx":"(起始位置)","max_length":"(最大长度)","include_metadata":"(含元数据)"}',
+        description="统一文档操作，支持 PDF/DOC/DOCX/XLS/XLSX；operation: r=读 w=写 a=追加 u=修改 s=搜索(grep) 示例: {op:'s',path:'x.docx',pat:'BCI|评分'}",
+        params='document:{"operation":"r|w|a|u|s(必填)","file_path":"(必填)","content":"(文本)","data":"(Excel)","pattern":"(搜索正则)","case_sensitive":false,"context":2,"max_results":50}',
         category="document",
         executor=execute_document
-    ),
-    "read_document": ToolDefinition(
-        name="read_document",
-        description="[兼容]读取PDF、Word、Excel文档内容（推荐使用document工具）",
-        params='read_document:{"file_path":"(文档路径)","start_idx":"(起始索引)","max_length":"(最大长度)","include_metadata":"(含元数据)"}',
-        category="document",
-        executor=lambda args: execute_document({**args, "operation": "r"})
     )
 }
 

@@ -11,9 +11,10 @@ from datetime import datetime, timezone
 import json
 
 from service.session_service.canonical import SegmentType
+from core.logging import console
 
 
-FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir", "read_document"}
+FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir"}
 EXPLORE_TOOLS = {"explore_code", "explore_internet"}
 SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent", "call_prediction_agent"}
 WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}
@@ -115,11 +116,12 @@ def get_allowed_tools(agent_type: str, settings_service=None) -> List[str]:
         console.warning(f"[tool_registry] ⚠️ 未找到 {agent_type} 的定义: {e}，使用默认权限")
 
     default_permissions = {
-        "director_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "call_prediction_agent", "list_workspace_files", "get_workspace_info", "search_files", "update_todo", "switch_execution_mode", "rag_search", "read_document", "document", "sql_query"],
-        "plan_agent": ["read_file", "write_file", "list_dir", "explore_code", "thinking", "chat", "call_explore_agent", "call_review_agent", "call_prediction_agent", "rag_search", "read_document", "document", "sql_query", "switch_execution_mode"],
+        "director_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "call_prediction_agent", "list_workspace_files", "get_workspace_info", "search_files", "update_todo", "switch_execution_mode", "rag_search", "document", "sql_query"],
+        "sub_agent": ["read_file", "write_file", "list_dir", "thinking", "chat", "document", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "call_prediction_agent"],
+        "plan_agent": ["read_file", "write_file", "list_dir", "explore_code", "thinking", "chat", "call_explore_agent", "call_review_agent", "call_prediction_agent", "rag_search", "document", "sql_query", "switch_execution_mode"],
         "review_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat", "sql_query"],
         "explore_agent": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files", "sql_query"],
-        "prediction_agent": ["read_document", "document", "thinking", "chat", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info"],
+        "prediction_agent": ["document", "read_file", "thinking", "chat", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "update_todo"],
         "admin_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files", "sql_query"]
     }
     return default_permissions.get(agent_type, default_permissions["director_agent"])
@@ -129,34 +131,6 @@ def filter_tools_by_agent_type(agent_type: str, settings_service=None) -> List[d
     from ...tools import ALL_TOOLS
     allowed_tools = get_allowed_tools(agent_type, settings_service)
     return [ALL_TOOLS[name] for name in allowed_tools if name in ALL_TOOLS]
-
-
-def generate_tool_prompt(agent_type: str, settings_service=None) -> str:
-    tools = filter_tools_by_agent_type(agent_type, settings_service)
-    lines = ["工具列表："]
-    for tool in tools:
-        if tool["params"]:
-            lines.append(tool["params"])
-    result = "\n".join(lines)
-    
-    try:
-        import datetime
-        tool_names = [t['name'] for t in tools]
-        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-            f.write(f"\n{'='*80}\n")
-            f.write(f"[{timestamp}] === TOOL LIST FOR {agent_type} ===\n")
-            f.write(f"Total tools: {len(tools)}\n")
-            f.write(f"Tool names: {tool_names}\n")
-            f.write(f"Has call_prediction_agent: {'call_prediction_agent' in tool_names}\n")
-            f.write(f"\n--- FULL TOOL PROMPT ---\n{result}\n")
-            f.write(f"{'='*80}\n")
-            f.flush()
-    except Exception as e:
-        pass
-    
-    return result
 
 
 def is_tool_allowed(tool_name: str, agent_type: str, settings_service=None) -> bool:

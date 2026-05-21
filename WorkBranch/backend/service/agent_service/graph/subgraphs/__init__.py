@@ -6,7 +6,6 @@ from .tool_executor import (
 from .tool_registry import (
     get_allowed_tools,
     filter_tools_by_agent_type,
-    generate_tool_prompt,
     is_tool_allowed
 )
 from .plan_graph import run_plan_flow, create_plan_subgraph, get_plan_system_prompt
@@ -20,7 +19,6 @@ __all__ = [
     "create_plan_subgraph",
     "get_allowed_tools",
     "filter_tools_by_agent_type",
-    "generate_tool_prompt",
     "is_tool_allowed",
     "get_plan_system_prompt",
 ]

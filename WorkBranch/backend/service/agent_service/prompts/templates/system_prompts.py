@@ -5,6 +5,8 @@ System Prompt模板管理器
 
 from typing import Optional
 
+from ..agent_prompts import PREDICTION_AGENT_PROMPT
+
 
 DIRECT_SYSTEM_PROMPT = """你现在的职责是作为 branch code，围绕当前用户任务做出下一步执行决策，并在需要时调用合适的工具完成工作。
 
@@ -68,7 +70,6 @@ PLAN_MODE_SYSTEM_PROMPT = """你是一个专业的软件工程师助手。你的
 
 请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果计划已完成，返回 kind=step_done；如果需要向用户输出回复，使用 chat 工具；如果无法继续，返回 kind=blocked。"""
 
-
 THINK_SYSTEM_PROMPT = """你现在的职责是作为思考代理，在执行任务步骤前进行深度分析推理。
 
 你会收到当前任务描述和之前步骤的执行结果，请输出结构化思考过程。
@@ -128,57 +129,3 @@ INTENT_ANALYSIS_PROMPT = """你是一个意图分析专家。根据对话历史�
 6. suggested_tools 只能从上面的可用工具列表中选择，不要使用列表中不存在的工具"""
 
 
-class SystemPromptManager:
-    """System Prompt模板管理器"""
-    
-    PROMPTS = {
-        "director_direct": DIRECT_SYSTEM_PROMPT,
-        "director_plan": PLAN_MODE_SYSTEM_PROMPT,
-        "thinking": THINK_SYSTEM_PROMPT,
-        "chat": CHAT_SYSTEM_PROMPT,
-        "intent_analysis": INTENT_ANALYSIS_PROMPT,
-    }
-    
-    @classmethod
-    def get_system_prompt(
-        cls, 
-        agent_type: str, 
-        mode: str = "DIRECT",
-        tool_prompt: str = ""
-    ) -> str:
-        """
-        获取System Prompt
-        
-        Args:
-            agent_type: agent类型 (director_agent, prediction_agent, etc.)
-            mode: 执行模式 (DIRECT, PLAN)
-            tool_prompt: 工具列表提示词
-        
-        Returns:
-            完整的System Prompt字符串
-        """
-        if agent_type == "director_agent":
-            if mode.upper() == "PLAN":
-                template = cls.PROMPTS["director_plan"]
-            else:
-                template = cls.PROMPTS["director_direct"]
-        elif agent_type in ("thinking",):
-            template = cls.PROMPTS.get("thinking", DIRECT_SYSTEM_PROMPT)
-        elif agent_type in ("chat",):
-            template = cls.PROMPTS.get("chat", DIRECT_SYSTEM_PROMPT)
-        else:
-            template = cls.PROMPTS["director_direct"]
-        
-        if tool_prompt and "{tool_prompt}" in template:
-            return template.format(tool_prompt=tool_prompt)
-        
-        return template
-    
-    @classmethod
-    def get_special_tool_prompt(cls, tool_type: str) -> str:
-        """获取特殊工具的System Prompt"""
-        if tool_type == "thinking":
-            return THINK_SYSTEM_PROMPT
-        elif tool_type == "chat":
-            return CHAT_SYSTEM_PROMPT
-        return DIRECT_SYSTEM_PROMPT

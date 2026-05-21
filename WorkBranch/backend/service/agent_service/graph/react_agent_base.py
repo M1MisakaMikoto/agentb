@@ -2,7 +2,7 @@ import datetime
 from typing import Dict, Any, Optional, Callable, List
 
 from .agent_definition import AgentDefinition
-
+from core.logging import console
 from ..state import AgentState
 
 
@@ -42,6 +42,7 @@ class MemoryManager:
                 formatted_record = {
                     "tool_name": record.get("tool_name", "unknown"),
                     "result": record.get("result", ""),
+                    "reason": record.get("reason", ""),  # 工具调用原因
                     "timestamp": record.get("timestamp", datetime.datetime.now().isoformat()),
                 }
                 
@@ -267,7 +268,7 @@ class ReActAgentBase:
                 result = self._execute_special_tool(
                     tool_name=tool_name,
                     tool_args=enhanced_args,
-                    task_description=task_description,
+                    task_description=reason,
                     state=state,
                 )
             else:
@@ -352,7 +353,7 @@ class ReActAgentBase:
             tool_name=tool_name,
             tool_args=enhanced_args,
             workspace_id=state.get('workspace_id'),
-            task_description=task_description,
+            task_description=reason,
             llm_service=llm_service,
             message_context=message_context,
         )
@@ -439,7 +440,7 @@ class ReActAgentBase:
             return self.chat_strategy(
                 tool_name=tool_name,
                 tool_args=tool_args,
-                task_description=task_description,
+                task_description=reason,
                 llm_service=llm_service,
                 message_context=message_context,
                 config=config,
@@ -471,7 +472,7 @@ class ReActAgentBase:
             tool_name=tool_name,
             tool_args=tool_args,
             workspace_id=state.get('workspace_id'),
-            task_description=task_description,
+            task_description=reason,
             llm_service=llm_service,
             message_context=message_context,
         )
@@ -512,6 +513,465 @@ class ReActAgentBase:
         
         return state
     
+    def _create_error_summary_node(self, llm_service=None):
+        def error_summary_node(state: AgentState) -> dict:
+            error_type = state.get("error_summary_type", "unknown")
+            tool_history = state.get("tool_history", []) or []
+            iteration_count = state.get("iteration_count", 0) or 0
+            user_message = state.get("user_message") or ""
+            
+            summary_prompt = f"""【任务执行异常终止 - 需要总结报告】
+
+错误类型: {error_type}
+执行轮次: {iteration_count}
+原始任务: {user_message}
+
+【工具调用历史】(共{len(tool_history)}次)
+"""
+            for idx, item in enumerate(tool_history[-15:], 1):
+                tool_name = item.get("tool_name", "unknown")
+                result_preview = str(item.get("result", ""))[:200]
+                summary_prompt += f"\n{idx}. {tool_name}: {result_preview}...\n"
+            
+            summary_prompt += """
+【要求】
+请基于以上完整的任务执行历史，生成一份面向用户的总结报告，包括：
+1. 任务目标是什么
+2. 执行过程中做了哪些操作（按时间顺序）
+3. 在哪个环节遇到问题，具体是什么问题
+4. 已经获取了哪些信息/完成了哪些部分工作
+5. 对后续处理的建议
+
+请用中文输出，语气专业但易懂。直接输出总结内容，不要添加额外格式。"""
+            
+            if llm_service:
+                try:
+                    response = llm_service.chat(
+                        messages=[{"role": "user", "content": summary_prompt}],
+                        system_prompt="你是任务执行分析专家。当任务因循环、超时或异常而被迫终止时，你需要基于完整执行历史生成有意义的总结报告。",
+                    )
+                    reply = response.strip() if response else f"任务因 [{error_type}] 终止，已执行 {iteration_count} 轮"
+                except Exception as e:
+                    reply = f"任务因 [{error_type}] 终止，已执行 {iteration_count} 轮。(总结生成失败: {e})"
+            else:
+                reply = f"任务因 [{error_type}] 终止，已执行 {iteration_count} 轮，共调用工具 {len(tool_history)} 次。"
+            
+            return {
+                "final_reply": reply,
+                "has_tool_use": False,
+                "pending_tools": [],
+                "force_error_summary": False,
+            }
+        
+        return error_summary_node
+    
+    def build_react_loop_graph(self, config: dict = None):
+        from langgraph.graph import StateGraph, END
+        
+        config = config or {}
+        enable_todo = config.get("enable_todo", False)
+        post_execute_hook = config.get("post_execute_hook", None)
+        llm_service = config.get("llm_service")
+        settings_service = config.get("settings_service")
+        message_context = config.get("message_context")
+        
+        loop_graph = StateGraph(AgentState)
+        
+        decide_node = self._create_decide_node(
+            llm_service=llm_service,
+            settings_service=settings_service,
+            message_context=message_context,
+        )
+        execute_node = self._create_execute_node(
+            llm_service=llm_service,
+            settings_service=settings_service,
+            message_context=message_context,
+            post_execute_hook=post_execute_hook,
+        )
+        
+        loop_graph.add_node("decide", decide_node)
+        loop_graph.add_node("execute", execute_node)
+        loop_graph.add_node("error_summary", self._create_error_summary_node(llm_service=llm_service))
+        
+        if enable_todo:
+            todo_review_node = self._create_todo_review_node(
+                llm_service=llm_service,
+                message_context=message_context,
+            )
+            loop_graph.add_node("todo_review", todo_review_node)
+        
+        loop_graph.set_entry_point("decide")
+        
+        loop_graph.add_conditional_edges(
+            "decide",
+            self._route_after_decide,
+            {
+                "execute": "execute",
+                "done": END,
+            }
+        )
+        
+        execute_routes = {"decide": "decide", "execute": "execute", "done": END, "error_summary": "error_summary"}
+        if enable_todo:
+            execute_routes["todo_review"] = "todo_review"
+        
+        loop_graph.add_conditional_edges(
+            "execute",
+            self._route_after_execute,
+            execute_routes
+        )
+        
+        if enable_todo:
+            loop_graph.add_conditional_edges(
+                "todo_review",
+                lambda s: "decide",
+                {"decide": "decide"}
+            )
+        
+        loop_graph.add_edge("error_summary", END)
+        
+        return loop_graph.compile()
+    
+    def _create_decide_node(self, llm_service=None, settings_service=None, message_context=None):
+        from service.agent_service.prompts.graph_prompts import generate_prompt
+        from .subgraphs.tool_registry import get_allowed_tools, is_tool_allowed
+        import json
+        
+        def decide_tool_action_node(state: AgentState) -> dict:
+            _messages = state.get("messages") or []
+            _last_msg = _messages[-1] if _messages else None
+            user_message = state.get("user_message") or (
+                _last_msg.get("content", "") if isinstance(_last_msg, dict) else str(_last_msg) if _last_msg else ""
+            )
+            
+            agent_type = state.get("agent_type") or "sub_agent"
+            tool_history = state.get("tool_history", []) or []
+            last_tool_result = state.get("last_tool_result")
+            iteration_count = state.get("iteration_count", 0) or 0
+            max_iterations = state.get("max_iterations", 10) or 10
+            
+            if iteration_count >= max_iterations:
+                return {
+                    "force_error_summary": True,
+                    "error_summary_type": "max_iterations",
+                    "pending_tools": [],
+                    "iteration_count": iteration_count,
+                }
+            
+            if iteration_count > 0 and iteration_count % 8 == 0:
+                from .director_agent import _check_loop_or_stuck
+                check_result = _check_loop_or_stuck(
+                    tool_history, 
+                    iteration_count, 
+                    llm_service,
+                    user_message=user_message,
+                )
+                if check_result.get("action") == "stop":
+                    return {
+                        "force_error_summary": True,
+                        "error_summary_type": check_result.get("reason", "loop_or_stuck"),
+                        "pending_tools": [],
+                        "iteration_count": iteration_count,
+                    }
+            
+            if llm_service is None:
+                reply = f"无法为任务自动决策下一步"
+                return {
+                    "next_action": {"kind": "reply", "reply": reply},
+                    "final_reply": reply,
+                    "has_tool_use": False,
+                    "pending_tools": [],
+                }
+            
+            allowed_tools = get_allowed_tools(agent_type, settings_service)
+            from service.agent_service.prompts.graph_prompts import build_tool_schema_prompt as _build_tool_schema_prompt
+            tool_schema_prompt = _build_tool_schema_prompt(allowed_tools, agent_type=agent_type)
+            
+            system_prompt, context_prompt = generate_prompt(
+                agent_type=agent_type,
+                mode="DIRECT",
+                user_message=user_message,
+                workspace_id=state.get('workspace_id', ''),
+                iteration_count=iteration_count,
+                max_iterations=max_iterations,
+                tool_schema_prompt=tool_schema_prompt,
+                tool_history=tool_history,
+                last_tool_result=last_tool_result,
+                todos=state.get('todos') or [],
+                current_todo_index=state.get('current_todo_index', 0) or 0,
+            )
+            
+            try:
+                response = llm_service.chat(
+                    messages=[{"role": "user", "content": context_prompt}],
+                    system_prompt=system_prompt,
+                )
+                
+                response_text = response.strip()
+                if response_text.startswith("```json"):
+                    response_text = response_text[7:]
+                if response_text.startswith("```"):
+                    response_text = response_text[3:]
+                if response_text.endswith("```"):
+                    response_text = response_text[:-3]
+                response_text = response_text.strip()
+                
+                import datetime as _dt
+                _ts = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+                with open('llm_decision_trace.log', 'a', encoding='utf-8') as _f:
+                    _f.write(f"\n[{_ts}] === 🤖 LLM RAW RESPONSE ===\n")
+                    _f.write(f"[{_ts}] Raw response ({len(response_text)} chars):\n{response_text}\n")
+                    _f.write(f"[{_ts}] Tool history in prompt: {len(tool_history)} items\n")
+                    if tool_history:
+                        for _idx, _item in enumerate(tool_history[-3:], 1):
+                            _f.write(f"[{_ts}]   history[{_idx}]: tool={_item.get('tool_name', 'N/A')}, result_len={len(str(_item.get('result', '')))}\n")
+                    _f.flush()
+                
+                decision_data = json.loads(response_text)
+            except Exception as e:
+                reply = f"当前无法自动决策下一步：{e}"
+                return {
+                    "next_action": {"kind": "reply", "reply": reply},
+                    "final_reply": reply,
+                    "has_tool_use": False,
+                    "pending_tools": [],
+                }
+            
+            kind = decision_data.get("kind")
+            if kind in ("step_done", "blocked"):
+                return {
+                    "todo_status": kind,
+                    "has_tool_use": False,
+                    "pending_tools": [],
+                }
+            
+            tool_name = decision_data.get("tool_name")
+            tool_args = decision_data.get("tool_args") or {}
+            reason = decision_data.get("reason", "")  # 工具调用原因
+            
+            if not tool_name or not is_tool_allowed(tool_name, agent_type, settings_service):
+                retry_count = (state.get("invalid_tool_retry_count", 0) or 0) + 1
+                if retry_count <= 3:
+                    return {
+                        "pending_tools": [],
+                        "has_tool_use": False,
+                        "final_reply": None,
+                        "next_action": None,
+                        "invalid_tool_retry_count": retry_count,
+                    }
+                reply = f"工具决策无效，无法继续执行：{tool_name}"
+                return {
+                    "next_action": {"kind": "reply", "reply": reply},
+                    "final_reply": reply,
+                    "has_tool_use": False,
+                    "pending_tools": [],
+                    "invalid_tool_retry_count": retry_count,
+                }
+            
+            pending = [{"tool_name": tool_name, "args": dict(tool_args), "reason": reason}]
+            return {
+                "next_action": {
+                    "kind": "tool",
+                    "tool_name": tool_name,
+                    "tool_args": tool_args,
+                    "reason": reason,
+                },
+                "pending_tools": pending,
+                "has_tool_use": True,
+                "final_reply": None,
+                "invalid_tool_retry_count": 0,
+            }
+        
+        return decide_tool_action_node
+    
+    def _create_execute_node(self, llm_service=None, settings_service=None, message_context=None, post_execute_hook=None):
+        from .subgraphs.tool_executor import run_tool_execution
+        from singleton import get_workspace_service
+        
+        workspace_service = get_workspace_service()
+        
+        def execute_node(state: AgentState) -> dict:
+            pending_tools = state.get("pending_tools", [])
+            
+            if not pending_tools:
+                return {
+                    "pending_tools": [],
+                    "has_tool_use": False
+                }
+            
+            tool_name = pending_tools[0].get("tool_name")
+            tool_args = pending_tools[0].get("args", {})
+            reason = (
+                pending_tools[0].get("reason")
+                or (state.get("next_action") or {}).get("reason")
+                or ""
+            )
+            
+            enhanced_tool_args = self.memory_manager.inject_memory(
+                tool_args=tool_args,
+                state=state,
+                memory_mode=self.definition.meta.memory_mode
+            )
+            
+            parent_chain_messages = state.get("parent_chain_messages", [])
+            current_conversation_messages = state.get("current_conversation_messages", [])
+            
+            enhanced_message_context = dict(message_context) if message_context else {}
+            enhanced_message_context["workspace_id"] = state.get("workspace_id")
+            enhanced_message_context["parent_chain_messages"] = parent_chain_messages
+            enhanced_message_context["current_conversation_messages"] = current_conversation_messages
+            
+            tool_result = run_tool_execution(
+                tool_name=tool_name,
+                tool_args=enhanced_tool_args,
+                workspace_id=state["workspace_id"],
+                previous_calls=state.get("tool_history", []),
+                workspace_service=workspace_service,
+                llm_service=llm_service,
+                token_callback=None,
+                task_description=reason,
+                previous_results=[item.get("result") for item in state.get("tool_history", []) if item.get("result")],
+                agent_type=state.get("agent_type") or "sub_agent",
+                settings_service=settings_service,
+                message_context=enhanced_message_context,
+            )
+            
+            result_str = str(tool_result.get("result", "")) if tool_result.get("result") is not None else ""
+            new_tool_history = state.get("tool_history", []) + [{
+                "tool_name": tool_name,
+                "args": tool_args,
+                "reason": reason,
+                "result": tool_result.get("result"),
+                "timestamp": datetime.datetime.now().isoformat(),
+            }]
+            
+            new_current_conv_msgs = list(current_conversation_messages)
+            tool_error = tool_result.get("error")
+            content = f"[工具执行: {tool_name}]\n结果: {result_str[:1000]}"
+            if tool_error:
+                content += f"\n错误: {tool_error}"
+            new_current_conv_msgs.append({
+                "role": "assistant",
+                "content": content
+            })
+            
+            tool_success = tool_result.get("error") is None
+            execution_mode = state.get("execution_mode")
+            
+            _force_error_summary = False
+            _error_summary_type = None
+            if tool_error:
+                if "DoomLoop" in str(tool_error) or "loop" in str(tool_error).lower():
+                    _force_error_summary = True
+                    _error_summary_type = f"doom_loop({tool_name})"
+            
+            direct_update = {
+                "pending_tools": [],
+                "tool_history": new_tool_history,
+                "current_conversation_messages": new_current_conv_msgs,
+                "has_tool_use": False,
+                "last_tool_result": result_str,
+                "last_tool_name": tool_name,
+                "last_tool_success": tool_success,
+                "last_tool_error": tool_error,
+                "iteration_count": (state.get("iteration_count", 0) or 0) + 1,
+                "current_todo_iteration_count": (state.get("current_todo_iteration_count", 0) or 0) + 1,
+                "todo_status": "in_progress",
+                "next_action": None,
+            }
+            
+            if _force_error_summary:
+                direct_update["force_error_summary"] = True
+                direct_update["error_summary_type"] = _error_summary_type
+            
+            if execution_mode and tool_name != "chat":
+                if post_execute_hook:
+                    hook_result = post_execute_hook(direct_update, tool_result, state)
+                    if hook_result:
+                        direct_update.update(hook_result)
+                
+                return direct_update
+            
+            has_more_tools = len(pending_tools) > 1
+            is_chat_tool = tool_name == "chat"
+            
+            if is_chat_tool:
+                direct_update.update({
+                    "pending_tools": pending_tools[1:],
+                    "final_reply": result_str,
+                })
+                return direct_update
+            
+            direct_update.update({
+                "pending_tools": pending_tools[1:],
+                "has_tool_use": has_more_tools,
+            })
+            
+            return direct_update
+        
+        return execute_node
+    
+    def _create_todo_review_node(self, llm_service=None, message_context=None):
+        def step_review_node(state: AgentState) -> dict:
+            todos = state.get("todos") or []
+            
+            if not todos:
+                return {
+                    "todo_status": "continue",
+                    "has_tool_use": False,
+                    "pending_tools": [],
+                    "todos": todos,
+                }
+            
+            if state.get("last_tool_success") is False:
+                return {
+                    "todo_status": "blocked",
+                    "has_tool_use": False,
+                    "pending_tools": [],
+                    "todos": todos,
+                }
+            
+            return {
+                "todo_status": state.get("todo_status") or "continue",
+                "has_tool_use": False,
+                "pending_tools": [],
+                "todos": todos,
+            }
+        
+        return step_review_node
+    
+    def _route_after_decide(self, state: AgentState) -> str:
+        if state.get("final_reply"):
+            return "done"
+        
+        next_action = state.get("next_action") or {}
+        if next_action.get("kind") in ("reply", "enter_plan"):
+            return "done"
+        
+        if state.get("pending_tools"):
+            return "execute"
+        
+        return "done"
+    
+    def _route_after_execute(self, state: AgentState) -> str:
+        if state.get("final_reply"):
+            return "done"
+        
+        if state.get("force_error_summary"):
+            return "error_summary"
+        
+        next_action = state.get("next_action") or {}
+        if next_action.get("kind") == "enter_plan":
+            return "done"
+        
+        if state.get("pending_tools"):
+            return "execute"
+        
+        if state.get("force_error_summary"):
+            return "error_summary"
+        
+        return "decide"
+
     def create_graph(self):
         """创建 LangGraph StateGraph（可选）
         

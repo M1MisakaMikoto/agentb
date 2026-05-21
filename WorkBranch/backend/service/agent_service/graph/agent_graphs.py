@@ -68,188 +68,25 @@ def create_child_agent_graph(
     settings_service=None,
     message_context: dict = None,
 ):
-    import datetime
-    
     try:
         definition = get_definition(agent_type)
         child_base = ReActAgentBase(definition=definition)
         console.info(f"[create_child_agent_graph] ✅ 使用 ReActAgentBase 初始化 {agent_type}")
     except (ValueError, KeyError) as e:
         console.warning(f"[create_child_agent_graph] ⚠️ 未找到 {agent_type} 定义: {e}，使用默认配置")
-        child_base = None
+        child_base = ReActAgentBase(definition=get_definition("prediction_agent"))
     
-    graph = StateGraph(AgentState)
-
-    def execute_child_node(state: AgentState) -> dict:
-        pending_tools = state.get("pending_tools", []) or []
-        
-        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        
-        if not pending_tools:
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-                f.write(f"[{timestamp}] ✅ No pending tools, returning final_reply\n")
-                f.flush()
-            return {
-                "final_reply": state.get("final_reply"),
-                "has_tool_use": False,
-                "pending_tools": [],
-            }
-
-        if child_base:
-            state['llm_service'] = llm_service
-            state['message_context'] = message_context or {}
-            
-            execution_result = child_base.execute_child_step(
-                state=state,
-                llm_service=llm_service,
-                message_context=message_context,
-            )
-            
-            if execution_result.get("last_execution", {}).get("memory_was_injected"):
-                with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-                    f.write(f"[timestamp] ✅ [ReActAgentBase] 记忆已注入到 {execution_result['last_execution']['tool_name']}\n")
-                    f.flush()
-            
-            result = {
-                "final_reply": execution_result.get("final_reply"),
-                "has_tool_use": bool(execution_result.get("pending_tools")),
-                "pending_tools": execution_result.get("pending_tools", []),
-                "tool_history": execution_result.get("tool_history", []),
-            }
-            
-            return result
-        
-        tool_entry = pending_tools[0]
-        tool_name = tool_entry.get("tool")
-        tool_args = tool_entry.get("args", {})
-        
-        exec_start_time = datetime.datetime.now()
-        
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-            f.write(f"[{timestamp}] 🔧 Executing tool (fallback): {tool_name}\n")
-            f.write(f"[{timestamp}] 🔧 Tool args: {tool_args}\n")
-            f.flush()
-        
-        tool_result = run_tool_execution(
-            tool_name=tool_name,
-            tool_args=tool_args,
-            workspace_id=state["workspace_id"],
-            previous_calls=state.get("tool_history", []),
-            workspace_service=get_workspace_service(),
-            llm_service=llm_service,
-            token_callback=token_callback,
-            task_description=tool_args.get("description", ""),
-            previous_results=[item.get("result") for item in state.get("tool_history", []) if item.get("result")],
-            agent_type=agent_type,
-            settings_service=settings_service,
-            message_context=message_context,
-        )
-
-        exec_end_time = datetime.datetime.now()
-        exec_duration = (exec_end_time - exec_start_time).total_seconds()
-
-        result_str = str(tool_result.get("result", "")) if tool_result.get("result") is not None else ""
-        new_history = state.get("tool_history", []) + [{
-            "tool": tool_name,
-            "args": tool_args,
-            "result": tool_result.get("result")
-        }]
-        
-        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-            f.write(f"\n[{timestamp}] === 🔍 DIAGNOSTIC: TOOL EXECUTION COMPLETE ===\n")
-            f.write(f"[{timestamp}] ⏱️  Execution duration: {exec_duration:.3f}s\n")
-            f.write(f"[{timestamp}] 📤 Tool: {tool_name}\n")
-            f.write(f"[{timestamp}] 📊 Result stats:\n")
-            f.write(f"  - error: {tool_result.get('error')}\n")
-            f.write(f"  - result length: {len(result_str)} chars\n")
-            f.write(f"  - preview: {result_str[:200] if result_str else '(empty)'}\n")
-            f.write(f"[{timestamp}] 📈 State update:\n")
-            f.write(f"  - tool_history count (before→after): {len(state.get('tool_history', []))} → {len(new_history)}\n")
-            f.write(f"  - pending_tools remaining: {len(pending_tools) - 1}\n")
-            f.flush()
-
-        if tool_name == "thinking":
-            remaining = pending_tools[1:]
-            if not remaining:
-                remaining = [{"tool": "chat", "args": {"description": get_last_user_message_text(state)}}]
-            
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-                f.write(f"[{timestamp}] 💭 Thinking done, next tools:\n")
-                for idx, tool in enumerate(remaining):
-                    f.write(f"  [{idx}] {tool.get('tool')}: {str(tool.get('args', {}))[:100]}\n")
-                f.flush()
-                
-            return {
-                "tool_history": new_history,
-                "pending_tools": remaining,
-                "has_tool_use": bool(remaining),
-            }
-
-        if tool_name == "chat":
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-                f.write(f"[{timestamp}] 💬 Chat done, setting final_reply\n")
-                f.flush()
-            return {
-                "tool_history": new_history,
-                "pending_tools": [],
-                "has_tool_use": False,
-                "final_reply": result_str,
-            }
-
-        remaining = pending_tools[1:]
-        
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-            f.write(f"[{timestamp}] Other tool done, remaining: {len(remaining)}\n")
-            f.flush()
-            
-        return {
-            "tool_history": new_history,
-            "pending_tools": remaining,
-            "has_tool_use": bool(remaining),
-            "final_reply": result_str or state.get("final_reply"),
-        }
-
-    def route_child(state: AgentState) -> str:
-        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        
-        final_reply = state.get("final_reply")
-        pending_tools = state.get("pending_tools", []) or []
-        
-        decision = "done"
-        reason = ""
-        
-        if final_reply:
-            decision = "done"
-            reason = f"final_reply exists (length: {len(str(final_reply))})"
-        elif pending_tools:
-            decision = "execute"
-            reason = f"has {len(pending_tools)} pending tools: {[t.get('tool') for t in pending_tools[:3]]}"
-        else:
-            decision = "done"
-            reason = "no final_reply and no pending_tools"
-        
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-            f.write(f"\n[{timestamp}] === 🔍 DIAGNOSTIC: ROUTE DECISION ===\n")
-            f.write(f"[{timestamp}] ➡️  Decision: {decision}\n")
-            f.write(f"[{timestamp}] 📝 Reason: {reason}\n")
-            f.write(f"[{timestamp}] 📊 State at routing time:\n")
-            f.write(f"  - final_reply: {str(final_reply)[:80] if final_reply else '(empty)'}\n")
-            f.write(f"  - pending_tools count: {len(pending_tools)}\n")
-            f.flush()
-        
-        return decision
-
-    graph.add_node("execute", execute_child_node)
-    graph.set_conditional_entry_point(route_child, {
-        "execute": "execute",
-        "done": END,
-    })
-    graph.add_conditional_edges("execute", route_child, {
-        "execute": "execute",
-        "done": END,
-    })
-    return graph.compile()
+    simple_config = {
+        "enable_todo": False,
+        "post_execute_hook": None,
+        "llm_service": llm_service,
+        "settings_service": settings_service,
+        "message_context": message_context,
+    }
+    
+    loop_graph = child_base.build_react_loop_graph(simple_config)
+    
+    return loop_graph
 
 
 def create_agent_graph(
@@ -376,7 +213,25 @@ def run_agent_graph(
         settings_service=settings_service,
         message_context=message_context,
     )
-    final_state = graph.invoke(initial_state)
+    import traceback
+    try:
+        final_state = graph.invoke(initial_state)
+    except Exception as e:
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n[{timestamp}] === GRAPH INVOKE EXCEPTION ===\n")
+            f.write(f"Exception Type: {type(e).__name__}\n")
+            f.write(f"Exception Message: {str(e)}\n")
+            f.write(f"Full Traceback:\n{traceback.format_exc()}\n")
+            f.write(f"Initial State keys: {list(initial_state.keys())}\n")
+            if initial_state.get('pending_tools'):
+                f.write(f"pending_tools[0] type: {type(initial_state['pending_tools'][0])}\n")
+                f.write(f"pending_tools[0] value: {initial_state['pending_tools'][0]}\n")
+            if initial_state.get('next_action'):
+                f.write(f"next_action type: {type(initial_state['next_action'])}\n")
+                f.write(f"next_action value: {initial_state['next_action']}\n")
+            f.flush()
+        raise
 
     if persist_state:
         persistence.save(workspace_id, final_state)

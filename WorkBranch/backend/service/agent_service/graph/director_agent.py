@@ -19,6 +19,8 @@ import shutil
 import fnmatch
 
 from .decision.complexity_analyzer import ExecutionMode
+from .definitions import get_definition
+from .agent_definition import AgentDefinition
 from ..state import AgentState
 from .subgraphs.tool_registry import (
     is_tool_allowed, get_allowed_tools, _write_tool_event
@@ -47,7 +49,8 @@ from singleton import get_workspace_service
 
 MAX_REPLAN_COUNT = 3
 MAX_MESSAGES = 10
-MAX_DIRECT_ITERATIONS = 32
+# max_iterations 已迁移到 AgentDefinition.meta.max_iterations
+# 各 Agent 在 director_def.py, explore_def.py 等文件中配置
 CHECK_INTERVAL = 8
 
 workspace_service = get_workspace_service()
@@ -222,7 +225,7 @@ def _build_native_multimodal_chat_task(state: AgentState) -> dict:
         "multimodal_parts": user_message_parts,
     }
     return {
-        "pending_tools": [{"tool": "chat", "args": tool_args}],
+        "pending_tools": [{"tool_name": "chat", "args": tool_args}],
         "has_tool_use": True,
         "next_action": {
             "kind": "tool",
@@ -279,6 +282,7 @@ def build_context_prompt(
 def build_initial_state(
     user_message: Any,
     workspace_id: str,
+    definition: AgentDefinition = None,
     parent_chain_messages: List[dict] = None,
     current_conversation_messages: List[dict] = None,
     agent_type: Optional[str] = None,
@@ -287,6 +291,8 @@ def build_initial_state(
     plan_file: Optional[str] = None,
     plan_content: Optional[str] = None,
 ) -> dict:
+    # 从 definition 读取 max_iterations，默认为 10
+    max_iterations = definition.meta.max_iterations if definition else 10
     return {
         "messages": [user_message],
         "current_user_message_text": build_prompt_safe_text(user_message),
@@ -307,7 +313,7 @@ def build_initial_state(
         "forced_execution_mode": forced_execution_mode,
         "last_tool_result": None,
         "iteration_count": 0,
-        "max_iterations": MAX_DIRECT_ITERATIONS,
+        "max_iterations": max_iterations,
         "next_action": None,
         "last_tool_name": None,
         "last_tool_success": None,
@@ -318,7 +324,7 @@ def build_initial_state(
         "current_todo_goal": None,
         "current_todo_done_when": None,
         "current_todo_iteration_count": 0,
-        "todo_max_iterations": MAX_DIRECT_ITERATIONS,
+        "todo_max_iterations": max_iterations,
         "todo_status": None,
     }
 
@@ -435,10 +441,6 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
     return analyze_node
 
 
-def _build_tool_schema_prompt(tool_names: List[str]) -> str:
-    return _graph_build_tool_schema_prompt(tool_names)
-
-
 def _format_todo_prompt_block(todos: List[str], current_todo_index: int) -> str:
     return _graph_format_todo_prompt_block(todos, current_todo_index)
 
@@ -464,7 +466,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         parent_chain_messages = state.get("parent_chain_messages", []) or []
         current_conversation_messages = state.get("current_conversation_messages", []) or []
         iteration_count = state.get("iteration_count", 0) or 0
-        max_iterations = state.get("max_iterations", MAX_DIRECT_ITERATIONS) or MAX_DIRECT_ITERATIONS
+        max_iterations = state.get("max_iterations", 10) or 10
         todos = state.get("todos") or []
 
         console.step(title, subtitle, f"第 {iteration_count + 1}/{max_iterations} 轮")
@@ -512,7 +514,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             }
 
         allowed_tools = get_allowed_tools(current_agent_type, settings_service)
-        tool_schema_prompt = _build_tool_schema_prompt(allowed_tools)
+        tool_schema_prompt = _graph_build_tool_schema_prompt(allowed_tools, agent_type=current_agent_type)
 
         plan_content = None
         if not is_plan_mode:
@@ -640,7 +642,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 "invalid_tool_retry_count": retry_count,
             }
 
-        pending = [{"tool": tool_name, "args": dict(tool_args)}]
+        pending = [{"tool_name": tool_name, "args": dict(tool_args)}]
         return {
             "next_action": {
                 "kind": "tool",
@@ -795,7 +797,7 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
             "plan_content": plan_content,
             "final_reply": None,
             "has_tool_use": True,
-            "pending_tools": [{"tool": "chat", "args": {"description": chat_description}}],
+            "pending_tools": [{"tool_name": "chat", "args": {"description": chat_description}}],
             "next_action": {
                 "kind": "tool",
                 "tool_name": "chat",
@@ -1434,10 +1436,10 @@ def _execute_search_files(tool_args: dict, workspace_id: str, workspace_service)
 
 def _execute_workspace_tool(tool_name: str, tool_args: dict, workspace_id: str, workspace_service) -> dict:
     console.section(f"Workspace 工具: {tool_name}")
-    
+
     if workspace_service is None:
         workspace_service = WorkspaceService()
-    
+
     if tool_name == "list_workspace_files":
         return _execute_list_workspace_files(workspace_id, workspace_service)
     elif tool_name == "get_workspace_info":
@@ -1627,7 +1629,7 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
         execution_mode = state.get("execution_mode")
 
         if pending_tools:
-            tool_name = pending_tools[0].get("tool")
+            tool_name = pending_tools[0].get("tool_name")
             tool_args = pending_tools[0].get("args", {})
             task_description = (
                 (state.get("next_action") or {}).get("task_description")
@@ -1675,9 +1677,10 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
             console.box("工具执行结果", result_str[:200])
 
             new_tool_history = state.get("tool_history", []) + [{
-                "tool": tool_name,
+                "tool_name": tool_name,
                 "args": tool_args,
-                "result": tool_result.get("result")
+                "result": tool_result.get("result"),
+                "timestamp": datetime.datetime.now().isoformat(),
             }]
 
             new_current_conv_msgs = list(current_conversation_messages)
@@ -1802,13 +1805,73 @@ def route_after_execute(state: AgentState) -> str:
     return check_state_v3(state)
 
 
+def _director_post_execute_hook(direct_update: dict, tool_result: dict, state: dict) -> dict:
+    from .decision.complexity_analyzer import ExecutionMode
+    
+    hook_updates = {}
+    tool_name = direct_update.get("last_tool_name")
+    tool_success = direct_update.get("last_tool_success")
+    
+    if not tool_success:
+        return hook_updates
+    
+    if tool_name == "update_todo":
+        next_todos = tool_result.get("todos") or []
+        next_doing_idx = tool_result.get("doingIdx", 0)
+        hook_updates.update({
+            "todos": next_todos,
+            "current_todo_index": next_doing_idx,
+            "current_todo_goal": None,
+            "current_todo_done_when": None,
+            "iteration_count": 0,
+            "current_todo_iteration_count": 0,
+            "todo_status": "pending",
+        })
+    
+    if tool_name == "switch_execution_mode":
+        mode_value = tool_result.get("execution_mode")
+        if mode_value == "PLAN":
+            hook_updates.update({
+                "execution_mode": ExecutionMode.PLAN,
+                "mode_reason": tool_result.get("mode_reason") or "agent 主动切换到 PLAN",
+                "pending_tools": [],
+                "has_tool_use": False,
+                "next_action": {
+                    "kind": "enter_plan",
+                    "task_description": tool_result.get("mode_reason") or "切换到 PLAN",
+                },
+            })
+        elif mode_value == "DIRECT":
+            hook_updates.update({
+                "execution_mode": ExecutionMode.DIRECT,
+                "mode_reason": tool_result.get("mode_reason") or "agent 维持 DIRECT",
+            })
+    
+    return hook_updates
+
+
 def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_mode: str = "accumulate", window_size: int = 3, settings_service=None, message_context=None):
+    from .definitions import get_definition
+    from langgraph.graph import StateGraph, END
+    
+    definition = get_definition("director_agent")
+    director_base = ReActAgentBase(definition=definition)
+    
     graph = StateGraph(AgentState)
 
     graph.add_node("analyze", create_analyze_node(llm_service, message_context, settings_service))
-    graph.add_node("decide", create_decide_next_action_node(llm_service, settings_service, message_context))
-    graph.add_node("todo_review", create_step_review_node(llm_service, message_context))
-    graph.add_node("execute", create_execute_node(llm_service, token_callback, settings_service, message_context))
+    
+    loop_config = {
+        "enable_todo": True,
+        "post_execute_hook": _director_post_execute_hook,
+        "llm_service": llm_service,
+        "settings_service": settings_service,
+        "message_context": message_context,
+    }
+    
+    loop_subgraph = director_base.build_react_loop_graph(loop_config)
+    
+    graph.add_node("plan", create_plan_node(llm_service, token_callback, settings_service, message_context))
 
     graph.set_entry_point("analyze")
 
@@ -1817,6 +1880,24 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         "execute": "execute",
         "done": END
     })
+
+    graph.add_node("decide", director_base._create_decide_node(
+        llm_service=llm_service,
+        settings_service=settings_service,
+        message_context=message_context,
+    ))
+    
+    graph.add_node("execute", director_base._create_execute_node(
+        llm_service=llm_service,
+        settings_service=settings_service,
+        message_context=message_context,
+        post_execute_hook=_director_post_execute_hook,
+    ))
+    
+    graph.add_node("todo_review", director_base._create_todo_review_node(
+        llm_service=llm_service,
+        message_context=message_context,
+    ))
 
     graph.add_conditional_edges("decide", check_state_v3, {
         "analyze": "analyze",
@@ -1836,6 +1917,8 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
     graph.add_conditional_edges("todo_review", route_after_todo_review, {
         "decide": "decide",
     })
+
+    graph.add_conditional_edges("plan", lambda s: END, {END: END})
 
     return graph.compile()
 
@@ -1857,9 +1940,14 @@ def run_graph_v3(
     print(f"[Director Agent] 记忆模式: {memory_mode}, 窗口大小: {window_size}")
     print("="*60)
 
+    # 从 AgentDefinition 读取配置
+    definition = get_definition("director_agent")
+    print(f"[Director Agent] max_iterations: {definition.meta.max_iterations}")
+
     initial_state = build_initial_state(
         user_message=user_message,
         workspace_id=workspace_id,
+        definition=definition,
         parent_chain_messages=parent_chain_messages,
         current_conversation_messages=current_conversation_messages,
         is_root_graph=True,

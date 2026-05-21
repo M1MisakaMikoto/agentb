@@ -1,14 +1,26 @@
 """
-提示词模板层
-提供System Prompt、User Message模板和工具Schema生成
+Prompt 模板层
+包含 System Prompt 模板和 User Message 模板
 """
 
-from .system_prompts import SystemPromptManager
+from .system_prompts import (
+    DIRECT_SYSTEM_PROMPT,
+    PLAN_MODE_SYSTEM_PROMPT,
+    THINK_SYSTEM_PROMPT,
+    CHAT_SYSTEM_PROMPT,
+    INTENT_ANALYSIS_PROMPT,
+)
 from .user_templates import UserTemplateManager
 from .tool_schemas import ToolSchemaManager
+from ..base.message_processor import MessageProcessor
 
 __all__ = [
-    "SystemPromptManager",
+    "DIRECT_SYSTEM_PROMPT",
+    "PLAN_MODE_SYSTEM_PROMPT",
+    "THINK_SYSTEM_PROMPT",
+    "CHAT_SYSTEM_PROMPT",
+    "INTENT_ANALYSIS_PROMPT",
     "UserTemplateManager",
     "ToolSchemaManager",
+    "MessageProcessor",
 ]
