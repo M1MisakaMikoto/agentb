@@ -35,6 +35,7 @@ class ExploreDefinition(AgentDefinition):
                     "read_file",
                     "glob",
                     "grep",
+                    "sql_query",
                 ],
                 default_tools=[
                     {"tool": "thinking", "args": {"description": ""}},

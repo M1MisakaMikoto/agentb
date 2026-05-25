@@ -44,6 +44,7 @@ class DirectorDefinition(AgentDefinition):
                     "glob",
                     "grep",
                     "document",
+                    "sql_query",
                 ],
                 default_tools=[
                     {"tool": "thinking", "args": {"description": ""}},
