@@ -158,7 +158,28 @@ ALL_TOOLS = {
         "name": "sql_query",
         "description": "执行只读 SQL 查询或结构探查；支持 query(SELECT)、show_databases(列出数据库)、show_tables(列出表)、describe(查看表结构)、show_create(查看建表语句)",
         "params": 'sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create，必填)","query":"(query 模式必填；其他模式忽略)","database":"(数据库名称，可选；show_databases 模式忽略，show_tables/describe/show_create 使用该库或默认库)","table":"(表名；describe/show_create 模式必填，其他模式忽略)","limit":"(仅 query 模式生效，默认100，最大1000)"}'
-    }
+    },
+    # --- Prediction Tools ---
+    "calculate_bci": {
+        "name": "calculate_bci",
+        "description": "计算桥梁技术状况指数(BCI)，基于CJJ 99-2017加权扣分法",
+        "params": 'calculate_bci:{"historical_reports":"(历史报告列表)","target_year":"(目标年份，默认2024)","standard":"(规范标准，默认CJJ 99-2017)"}'
+    },
+    "predict_trend": {
+        "name": "predict_trend",
+        "description": "预测桥梁退化趋势，支持线性回归/多项式/指数三种模型",
+        "params": 'predict_trend:{"historical_bci":"(BCI历史数据列表，格式示例：[{\"year\":2018,\"bci\":81.8},{\"year\":2020,\"bci\":78.5}]，必填)","method":"(预测方法：linear_regression/polynomial/exponential，默认linear_regression)"}'
+    },
+    "query_standard": {
+        "name": "query_standard",
+        "description": "查询桥梁检测行业规范(CJJ 99-2017/CJJ/T 233-2015/JTG H11-2004)",
+        "params": 'query_standard:{"bci_score":"(BCI分数，用于等级判定)","standard_version":"(规范版本)","query_type":"(查询类型：general/grade/formula/maintenance)"}'
+    },
+    "bridge_report_parser": {
+        "name": "bridge_report_parser",
+        "description": "桥梁检测报告解析 - 从历史报告(.docx/.doc)提取BCI数据、部件评分、病害描述，同时保留原报告格式供生成预测报告参考",
+        "params": 'bridge_report_parser:{"file_paths":"(必填)历史报告文件路径列表，如[\"报告2018.docx\",\"报告2020.docx\"]","include_format_template":"(可选)是否包含原报告格式，默认true"}'
+    },
 }
 
 
@@ -170,3 +191,4 @@ RAG_TOOLS = {"rag_search"}
 WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}
 DOCUMENT_TOOLS = {"document", "read_document"}
 SQL_TOOLS = {"sql_query"}
+PREDICTION_TOOLS = {"calculate_bci", "predict_trend", "query_standard", "bridge_report_parser"}

@@ -30,6 +30,7 @@ class PredictionDefinition(AgentDefinition):
                 allowed_tools=[
                     "thinking",
                     "chat",
+                    "bridge_report_parser",
                     "calculate_bci",
                     "predict_trend",
                     "query_standard",
@@ -43,6 +44,7 @@ class PredictionDefinition(AgentDefinition):
                     {"tool": "thinking", "args": {"description": ""}},
                     {"tool": "chat", "args": {"description": ""}},
                     {"tool": "list_workspace_files", "args": {"previous_results": []}},
+                    {"tool": "bridge_report_parser", "args": {"file_paths": [], "include_format_template": True}},
                     {"tool": "document", "args": {}},
                 ],
                 timeout_seconds=300,

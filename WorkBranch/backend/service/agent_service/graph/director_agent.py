@@ -570,6 +570,11 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             if response_text.endswith("```"):
                 response_text = response_text[:-3]
             response_text = response_text.strip()
+
+            # 防御性处理：检查 LLM 是否返回空响应
+            if not response_text:
+                raise ValueError("LLM 返回了空响应，可能是 API 超时或模型异常")
+
             decision_data = json.loads(response_text)
         except Exception as e:
             import traceback
@@ -587,7 +592,25 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                     f.flush()
             except Exception:
                 pass
-            
+
+            # 检查是否是 JSON 解析错误（可能包含空响应）
+            error_str = str(e).lower()
+            is_json_error = 'expecting value' in error_str or 'json' in error_str or 'no response' in error_str or 'empty' in error_str
+
+            # 决策失败时尝试重试
+            decision_error_count = (state.get("decision_error_count", 0) or 0) + 1
+            max_decision_retries = 3
+
+            if is_json_error and decision_error_count < max_decision_retries:
+                console.decision_box("decide", f"决策解析失败，使用相同提示词重试第 {decision_error_count}/{max_decision_retries} 次")
+                return {
+                    "next_action": None,
+                    "final_reply": None,
+                    "has_tool_use": False,
+                    "pending_tools": [],
+                    "decision_error_count": decision_error_count,
+                }
+
             console.box("决策解析失败", response_text if 'response_text' in locals() else str(response) if response else "No response")
             reply = f"当前无法自动决策下一步：{e}；原始回复：{response_text if 'response_text' in locals() else (response if response else 'No response')}"
             _emit_final_reply(reply, message_context)

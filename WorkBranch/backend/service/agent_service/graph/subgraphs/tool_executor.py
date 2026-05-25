@@ -387,6 +387,23 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             except Exception as e:
                 tool_result = {"result": None, "error": f"规范查询失败: {str(e)}"}
                 print(f"[DEBUG-PREDICTION] ✗ 规范查询失败: {e}")
+        elif tool_name == "bridge_report_parser":
+            print(f"[DEBUG-PREDICTION] 📄 bridge_report_parser CALLED! Args: {tool_args}")
+            from service.agent_service.tools.prediction_tools import execute_bridge_report_parser
+            try:
+                result = execute_bridge_report_parser(tool_args, workspace_id=workspace_id)
+                tool_result = result
+                # 安全检查：避免 NoneType.get() 错误
+                inner_result = result.get("result") if result else None
+                if inner_result and inner_result.get("success"):
+                    print(f"[DEBUG-PREDICTION] ✓ 报告解析成功: {len(inner_result.get('data_source', []))} 个文件")
+                elif result and result.get("error"):
+                    print(f"[DEBUG-PREDICTION] ✗ 报告解析失败: {result.get('error')}")
+                else:
+                    print(f"[DEBUG-PREDICTION] ✗ 报告解析结果异常")
+            except Exception as e:
+                tool_result = {"result": None, "error": f"报告解析失败: {str(e)}"}
+                print(f"[DEBUG-PREDICTION] ✗ 报告解析失败: {e}")
         elif tool_name == "rag_search":
             tool_result = execute_rag_search(tool_args)
         elif tool_name == "document":

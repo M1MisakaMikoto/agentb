@@ -706,7 +706,7 @@ class ReActAgentBase:
                     messages=[{"role": "user", "content": context_prompt}],
                     system_prompt=system_prompt,
                 )
-                
+
                 response_text = response.strip()
                 if response_text.startswith("```json"):
                     response_text = response_text[7:]
@@ -715,7 +715,7 @@ class ReActAgentBase:
                 if response_text.endswith("```"):
                     response_text = response_text[:-3]
                 response_text = response_text.strip()
-                
+
                 import datetime as _dt
                 _ts = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
                 with open('llm_decision_trace.log', 'a', encoding='utf-8') as _f:
@@ -726,15 +726,41 @@ class ReActAgentBase:
                         for _idx, _item in enumerate(tool_history[-3:], 1):
                             _f.write(f"[{_ts}]   history[{_idx}]: tool={_item.get('tool_name', 'N/A')}, result_len={len(str(_item.get('result', '')))}\n")
                     _f.flush()
-                
+
+                # 防御性处理：检查 LLM 是否返回空响应
+                if not response_text:
+                    raise ValueError("LLM 返回了空响应，可能是 API 超时或模型异常")
+
                 decision_data = json.loads(response_text)
             except Exception as e:
+                # 决策失败时尝试重试，而不是立即终止
+                decision_error_count = (state.get("decision_error_count", 0) or 0) + 1
+                max_decision_retries = 3
+
+                if decision_error_count < max_decision_retries:
+                    # 重试决策，不设置 final_reply 让 graph 继续
+                    import datetime as _dt
+                    _ts = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+                    with open('llm_decision_trace.log', 'a', encoding='utf-8') as _f:
+                        _f.write(f"[{_ts}] ⚠️ 决策尝试 #{decision_error_count} 失败，将重试：{e}\n")
+                        _f.flush()
+
+                    return {
+                        "next_action": None,
+                        "final_reply": None,
+                        "has_tool_use": False,
+                        "pending_tools": [],
+                        "decision_error_count": decision_error_count,
+                    }
+
+                # 重试次数用完，返回错误
                 reply = f"当前无法自动决策下一步：{e}"
                 return {
                     "next_action": {"kind": "reply", "reply": reply},
                     "final_reply": reply,
                     "has_tool_use": False,
                     "pending_tools": [],
+                    "decision_error_count": decision_error_count,
                 }
             
             kind = decision_data.get("kind")

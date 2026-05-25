@@ -608,12 +608,12 @@ def _format_tool_history(tool_history: List[dict]) -> str:
     """格式化工具历史"""
     if not tool_history:
         return "(暂无工具执行历史)"
-    
+
     history_lines = []
     for idx, item in enumerate(tool_history[-5:], 1):
         result_text = str(item.get("result") or "")
-        if len(result_text) > 500:
-            result_text = result_text[:500] + "..."
+        if len(result_text) > 800:
+            result_text = result_text[:800] + "...[已截断]"
         history_lines.append(f"{idx}. tool={item.get('tool_name')} args={item.get('args')} result={result_text}")
     return "\n".join(history_lines)
 
@@ -622,7 +622,7 @@ def _format_last_result(last_tool_result: Optional[str]) -> str:
     """格式化最近工具结果"""
     if not last_tool_result:
         return "(无)"
-    return last_tool_result if len(last_tool_result) <= 1000 else last_tool_result[:1000] + "..."
+    return last_tool_result if len(last_tool_result) <= 1500 else last_tool_result[:1500] + "...[已截断]"
 
 
 def _format_todo_intro(todos: List[str], current_todo_index: int) -> str:
