@@ -22,6 +22,8 @@ from test_cases import (
     wait_for_backend,
     start_backend,
     stop_backend,
+    start_mock_servers,
+    stop_mock_servers,
     get_timestamp,
     safe_print,
 )
@@ -41,6 +43,7 @@ from test_cases.cross_lifecycle import run_cross_lifecycle_test
 from test_cases.mq_resume import run_mq_resume_test
 from test_cases.parallel import run_parallel_test
 from test_cases.bridge_predict import run_bridge_predict_test
+from test_cases.disaster_judgment_flow import run_disaster_judgment_test
 
 
 SCENARIO_RUNNERS = {
@@ -58,6 +61,7 @@ SCENARIO_RUNNERS = {
     "mq_resume": run_mq_resume_test,
     "parallel": run_parallel_test,
     "bridge_predict": run_bridge_predict_test,
+    "disaster_judgment_flow": run_disaster_judgment_test,
 }
 
 
@@ -225,8 +229,13 @@ async def run_tests(
 ) -> List[TestResult]:
     results = []
     backend_process = None
-    
+    mock_processes = []
+
     try:
+        # 启动 mock 服务器（无论是否启动 backend）
+        if start_server:
+            mock_processes = start_mock_servers()
+
         if start_server:
             backend_process = start_backend()
             api_config = config.get("api", {})
@@ -260,6 +269,8 @@ async def run_tests(
     finally:
         if backend_process:
             stop_backend(backend_process)
+        if mock_processes:
+            stop_mock_servers(mock_processes)
     
     return results
 

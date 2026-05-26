@@ -39,6 +39,8 @@ class PredictionDefinition(AgentDefinition):
                     "get_workspace_info",
                     "search_files",
                     "read_file",
+                    "submit_ai_judgment_issue",
+                    "submit_facility_report",
                 ],
                 default_tools=[
                     {"tool": "thinking", "args": {"description": ""}},

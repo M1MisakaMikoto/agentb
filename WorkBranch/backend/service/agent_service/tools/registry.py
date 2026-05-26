@@ -180,6 +180,18 @@ ALL_TOOLS = {
         "description": "桥梁检测报告解析 - 从历史报告(.docx/.doc)提取BCI数据、部件评分、病害描述，同时保留原报告格式供生成预测报告参考",
         "params": 'bridge_report_parser:{"file_paths":"(必填)历史报告文件路径列表，如[\"报告2018.docx\",\"报告2020.docx\"]","include_format_template":"(可选)是否包含原报告格式，默认true"}'
     },
+    # --- AI 研判工具 ---
+    "submit_ai_judgment_issue": {
+        "name": "submit_ai_judgment_issue",
+        "description": "提交 AI 研判问题 - 将设施问题提交到 AI 研判系统，等待 AI 分析并返回研判结果",
+        "params": 'submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","api_url":"(API地址，可选)"}'
+    },
+    # --- 设施研判报告工具 ---
+    "submit_facility_report": {
+        "name": "submit_facility_report",
+        "description": "生成设施研判报告 - 将检测报告上传后自动生成研判报告",
+        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFileUrl":"(报告文件URL，必填)","api_url":"(API地址，可选)"}'
+    },
 }
 
 
@@ -192,3 +204,5 @@ WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}
 DOCUMENT_TOOLS = {"document", "read_document"}
 SQL_TOOLS = {"sql_query"}
 PREDICTION_TOOLS = {"calculate_bci", "predict_trend", "query_standard", "bridge_report_parser"}
+AI_JUDGMENT_TOOLS = {"submit_ai_judgment_issue"}
+FACILITY_REPORT_TOOLS = {"submit_facility_report"}

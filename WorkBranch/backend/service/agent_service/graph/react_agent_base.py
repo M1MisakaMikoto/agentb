@@ -644,7 +644,7 @@ class ReActAgentBase:
                 _last_msg.get("content", "") if isinstance(_last_msg, dict) else str(_last_msg) if _last_msg else ""
             )
             
-            agent_type = state.get("agent_type") or "sub_agent"
+            agent_type = state.get("agent_type") or "prediction_agent"
             tool_history = state.get("tool_history", []) or []
             last_tool_result = state.get("last_tool_result")
             iteration_count = state.get("iteration_count", 0) or 0
@@ -857,7 +857,7 @@ class ReActAgentBase:
                 token_callback=None,
                 task_description=reason,
                 previous_results=[item.get("result") for item in state.get("tool_history", []) if item.get("result")],
-                agent_type=state.get("agent_type") or "sub_agent",
+                agent_type=state.get("agent_type") or "prediction_agent",
                 settings_service=settings_service,
                 message_context=enhanced_message_context,
             )

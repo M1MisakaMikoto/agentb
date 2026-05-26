@@ -45,6 +45,8 @@ class DirectorDefinition(AgentDefinition):
                     "grep",
                     "document",
                     "sql_query",
+                    "submit_ai_judgment_issue",
+                    "submit_facility_report",
                 ],
                 default_tools=[
                     {"tool": "thinking", "args": {"description": ""}},

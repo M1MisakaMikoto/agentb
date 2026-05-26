@@ -428,6 +428,12 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
                     "execution_mode": mode,
                     "mode_reason": reason,
                 }
+        elif tool_name == "submit_ai_judgment_issue":
+            from service.agent_service.tools.ai_judgment_tool import execute_submit_ai_judgment_issue
+            tool_result = execute_submit_ai_judgment_issue(tool_args, message_context)
+        elif tool_name == "submit_facility_report":
+            from service.agent_service.tools.facility_report_tool import execute_submit_facility_report
+            tool_result = execute_submit_facility_report(tool_args, message_context)
         elif tool_name in WORKSPACE_TOOLS:
             tool_result = _execute_workspace_tool(tool_name, tool_args, workspace_id, workspace_service)
         else:

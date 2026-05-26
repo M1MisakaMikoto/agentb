@@ -1,0 +1,97 @@
+api:
+  base_url: "http://127.0.0.1:8000"
+  host: "127.0.0.1"
+  port: 8000
+  endpoints:
+    session:
+      create: "/session/sessions"
+      get: "/session/sessions/{session_id}"
+      list: "/session/sessions"
+      generate_title: "/session/sessions/{session_id}/title:generate"
+    conversation:
+      create: "/session/sessions/{session_id}/conversations"
+      get: "/session/conversations/{conversation_id}"
+      stream: "/session/conversations/{conversation_id}/stream"
+      cancel: "/session/conversations/{conversation_id}/cancel"
+    workspace:
+      get: "/workspaces/{workspace_id}"
+      list_files: "/workspaces/{workspace_id}/files"
+      upload_file: "/workspaces/{workspace_id}/files"
+    plan:
+      get: "/plan/{workspace_id}"
+      status: "/plan/{workspace_id}/status"
+      update: "/plan/update"
+      approve: "/plan/update"
+
+suites:
+  basic:
+    description: "Basic tests"
+    scenarios:
+      - direct_mode
+      - search_mode
+  
+  tools:
+    description: "Tool tests"
+    scenarios:
+      - rag_search
+      - sql_query
+  
+  all:
+    description: "All tests"
+    scenarios:
+      - direct_mode
+      - plan_mode
+      - search_mode
+      - serial_mode
+      - rag_search
+      - sql_query
+      - bridge_predict
+      - disaster_judgment_flow
+
+scenarios:
+  direct_mode:
+    description: "DIRECT mode test"
+  
+  plan_mode:
+    description: "PLAN mode test"
+  
+  search_mode:
+    description: "SEARCH mode test"
+  
+  serial_mode:
+    description: "SERIAL mode test"
+  
+  rag_search:
+    description: "RAG search test"
+    test_documents:
+      - title: "产品使用手册"
+        category: "技术文档"
+        content: "这是产品使用手册的内容，包含产品的基本操作指南、常见问题解答和技术规格说明。"
+      - title: "销售报告 2024"
+        category: "业务报告"
+        content: "2024年销售报告显示，公司整体销售额增长了15%，其中新产品线贡献了30%的增长。"
+      - title: "员工培训手册"
+        category: "人力资源"
+        content: "员工培训手册包含公司文化、规章制度、工作流程和职业发展指南。"
+  
+  sql_query:
+    description: "SQL query test"
+  
+  workspace_upload_read_document:
+    description: "Workspace Upload - Read Document Test"
+    source_files:
+      - ".dev/table/doc/测试 PDF 文档.pdf"
+    prompt: "请读取 workspace 中的文件并总结主要内容。"
+
+  bridge_predict:
+    description: "Bridge Inspection Report - Historical Data Prediction Test"
+    prediction_timeout: 900.0
+    prompt: |
+      基于工作区中的三份陈家阁大桥历史检测报告（2018/2020/2022年），使用call_prediction_agent工具预测并生成2024年的完整检测报告（Word文档格式）。
+
+  bridge_decision_test:
+    description: "桥梁病害智能决策测试 - 分析 → 研判提交 → 决策报告 → 报告提交"
+    judgment_timeout: 900.0
+
+  disaster_judgment:
+    description: "Disaster Judgment Flow - AI识别 → 发现问题 → 决策 → 报告推送"

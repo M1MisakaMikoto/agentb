@@ -309,7 +309,11 @@ async def stream_conversation_message(
                             )
                             first_chunk_logged = True
 
-                        yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+                        # [DEBUG] 打印实际yield的JSON
+                        event_type = event_data.get("type", "unknown")
+                        yield_json = json.dumps(event_data, ensure_ascii=False)
+                        print(f"[STREAM-YIELD] type={event_type}, yield_size={len(yield_json)}")
+                        yield f"data: {yield_json}\n\n"
                         print(f"[STREAM-DEBUG] ✓ Yielded message to client")
 
                         if message.type == SegmentType.DONE:

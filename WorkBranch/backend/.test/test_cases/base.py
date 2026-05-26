@@ -158,6 +158,128 @@ def stop_backend(process: subprocess.Popen):
     print(f"{Colors.GREEN}Backend stopped{Colors.ENDC}")
 
 
+def start_mock_servers() -> List[subprocess.Popen]:
+    """启动所有 mock 服务器（AI Judgment 和 Facility Report）"""
+    tools_dir = Path(__file__).parent.parent.parent / "service" / "agent_service" / "tools"
+    processes = []
+
+    mock_servers = [
+        ("ai_judgment_mock_server.py", 8080),
+        ("facility_report_mock_server.py", 8001),
+    ]
+
+    print(f"\n{Colors.CYAN}Starting mock servers...{Colors.ENDC}")
+
+    for script_name, port in mock_servers:
+        script_path = tools_dir / script_name
+        if not script_path.exists():
+            print(f"{Colors.YELLOW}Mock server not found: {script_path}{Colors.ENDC}")
+            continue
+
+        # 检查端口是否已被占用，如果是则终止占用进程
+        import socket
+        for _ in range(3):  # 最多重试3次
+            try:
+                test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                test_sock.settimeout(1)
+                result = test_sock.connect_ex(('localhost', port))
+                test_sock.close()
+                if result != 0:
+                    # 端口未被占用
+                    break
+                # 端口被占用，尝试终止
+                print(f"{Colors.YELLOW}Port {port} is in use, attempting to free it...{Colors.ENDC}")
+                if os.name == "nt":
+                    import subprocess as sp
+                    try:
+                        # 查找并终止占用端口的进程
+                        result = sp.run(
+                            f'for /f "tokens=5" %a in (\'netstat -ano ^| findstr :{port} ^| findstr LISTENING\') do @taskkill /F /PID %a',
+                            shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace'
+                        )
+                        if result.returncode == 0:
+                            print(f"{Colors.DIM}Terminated process on port {port}{Colors.ENDC}")
+                    except Exception as e:
+                        print(f"{Colors.DIM}Could not terminate process: {e}{Colors.ENDC}")
+                time.sleep(0.5)
+            except Exception:
+                break
+
+        command = [sys.executable, str(script_path), "--port", str(port)]
+        print(f"{Colors.CYAN}Starting {script_name} on port {port}...{Colors.ENDC}")
+
+        kwargs = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
+
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+
+        try:
+            proc = subprocess.Popen(command, **kwargs)
+
+            # 等待一小段时间检查进程是否启动
+            time.sleep(0.5)
+
+            if proc.poll() is not None:
+                # 进程已退出，读取错误信息
+                try:
+                    stdout, _ = proc.communicate(timeout=1)
+                    print(f"{Colors.RED}Mock server {script_name} failed to start:{Colors.ENDC}")
+                    print(f"{Colors.RED}{stdout or 'Unknown error'}{Colors.ENDC}")
+                except:
+                    print(f"{Colors.RED}Mock server {script_name} failed to start{Colors.ENDC}")
+                continue
+
+            def stream_output(proc_ref, name):
+                assert proc_ref.stdout is not None
+                for line in proc_ref.stdout:
+                    print(f"{Colors.DIM}[{name}] {line.rstrip()}{Colors.ENDC}")
+
+            thread = threading.Thread(target=stream_output, args=(proc, script_name.replace("_mock_server.py", "").upper()), daemon=True)
+            thread.start()
+
+            processes.append(proc)
+            print(f"{Colors.GREEN}Mock server started: {script_name} (PID: {proc.pid}){Colors.ENDC}")
+        except Exception as e:
+            print(f"{Colors.RED}Failed to start {script_name}: {e}{Colors.ENDC}")
+
+    # 等待服务器启动
+    time.sleep(1)
+
+    print(f"{Colors.GREEN}Mock servers ready: {len(processes)}/{len(mock_servers)}{Colors.ENDC}\n")
+
+    return processes
+
+
+def stop_mock_servers(processes: List[subprocess.Popen]):
+    """停止所有 mock 服务器"""
+    if not processes:
+        return
+
+    print(f"\n{Colors.CYAN}Stopping mock servers...{Colors.ENDC}")
+
+    for proc in processes:
+        if proc.poll() is None:
+            try:
+                if os.name == "nt":
+                    proc.send_signal(signal.CTRL_BREAK_EVENT)
+                else:
+                    proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    print(f"{Colors.GREEN}Mock servers stopped{Colors.ENDC}")
+
+
 class TestResult:
     def __init__(self, scenario: str, config: Dict):
         self.scenario = scenario
@@ -460,7 +582,7 @@ async def collect_stream_output(
             
             _write_stream_log(stream_log_fh, header)
         except Exception as e:
-            print(f"{Colors.YELLOW}[stream_log] ⚠ Failed to open log file: {e}{Colors.ENDC}")
+            print(f"{Colors.YELLOW}[stream_log] Failed to open log file: {str(e)}{Colors.ENDC}")
             stream_log_fh = None
     
     while retry_count <= max_retries and time.time() < deadline:
@@ -555,6 +677,10 @@ async def collect_stream_output(
                     continue
                 if not raw_line.strip():
                     continue
+
+                # [DEBUG] 打印所有收到的原始行
+                if verbose:
+                    print(f"{Colors.DIM}[RAW-RECV] {raw_line[:200]}{Colors.ENDC}")
 
                 if show_raw:
                     result.raw_lines.append(raw_line)
@@ -704,11 +830,11 @@ async def collect_stream_output(
             retry_count += 1
             if retry_count > max_retries:
                 if verbose:
-                    print(f"{Colors.RED}[connection failed] Max retries exceeded: {e}{Colors.ENDC}")
+                    print(f"{Colors.RED}[connection failed] Max retries exceeded: {str(e)}{Colors.ENDC}")
                 return
             
             if verbose:
-                print(f"{Colors.YELLOW}[reconnect] Connection error, retry {retry_count}/{max_retries}: {e}{Colors.ENDC}")
+                print(f"{Colors.YELLOW}[reconnect] Connection error, retry {retry_count}/{max_retries}: {str(e)}{Colors.ENDC}")
             await asyncio.sleep(retry_delay)
             retry_delay *= 2
     
@@ -726,9 +852,9 @@ async def collect_stream_output(
         try:
             _write_stream_log(stream_log_fh, footer)
             stream_log_fh.close()
-            print(f"{Colors.GREEN}[stream_log] ✅ Log saved: {stream_log_file} ({result.event_count} events){Colors.ENDC}")
+            print(f"{Colors.GREEN}[stream_log] Log saved: {stream_log_file} ({result.event_count} events){Colors.ENDC}")
         except Exception as e:
-            print(f"{Colors.YELLOW}[stream_log] ⚠ Error closing log: {e}{Colors.ENDC}")
+            print(f"{Colors.YELLOW}[stream_log] Error closing log: {str(e)}{Colors.ENDC}")
 
 
 def _write_stream_log(fh, content: str):
