@@ -45,6 +45,7 @@ class DirectorDefinition(AgentDefinition):
                     "grep",
                     "document",
                     "sql_query",
+                    "rag_search",
                     "submit_ai_judgment_issue",
                     "submit_facility_report",
                 ],
