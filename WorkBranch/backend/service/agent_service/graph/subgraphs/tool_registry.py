@@ -97,17 +97,25 @@ def _write_tool_event(
     )
 
 
-def get_allowed_tools(agent_type: str, settings_service=None) -> List[str]:
-    if settings_service is None:
-        from service.settings_service.settings_service import SettingsService
-        settings_service = SettingsService()
+def get_allowed_tools(agent_type: str, settings_service=None, use_settings_override: bool = False) -> List[str]:
+    """
+    获取 Agent 允许的工具列表。
 
-    try:
-        permissions = settings_service.get("tool_permissions")
-        if agent_type in permissions:
-            return permissions[agent_type].get("allowed", [])
-    except KeyError:
-        pass
+    参数:
+        agent_type: Agent 类型
+        settings_service: 设置服务实例
+        use_settings_override: 是否使用 settings_service 的工具权限覆盖。
+                              默认 False，表示优先使用 AgentDefinition 定义。
+                              设为 True 可启用 settings_service 覆盖。
+    """
+    if use_settings_override and settings_service is not None:
+        try:
+            permissions = settings_service.get("tool_permissions")
+            if agent_type in permissions:
+                console.info(f"[tool_registry] 使用 settings_service 覆盖 {agent_type} 的工具权限")
+                return permissions[agent_type].get("allowed", [])
+        except KeyError:
+            pass
 
     try:
         from ..definitions import get_definition
@@ -129,12 +137,12 @@ def get_allowed_tools(agent_type: str, settings_service=None) -> List[str]:
     return default_permissions.get(agent_type, default_permissions["director_agent"])
 
 
-def filter_tools_by_agent_type(agent_type: str, settings_service=None) -> List[dict]:
+def filter_tools_by_agent_type(agent_type: str, settings_service=None, use_settings_override: bool = False) -> List[dict]:
     from ...tools import ALL_TOOLS
-    allowed_tools = get_allowed_tools(agent_type, settings_service)
+    allowed_tools = get_allowed_tools(agent_type, settings_service, use_settings_override)
     return [ALL_TOOLS[name] for name in allowed_tools if name in ALL_TOOLS]
 
 
-def is_tool_allowed(tool_name: str, agent_type: str, settings_service=None) -> bool:
-    allowed_tools = get_allowed_tools(agent_type, settings_service)
+def is_tool_allowed(tool_name: str, agent_type: str, settings_service=None, use_settings_override: bool = False) -> bool:
+    allowed_tools = get_allowed_tools(agent_type, settings_service, use_settings_override)
     return tool_name in allowed_tools

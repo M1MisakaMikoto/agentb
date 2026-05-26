@@ -76,7 +76,12 @@ scenarios:
   
   sql_query:
     description: "SQL query test"
-  
+
+  sql_tool_test:
+    description: "SQL Tool Call Test"
+    timeout: 120.0
+    prompt: "请帮我执行以下 SQL 查询，查看数据库中有哪些表。使用 sql_query 工具查询 show_databases 和 show_tables。"
+
   workspace_upload_read_document:
     description: "Workspace Upload - Read Document Test"
     source_files:
