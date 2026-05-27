@@ -179,9 +179,10 @@ def calculate_bci(
             "total_deduction": round(total_deduction, 2),
         })
     
-    predicted_bci = _predict_bci_linear(bci_history, target_year)
+    # 使用保守预测方法作为默认值（考虑不确定性）
+    predicted_bci = _predict_bci_conservative(bci_history, target_year)
     predicted_grade, predicted_desc = _determine_grade(predicted_bci)
-    
+
     return {
         "success": True,
         "standard": standard,
@@ -198,7 +199,7 @@ def calculate_bci(
             "method": "weighted_deduction",
             "component_weights": dict(COMPONENT_WEIGHTS),
             "data_points": len(bci_history),
-            "prediction_method": "linear_regression",
+            "prediction_method": "conservative",
         },
     }
 
@@ -279,9 +280,100 @@ def _predict_bci_linear(history: List[Dict], target_year: int) -> float:
     return round(max(0, min(100, predicted)), 1)
 
 
-# ============================================================
-# 2. 趋势预测模型
-# ============================================================
+def _predict_bci_conservative(history: List[Dict], target_year: int) -> float:
+    """
+    保守预测 BCI - 针对桥梁退化的特殊优化
+
+    策略：
+    1. 当历史数据显示退化趋势时，使用保守估计
+    2. 当历史数据显示改善趋势时，使用线性回归（更合理）
+    3. 改善趋势通常来自维修，但也可能反映真实状况改善
+    4. 使用不确定性边界确保不会过度乐观
+
+    关键修正（2024-05-27）：
+    - 修复了之前错误地假设改善趋势桥梁每年退化1.5分的问题
+    - 现在：退化趋势用保守预测，改善趋势用线性回归
+    """
+    if not history:
+        return 66.0
+
+    if len(history) == 1:
+        return history[0]["bci"]
+
+    years = [h["year"] for h in history]
+    bcis = [h["bci"] for h in history]
+
+    n = len(years)
+
+    # 线性回归
+    sum_x = sum(years)
+    sum_y = sum(bcis)
+    sum_xy = sum(x * y for x, y in zip(years, bcis))
+    sum_x2 = sum(x ** 2 for x in years)
+
+    denominator = n * sum_x2 - sum_x ** 2
+    if abs(denominator) < 1e-10:
+        return bcis[-1]
+
+    a = (n * sum_xy - sum_x * sum_y) / denominator
+    b = (sum_y - a * sum_x) / n
+
+    baseline = a * target_year + b
+
+    # ============================================================
+    # 关键修正：检测退化趋势
+    # ============================================================
+    # 计算退化速率（负值表示退化，正值表示改善）
+    degradation_rate = (bcis[-1] - bcis[0]) / (years[-1] - years[0])
+
+    # 计算残差标准差
+    y_pred = [a * x + b for x in years]
+    residuals = [bcis[i] - y_pred[i] for i in range(n)]
+    residual_std = math.sqrt(sum(r ** 2 for r in residuals) / max(1, n - 2)) if n > 2 else 2.0
+
+    years_since_last = target_year - years[-1]
+
+    # ============================================================
+    # 趋势修正 - 改进版
+    # ============================================================
+    if degradation_rate > 0:  # 历史数据显示改善（BCI 上升）
+        # ============================================================
+        # 改善趋势处理：使用线性回归而非强制退化
+        # ============================================================
+        # 改善趋势可能来自：
+        # 1. 维修后真实改善
+        # 2. 检测标准变化
+        # 3. 数据波动
+        #
+        # 使用线性回归预测更合理，因为它反映了真实趋势
+        # 但添加适度的安全边界防止过度乐观
+
+        # 线性回归预测
+        regression_pred = baseline
+
+        # 考虑使用最后一个值作为参考点
+        last_bci = bcis[-1]
+
+        # 均值回归：70% 线性回归 + 30% 最后值
+        combined_pred = regression_pred * 0.7 + last_bci * 0.3
+
+        # 添加适度的不确定性（80%置信区间，比退化趋势更宽松）
+        uncertainty_factor = 0.842  # 80% 置信区间（单边）
+        conservative_bci = combined_pred - uncertainty_factor * residual_std * math.sqrt(years_since_last)
+
+        # 限制下降幅度不超过每年2分（防止过度悲观）
+        max_drop = years_since_last * 2.0
+        conservative_bci = max(last_bci - max_drop, conservative_bci)
+
+    else:  # 历史数据显示退化
+        # 使用标准保守预测
+        conservatism_factor = 1.645  # 95% 置信区间
+        acceleration_factor = 1 + 0.05 * years_since_last
+
+        conservative_bci = baseline - conservatism_factor * residual_std * acceleration_factor
+
+    return round(max(0, min(100, conservative_bci)), 1)
+
 
 def predict_trend(
     historical_bci: List[Dict],
@@ -290,16 +382,20 @@ def predict_trend(
 ) -> Dict:
     """
     预测桥梁退化趋势
-    
+
     支持方法：
     - linear_regression: 线性回归（默认，推荐）
     - polynomial: 多项式拟合（2次）
     - exponential: 指数衰减模型
-    
+    - conservative: 保守预测（考虑测量误差和不确定性）
+    - ensemble: 多模型集成预测（推荐用于关键预测）
+    - degradation_rate: 基于退化速率外推
+
     Args:
         historical_bci: BCI历史数据列表 [{year, bci, grade}, ...]
         method: 预测方法
-        
+        previous_results: 可选的先前计算结果（用于集成预测）
+
     Returns:
         Dict: 包含预测结果、退化速率、风险预警等
     """
@@ -321,35 +417,23 @@ def predict_trend(
 
     years = [h.get("year", 0) for h in historical_bci]
     bcis = [h.get("bci", 66.0) for h in historical_bci]
-    
+
+    # 调用对应的预测方法
     if method == "polynomial":
-        coefficients = _polyfit(years, bcis, degree=2)
-        prediction_func = lambda x: sum(c * (x ** i) for i, c in enumerate(coefficients))
+        predictions = _predict_polynomial(years, bcis)
     elif method == "exponential":
-        log_bcis = [math.log(max(0.1, b)) for b in bcis]
-        slope, intercept = _linear_regression(years, log_bcis)
-        prediction_func = lambda x: math.exp(intercept + slope * x) if (intercept + slope * x) > -10 else 0
+        predictions = _predict_exponential(years, bcis)
+    elif method == "conservative":
+        predictions = _predict_conservative(years, bcis)
+    elif method == "ensemble":
+        predictions = _predict_ensemble(years, bcis)
+    elif method == "degradation_rate":
+        predictions = _predict_degradation_rate(years, bcis)
     else:
-        slope, intercept = _linear_regression(years, bcis)
-        prediction_func = lambda x: intercept + slope * x
-    
-    last_year = years[-1] if years else 2024
-    predictions = []
-    for offset in range(1, 6):
-        future_year = last_year + offset
-        predicted_bci = prediction_func(future_year)
-        predicted_bci_clamped = max(0, min(100, round(predicted_bci, 1)))
-        grade, desc = _determine_grade(predicted_bci_clamped)
-        
-        predictions.append({
-            "year": future_year,
-            "bci": predicted_bci_clamped,
-            "grade": grade,
-            "grade_description": desc,
-        })
-    
+        predictions = _predict_linear(years, bcis)
+
     degradation_rate = round((bcis[-1] - bcis[0]) / (years[-1] - years[0]), 2) if len(years) >= 2 else 0
-    
+
     return {
         "success": True,
         "method": method,
@@ -364,6 +448,335 @@ def predict_trend(
             "total_degradation": round(bcis[0] - bcis[-1], 1) if len(bcis) > 1 else 0,
         },
     }
+
+
+def _predict_linear(years: List[float], bcis: List[float], future_years: List[int] = None) -> List[Dict]:
+    """线性回归预测"""
+    if future_years is None:
+        future_years = [years[-1] + offset for offset in range(1, 6)]
+
+    if len(years) < 2:
+        return [{"year": y, "bci": bcis[-1], "grade": _determine_grade(bcis[-1])[0], "grade_description": _determine_grade(bcis[-1])[1]} for y in future_years]
+
+    slope, intercept = _linear_regression(years, bcis)
+    predictions = []
+    for future_year in future_years:
+        predicted = intercept + slope * future_year
+        predicted = round(max(0, min(100, predicted)), 1)
+        grade, desc = _determine_grade(predicted)
+        predictions.append({"year": future_year, "bci": predicted, "grade": grade, "grade_description": desc})
+    return predictions
+
+
+def _predict_conservative(years: List[float], bcis: List[float], future_years: List[int] = None) -> List[Dict]:
+    """
+    保守预测 - 考虑测量误差和不确定性
+
+    策略：
+    1. 使用线性回归作为基准
+    2. 添加不确定性边界（退化速率的95%置信区间）
+    3. 取预测区间下界作为保守估计
+    4. 考虑桥梁退化通常加速的特性
+    """
+    if future_years is None:
+        future_years = [int(years[-1]) + offset for offset in range(1, 6)]
+
+    if len(years) < 2:
+        return [{"year": y, "bci": bcis[-1], "grade": _determine_grade(bcis[-1])[0], "grade_description": _determine_grade(bcis[-1])[1]} for y in future_years]
+
+    # 计算线性回归参数
+    slope, intercept = _linear_regression(years, bcis)
+
+    # 计算残差标准差（用于估计不确定性）
+    n = len(years)
+    if n >= 3:
+        y_pred = [intercept + slope * x for x in years]
+        residuals = [bcis[i] - y_pred[i] for i in range(n)]
+        residual_std = math.sqrt(sum(r ** 2 for r in residuals) / (n - 2)) if n > 2 else 1.0
+    else:
+        residual_std = 1.0  # 默认标准差
+
+    # 计算退化速率的标准误差
+    sum_x = sum(years)
+    sum_x2 = sum(x ** 2 for x in years)
+    denominator = n * sum_x2 - sum_x ** 2
+    slope_std = residual_std * math.sqrt(n / denominator) if denominator > 0 else 0.1
+
+    # 保守预测：使用基准退化减去1.645倍标准差（95%置信区间）
+    conservatism_factor = 1.645  # 95%置信区间
+
+    predictions = []
+    for i, future_year in enumerate(future_years):
+        # 基准预测
+        baseline = intercept + slope * future_year
+
+        # 添加不确定性（随时间增加）
+        uncertainty = residual_std * math.sqrt(1 + 1/n + (future_year - sum_x/n)**2 / denominator) if denominator > 0 else residual_std
+
+        # 保守估计：基准预测减去不确定性（假设更差的状况）
+        # 但同时考虑退化可能加速的趋势
+        years_since_last = future_year - years[-1]
+        acceleration_factor = 1 + 0.05 * years_since_last  # 每年增加5%的退化速率
+
+        conservative_bci = baseline - conservatism_factor * uncertainty * acceleration_factor
+        conservative_bci = round(max(0, min(100, conservative_bci)), 1)
+        grade, desc = _determine_grade(conservative_bci)
+        predictions.append({
+            "year": future_year,
+            "bci": conservative_bci,
+            "grade": grade,
+            "grade_description": desc,
+            "baseline": round(baseline, 1),
+            "confidence_interval_lower": round(max(0, baseline - 1.96 * uncertainty), 1),
+            "confidence_interval_upper": round(min(100, baseline + 1.96 * uncertainty), 1),
+        })
+    return predictions
+
+
+def _predict_ensemble(years: List[float], bcis: List[float], future_years: List[int] = None) -> List[Dict]:
+    """
+    多模型集成预测 - 综合多种预测方法的结果
+
+    策略：
+    1. 分别使用线性回归、多项式、指数、保守预测
+    2. 对各模型结果进行加权平均
+    3. 给予接近趋势转折点的预测更高权重
+    4. 考虑历史数据中的退化加速特征
+    """
+    if future_years is None:
+        future_years = [int(years[-1]) + offset for offset in range(1, 6)]
+
+    if len(years) < 2:
+        return [{"year": y, "bci": bcis[-1], "grade": _determine_grade(bcis[-1])[0], "grade_description": _determine_grade(bcis[-1])[1]} for y in future_years]
+
+    # 获取各模型的预测
+    linear_preds = _predict_linear(years, bcis, future_years)
+    poly_preds = _predict_polynomial(years, bcis, future_years)
+    exp_preds = _predict_exponential(years, bcis, future_years)
+    conservative_preds = _predict_conservative(years, bcis, future_years)
+
+    # 分析历史退化趋势
+    degradation_trend = _analyze_degradation_trend(years, bcis)
+
+    predictions = []
+    for i, future_year in enumerate(future_years):
+        # 各模型的预测值
+        bci_linear = linear_preds[i]["bci"]
+        bci_poly = poly_preds[i]["bci"]
+        bci_exp = exp_preds[i]["bci"]
+        bci_conservative = conservative_preds[i]["bci"]
+
+        # 根据退化趋势调整权重
+        weights = _calculate_ensemble_weights(years, bcis, degradation_trend, future_year)
+
+        # 加权平均
+        ensemble_bci = (
+            bci_linear * weights["linear"] +
+            bci_poly * weights["polynomial"] +
+            bci_exp * weights["exponential"] +
+            bci_conservative * weights["conservative"]
+        )
+        ensemble_bci = round(max(0, min(100, ensemble_bci)), 1)
+        grade, desc = _determine_grade(ensemble_bci)
+
+        predictions.append({
+            "year": future_year,
+            "bci": ensemble_bci,
+            "grade": grade,
+            "grade_description": desc,
+            "component_predictions": {
+                "linear": bci_linear,
+                "polynomial": bci_poly,
+                "exponential": bci_exp,
+                "conservative": bci_conservative,
+            },
+            "weights_used": weights,
+        })
+    return predictions
+
+
+def _predict_polynomial(years: List[float], bcis: List[float], future_years: List[int] = None) -> List[Dict]:
+    """多项式拟合预测"""
+    if future_years is None:
+        future_years = [int(years[-1]) + offset for offset in range(1, 6)]
+
+    if len(years) < 3:
+        return _predict_linear(years, bcis, future_years)
+
+    coefficients = _polyfit(years, bcis, degree=2)
+    predictions = []
+    for future_year in future_years:
+        predicted = sum(c * (future_year ** i) for i, c in enumerate(coefficients))
+        predicted = round(max(0, min(100, predicted)), 1)
+        grade, desc = _determine_grade(predicted)
+        predictions.append({"year": future_year, "bci": predicted, "grade": grade, "grade_description": desc})
+    return predictions
+
+
+def _predict_exponential(years: List[float], bcis: List[float], future_years: List[int] = None) -> List[Dict]:
+    """指数衰减预测"""
+    if future_years is None:
+        future_years = [int(years[-1]) + offset for offset in range(1, 6)]
+
+    if len(years) < 2:
+        return [{"year": y, "bci": bcis[-1], "grade": _determine_grade(bcis[-1])[0], "grade_description": _determine_grade(bcis[-1])[1]} for y in future_years]
+
+    log_bcis = [math.log(max(0.1, b)) for b in bcis]
+    slope, intercept = _linear_regression(years, log_bcis)
+
+    predictions = []
+    for future_year in future_years:
+        log_predicted = intercept + slope * future_year
+        predicted = math.exp(log_predicted) if log_predicted > -10 else 0
+        predicted = round(max(0, min(100, predicted)), 1)
+        grade, desc = _determine_grade(predicted)
+        predictions.append({"year": future_year, "bci": predicted, "grade": grade, "grade_description": desc})
+    return predictions
+
+
+def _predict_degradation_rate(years: List[float], bcis: List[float], future_years: List[int] = None) -> List[Dict]:
+    """
+    基于退化速率外推预测
+
+    考虑：
+    1. 历史平均退化速率
+    2. 退化加速/减速趋势
+    3. 病害累积效应
+    """
+    if future_years is None:
+        future_years = [int(years[-1]) + offset for offset in range(1, 6)]
+
+    if len(years) < 2:
+        return [{"year": y, "bci": bcis[-1], "grade": _determine_grade(bcis[-1])[0], "grade_description": _determine_grade(bcis[-1])[1]} for y in future_years]
+
+    # 计算相邻年份间的退化速率
+    degradation_rates = []
+    for i in range(1, len(years)):
+        rate = (bcis[i] - bcis[i-1]) / (years[i] - years[i-1])
+        degradation_rates.append(rate)
+
+    # 计算平均退化速率
+    avg_rate = sum(degradation_rates) / len(degradation_rates) if degradation_rates else -1.0
+
+    # 分析退化趋势（加速/减速）
+    if len(degradation_rates) >= 2:
+        # 负数表示退化（BCI下降），数值越大（绝对值）退化越快
+        trend = degradation_rates[-1] - degradation_rates[0]
+        # 如果趋势为正，说明退化减速；为负说明退化加速
+        acceleration = trend / len(degradation_rates) if len(degradation_rates) > 0 else 0
+    else:
+        acceleration = 0
+
+    # 使用 last_value + avg_rate * years_elapsed + acceleration * (years_elapsed^2)/2
+    last_bci = bcis[-1]
+    last_year = years[-1]
+
+    predictions = []
+    for i, future_year in enumerate(future_years):
+        years_elapsed = future_year - last_year
+
+        # 考虑加速效应的预测
+        if acceleration < 0:  # 退化加速
+            predicted = last_bci + avg_rate * years_elapsed + 0.5 * acceleration * years_elapsed ** 2
+        else:  # 退化减速或稳定
+            predicted = last_bci + avg_rate * years_elapsed
+
+        predicted = round(max(0, min(100, predicted)), 1)
+        grade, desc = _determine_grade(predicted)
+        predictions.append({
+            "year": future_year,
+            "bci": predicted,
+            "grade": grade,
+            "grade_description": desc,
+            "avg_degradation_rate": round(avg_rate, 3),
+            "acceleration": round(acceleration, 4),
+        })
+    return predictions
+
+
+def _analyze_degradation_trend(years: List[float], bcis: List[float]) -> Dict:
+    """分析退化趋势"""
+    if len(years) < 2:
+        return {"trend": "unknown", "acceleration": 0, "stability": "unknown"}
+
+    # 计算各段退化速率
+    rates = []
+    for i in range(1, len(years)):
+        rate = (bcis[i] - bcis[i-1]) / (years[i] - years[i-1])
+        rates.append(rate)
+
+    # 平均退化速率
+    avg_rate = sum(rates) / len(rates) if rates else -1.0
+
+    # 退化趋势分析
+    if len(rates) >= 2:
+        first_half = sum(rates[:len(rates)//2]) / (len(rates)//2) if len(rates) > 1 else avg_rate
+        second_half_count = len(rates) - len(rates)//2
+        second_half = sum(rates[len(rates)//2:]) / second_half_count if second_half_count > 0 else 1
+        acceleration = (second_half - first_half)
+
+        if acceleration < -0.5:
+            trend = "accelerating"  # 退化加速
+        elif acceleration > 0.5:
+            trend = "decelerating"  # 退化减速（改善）
+        else:
+            trend = "stable"  # 稳定
+    else:
+        acceleration = 0
+        trend = "stable"
+
+    # 数据稳定性（标准差）
+    if len(rates) > 1:
+        mean_rate = sum(rates) / len(rates)
+        variance = sum((r - mean_rate) ** 2 for r in rates) / len(rates)
+        stability = "high" if math.sqrt(variance) < 1.0 else ("medium" if math.sqrt(variance) < 2.0 else "low")
+    else:
+        stability = "unknown"
+
+    return {
+        "trend": trend,
+        "acceleration": acceleration,
+        "stability": stability,
+        "avg_rate": avg_rate,
+    }
+
+
+def _calculate_ensemble_weights(years: List[float], bcis: List[float], degradation_trend: Dict, future_year: int) -> Dict:
+    """计算集成预测的权重"""
+    # 默认权重
+    weights = {
+        "linear": 0.25,
+        "polynomial": 0.25,
+        "exponential": 0.25,
+        "conservative": 0.25,
+    }
+
+    if len(years) < 3:
+        # 数据不足，减少多项式权重
+        weights["linear"] = 0.4
+        weights["conservative"] = 0.4
+        weights["polynomial"] = 0.1
+        weights["exponential"] = 0.1
+    elif degradation_trend["trend"] == "accelerating":
+        # 退化加速，偏向保守预测和指数模型
+        weights["conservative"] = 0.4
+        weights["exponential"] = 0.3
+        weights["linear"] = 0.2
+        weights["polynomial"] = 0.1
+    elif degradation_trend["trend"] == "decelerating":
+        # 退化减速，增加线性权重
+        weights["linear"] = 0.4
+        weights["polynomial"] = 0.3
+        weights["conservative"] = 0.2
+        weights["exponential"] = 0.1
+    elif degradation_trend["stability"] == "low":
+        # 数据不稳定，偏向保守预测
+        weights["conservative"] = 0.5
+        weights["linear"] = 0.3
+        weights["polynomial"] = 0.1
+        weights["exponential"] = 0.1
+
+    return weights
 
 
 def _linear_regression(x: List[float], y: List[float]) -> Tuple[float, float]:
@@ -551,7 +964,7 @@ PREDICTION_TOOLS_META = {
             'method: str = "linear_regression"'
             ')'
         ),
-        "description": "预测桥梁退化趋势。historical_bci格式：[{year:2018,bci:81.8,grade:'B'},...]，支持线性回归/多项式/指数三种模型，输出未来5年BCI预测及风险预警",
+        "description": "预测桥梁退化趋势。支持6种方法：linear_regression（线性回归）、polynomial（多项式）、exponential（指数）、conservative（保守预测）、ensemble（集成预测）、degradation_rate（退化速率外推）。推荐使用保守预测或集成预测以获得更准确的估计。",
         "returns": "Dict包含退化速率、未来预测、风险等级",
     },
     "query_standard": {

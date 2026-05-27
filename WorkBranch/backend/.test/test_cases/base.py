@@ -305,6 +305,12 @@ class TestResult:
         self.prediction_report_found: bool = False
         self.prediction_report_name: Optional[str] = None
         self.prediction_report_size: int = 0
+        # 健康评级比对相关字段
+        self.ground_truth_grade: Optional[str] = None
+        self.predicted_grade: Optional[str] = None
+        self.predicted_bci: Optional[float] = None
+        self.grade_comparison: Optional[Dict] = None
+        self.grade_score: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -328,6 +334,12 @@ class TestResult:
             "prediction_report_found": self.prediction_report_found,
             "prediction_report_name": self.prediction_report_name,
             "prediction_report_size": self.prediction_report_size,
+            # 健康评级比对
+            "ground_truth_grade": self.ground_truth_grade,
+            "predicted_grade": self.predicted_grade,
+            "predicted_bci": self.predicted_bci,
+            "grade_comparison": self.grade_comparison,
+            "grade_score": self.grade_score,
         }
 
 

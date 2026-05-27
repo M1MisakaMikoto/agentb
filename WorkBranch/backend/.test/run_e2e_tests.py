@@ -79,22 +79,42 @@ def print_summary(results: List[TestResult], total_duration: float):
     print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
     print(f"{Colors.HEADER}  Test Summary{Colors.ENDC}")
     print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
-    
+
     passed = 0
     failed = 0
-    
+
     for result in results:
-        status = f"{Colors.GREEN}PASS{Colors.ENDC}" if not result.errors else f"{Colors.RED}FAIL{Colors.ENDC}"
-        if result.errors:
-            failed += 1
-        else:
+        # 基础判断：是否有错误
+        base_pass = not result.errors
+
+        # 对于 bridge_predict 场景，还要检查评级得分
+        grade_pass = True
+        if result.scenario == "bridge_predict" and hasattr(result, 'grade_score'):
+            grade_pass = result.grade_score >= 70
+
+        # 综合判断
+        is_pass = base_pass and grade_pass
+
+        if is_pass:
             passed += 1
-        
+            status = f"{Colors.GREEN}PASS{Colors.ENDC}"
+        else:
+            failed += 1
+            status = f"{Colors.RED}FAIL{Colors.ENDC}" if not base_pass else f"{Colors.YELLOW}MARGINAL{Colors.ENDC}"
+
         print(f"  {status} - {result.scenario}")
         if result.errors:
             for error in result.errors:
                 print(f"         {Colors.RED}Error: {error}{Colors.ENDC}")
-    
+
+        # 显示评级比对信息（如果有）
+        if result.scenario == "bridge_predict" and hasattr(result, 'ground_truth_grade') and result.ground_truth_grade:
+            grade_info = f"Grade: {result.predicted_grade or 'N/A'} vs {result.ground_truth_grade} (score: {result.grade_score}/100)"
+            if result.grade_score >= 70:
+                print(f"         {Colors.GREEN}{grade_info}{Colors.ENDC}")
+            else:
+                print(f"         {Colors.YELLOW}{grade_info}{Colors.ENDC}")
+
     print(f"\n{Colors.CYAN}{'-'*60}{Colors.ENDC}")
     print(f"  Total: {len(results)} tests")
     print(f"  {Colors.GREEN}Passed: {passed}{Colors.ENDC}")
@@ -102,7 +122,7 @@ def print_summary(results: List[TestResult], total_duration: float):
         print(f"  {Colors.RED}Failed: {failed}{Colors.ENDC}")
     print(f"  Duration: {total_duration:.2f}s")
     print(f"{Colors.CYAN}{'='*60}{Colors.ENDC}\n")
-    
+
     return failed == 0
 
 

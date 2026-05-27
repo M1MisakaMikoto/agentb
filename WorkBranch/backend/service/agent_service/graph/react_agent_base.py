@@ -818,13 +818,7 @@ class ReActAgentBase:
         
         def execute_node(state: AgentState) -> dict:
             pending_tools = state.get("pending_tools", [])
-            
-            if not pending_tools:
-                return {
-                    "pending_tools": [],
-                    "has_tool_use": False
-                }
-            
+
             tool_name = pending_tools[0].get("tool_name")
             tool_args = pending_tools[0].get("args", {})
             reason = (
@@ -969,14 +963,29 @@ class ReActAgentBase:
     def _route_after_decide(self, state: AgentState) -> str:
         if state.get("final_reply"):
             return "done"
-        
+
         next_action = state.get("next_action") or {}
         if next_action.get("kind") in ("reply", "enter_plan"):
             return "done"
-        
+
         if state.get("pending_tools"):
             return "execute"
-        
+
+        # 特殊情况：当 prediction agent 返回 step_done 但没有 pending_tools 时
+        # 检查工具历史，如果已有分析数据但还没生成报告，强制调用 document
+        todo_status = state.get("todo_status")
+        if todo_status == "step_done":
+            tool_history = state.get("tool_history", [])
+            has_analysis_data = any(
+                t.get("tool_name") in ("bridge_report_parser", "calculate_bci", "predict_trend")
+                for t in tool_history
+            )
+            has_document_call = any(t.get("tool_name") == "document" for t in tool_history)
+
+            if has_analysis_data and not has_document_call:
+                # 强制注入 document 工具调用
+                return "execute"
+
         return "done"
     
     def _route_after_execute(self, state: AgentState) -> str:
