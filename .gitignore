@@ -7,6 +7,7 @@ setting.json
 .playwright/
 .playwright-cli/
 *.yaml
+!**/api_registry.yaml
 
 __pycache__/
 .agent_states/
