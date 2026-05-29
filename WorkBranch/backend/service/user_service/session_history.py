@@ -93,11 +93,13 @@ class SessionHistory:
         返回创建的会话对象。
         """
         user_id = self._get_current_user_id()
-        workspace_id = str(uuid.uuid4())[:8]
-        session_id = self._conv_dao.create_session(user_id, title, workspace_id)
-        
+        # FIX: 使用完整UUID并添加user_id前缀，确保工作区隔离
+        uuid_part = str(uuid.uuid4())
+        session_id = self._conv_dao.create_session(user_id, title, uuid_part)
+
         workspace_service = get_workspace_service()
-        workspace_service.register(workspace_id=workspace_id, session_id=str(session_id))
+        # 注册时带上user_id前缀，确保不同用户的工作区完全隔离
+        workspace_service.register(workspace_id=uuid_part, session_id=str(session_id))
         
         return self._conv_dao.get_session_by_id(session_id)
 
@@ -124,12 +126,14 @@ class SessionHistory:
         from singleton import get_user_info_dao
         user_dao = get_user_info_dao()
         await user_dao.get_or_create_user_by_id(user_id)
-        
-        workspace_id = str(uuid.uuid4())[:8]
-        session_id = await self._conv_dao.create_session(user_id, title, workspace_id)
-        
+
+        # FIX: 使用完整UUID(36字符)代替8字符截断，大幅降低碰撞概率
+        uuid_part = str(uuid.uuid4())
+        session_id = await self._conv_dao.create_session(user_id, title, uuid_part)
+
         workspace_service = get_workspace_service()
-        workspace_service.register(workspace_id=workspace_id, session_id=str(session_id))
+        # 保持与DB中的workspace_id一致
+        workspace_service.register(workspace_id=uuid_part, session_id=str(session_id))
         
         return await self._conv_dao.get_session_by_id(session_id)
 

@@ -573,7 +573,11 @@ async def collect_stream_output(
     stream_log_file: Optional[str] = None,
 ):
     import asyncio
-    
+
+    # [FIX] 事件去重：跟踪已处理的事件标识符
+    seen_event_keys: set = set()
+    duplicate_count: int = 0
+
     deadline = time.time() + timeout
     max_retries = 3
     retry_count = 0
@@ -727,7 +731,18 @@ async def collect_stream_output(
                 except json.JSONDecodeError:
                     continue
 
+                # [FIX] 事件去重：根据 type + seq/id 组合去重
+                # 后端MQ有多订阅者，会发送重复事件，这里过滤掉重复事件
                 event_type = data.get("type", "unknown")
+                event_key = data.get("seq") or data.get("id") or data.get("event_id") or f"{event_type}_{data.get('content', '')[:50]}"
+                dedup_key = f"{event_type}:{event_key}"
+                if dedup_key in seen_event_keys:
+                    duplicate_count += 1
+                    if verbose and result.event_count < 5:
+                        print(f"{Colors.DIM}[dedup] Skipping duplicate {event_type} (key={event_key}){Colors.ENDC}")
+                    continue
+                seen_event_keys.add(dedup_key)
+
                 result.event_count += 1
                 timestamp = time.strftime("%H:%M:%S.%f")[:-3]
                 
@@ -852,7 +867,7 @@ async def collect_stream_output(
     
     if verbose:
         elapsed = time.time() - (deadline - timeout)
-        print(f"{Colors.DIM}[completed] Stream collection ended after {elapsed:.0f}s, events={result.event_count}, tools={result.tool_calls}{Colors.ENDC}")
+        print(f"{Colors.DIM}[completed] Stream collection ended after {elapsed:.0f}s, events={result.event_count}, tools={result.tool_calls}, duplicates_skipped={duplicate_count}{Colors.ENDC}")
     
     if stream_log_fh and not stream_log_fh.closed:
         footer = "\n" + "=" * 80 + "\n"

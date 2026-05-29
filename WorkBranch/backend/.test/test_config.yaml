@@ -92,7 +92,10 @@ scenarios:
     description: "Bridge Inspection Report - Historical Data Prediction Test"
     prediction_timeout: 900.0
     prompt: |
-      基于工作区中的三份陈家阁大桥历史检测报告（2018/2020/2022年），使用call_prediction_agent工具预测并生成2024年的完整检测报告（Word文档格式）。
+      基于工作区中的{historical_years}{bridge_name}历史检测报告，使用call_prediction_agent工具预测并生成{next_year}年的完整检测报告（Word文档格式）。
+
+      报告文件名: {next_year}年桥梁检测报告预测.docx
+      报告应包含: 工程概况、规范依据、检测结果、BCI评定、趋势预测、结论建议等完整章节
 
   bridge_decision_test:
     description: "桥梁病害智能决策测试 - 分析 → 研判提交 → 决策报告 → 报告提交"

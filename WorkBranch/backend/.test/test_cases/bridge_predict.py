@@ -141,7 +141,7 @@ def compare_grades(predicted_grade: str, ground_truth_grade: str) -> Dict:
 
     if predicted_grade == ground_truth_grade:
         result["match"] = True
-        result["match_description"] = f"✅ 完全匹配 - 预测评级与真实评级均为 {predicted_grade}级"
+        result["match_description"] = f"[OK] 完全匹配 - 预测评级与真实评级均为 {predicted_grade}级"
     else:
         # 计算等级距离（用于评估接近程度）
         grade_order = {"A": 5, "B": 4, "C": 3, "D": 2, "E": 1}
@@ -149,9 +149,9 @@ def compare_grades(predicted_grade: str, ground_truth_grade: str) -> Dict:
         result["grade_distance"] = distance
 
         if distance == 1:
-            result["match_description"] = f"⚠️ 相邻等级 - 预测{predicted_grade}级 vs 真实{ground_truth_grade}级（差1级）"
+            result["match_description"] = f"[W] 相邻等级 - 预测{predicted_grade}级 vs 真实{ground_truth_grade}级（差1级）"
         else:
-            result["match_description"] = f"❌ 等级偏差 - 预测{predicted_grade}级 vs 真实{ground_truth_grade}级（差{distance}级）"
+            result["match_description"] = f"[X] 等级偏差 - 预测{predicted_grade}级 vs 真实{ground_truth_grade}级（差{distance}级）"
 
     # BCI 近似匹配检查
     if predicted_grade and ground_truth_grade:
@@ -288,6 +288,7 @@ def grade_evaluation_score(comparison: Dict) -> int:
 
 
 BRIDGE_REPORT_ROOT = Path(r"E:\PythonProject\agentb\.dev\table\桥梁检测报告")
+BRIDGE_REPORT_ROOT_DIR2 = Path(r"E:\PythonProject\agentb\.dev\table\桥梁检测报告2")
 
 # 桥梁列表配置 - 每座桥包含历史报告和真实报告路径
 BRIDGE_CONFIGS = {
@@ -325,13 +326,38 @@ BRIDGE_CONFIGS = {
     },
 }
 
+# 数据集2 - 大渡口桥检-修改 7.29 (2022历史) -> 2024年PDF真实验证
+BRIDGE_CONFIGS_DIR2 = {
+    "金家湾立交桥": {
+        "historical": {
+            "2022": BRIDGE_REPORT_ROOT_DIR2 / "大渡口桥检-修改 7.29" / "05 金家湾立交桥.doc",
+        },
+        "ground_truth": BRIDGE_REPORT_ROOT_DIR2 / "2024年大渡口区定期检查报告扫描件" / "002 金家湾立交桥+A级.pdf",
+        "ground_truth_year": 2024,
+    },
+    "建胜大桥": {
+        "historical": {
+            "2022": BRIDGE_REPORT_ROOT_DIR2 / "大渡口桥检-修改 7.29" / "08 建胜大桥.doc",
+        },
+        "ground_truth": BRIDGE_REPORT_ROOT_DIR2 / "2024年大渡口区定期检查报告扫描件" / "005建胜大桥+A级.pdf",
+        "ground_truth_year": 2024,
+    },
+    "朝阳寺立交桥": {
+        "historical": {
+            "2022": BRIDGE_REPORT_ROOT_DIR2 / "大渡口桥检-修改 7.29" / "02 朝阳寺立交桥.doc",
+        },
+        "ground_truth": BRIDGE_REPORT_ROOT_DIR2 / "2024年大渡口区定期检查报告扫描件" / "007 朝阳寺立交桥+B级.pdf",
+        "ground_truth_year": 2024,
+    },
+}
+
 # 当前测试使用的桥梁配置（默认陈家阁大桥）
 HISTORICAL_FILES = BRIDGE_CONFIGS["陈家阁大桥"]["historical"]
 GROUND_TRUTH_2024 = BRIDGE_CONFIGS["陈家阁大桥"]["ground_truth"]
 
-PREDICTION_PROMPT_TEMPLATE = """⚠️ 重要指令：必须使用 Prediction Sub-Agent 完成任务！
+PREDICTION_PROMPT_TEMPLATE = """[W] 重要指令：必须使用 Prediction Sub-Agent 完成任务！
 
-工作区中已上传三份历史检测报告（2018/2020/2022年）。
+工作区中已上传{historical_years}历史检测报告。
 
 ## 🎯 任务目标
 请使用 **call_prediction_agent** 子代理完成桥梁技术状况预测分析任务。
@@ -341,9 +367,9 @@ PREDICTION_PROMPT_TEMPLATE = """⚠️ 重要指令：必须使用 Prediction Su
 **步骤1 - 调用Prediction Sub-Agent：**
 使用 call_prediction_agent 工具, task_description 应包含以下完整要求:
 
-基于工作区中的三份历史检测报告, 完成以下桥梁预测任务:
+基于工作区中的{historical_years}历史检测报告, 完成以下桥梁预测任务:
 
-1. 读取并分析三份历史报告的数据(2018/2020/2022)
+1. 读取并分析历史报告的数据
 2. 使用 calculate_bci 工具计算每年的桥梁技术状况指数(BCI)
 3. 使用 predict_trend 工具基于历史BCI数据预测{next_year}年的技术状况和退化趋势
 4. 使用 query_standard 工具查询 CJJ 99-2017 等相关规范依据
@@ -361,7 +387,10 @@ PREDICTION_PROMPT_TEMPLATE = """⚠️ 重要指令：必须使用 Prediction Su
 - 不要跳过子代理直接生成报告
 - 必须将专业分析任务委托给 call_prediction_agent 处理"""
 
-PREDICTION_PROMPT = PREDICTION_PROMPT_TEMPLATE.format(next_year=2024)
+PREDICTION_PROMPT = PREDICTION_PROMPT_TEMPLATE.format(
+    next_year=2024,
+    historical_years="2018/2020/2022年"  # 默认值，数据集1
+)
 
 
 def resolve_source_file(source_path: Path) -> Path:
@@ -449,14 +478,14 @@ async def upload_historical_reports(
 
 async def read_ground_truth_report(ground_truth_path: Path) -> str:
     full_path = resolve_source_file(ground_truth_path)
-    
+
     suffix = full_path.suffix.lower()
     backend_dir = str(Path(__file__).resolve().parents[2])
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
-    from service.agent_service.tools.document_tools import _docx_read, _convert_doc_to_docx
+    from service.agent_service.tools.document_tools import _docx_read, _convert_doc_to_docx, _pdf_read
     import time as _time
-    
+
     if suffix == ".docx":
         result = _docx_read(str(full_path))
     elif suffix == ".doc":
@@ -472,16 +501,19 @@ async def read_ground_truth_report(ground_truth_path: Path) -> str:
             except Exception:
                 if attempt < max_retries - 1:
                     _time.sleep(2 * (attempt + 1))
-        
+
         if not docx_path:
             raise RuntimeError(f"Failed to convert .doc to .docx after {max_retries} attempts: {full_path}")
         result = _docx_read(docx_path)
+    elif suffix == ".pdf":
+        # PDF格式支持 - 使用pymupdf4llm进行LLM友好的解析
+        result = _pdf_read(str(full_path), use_llm_parsing=True)
     else:
         result = {"error": f"Unsupported format: {suffix}", "result": None}
-    
+
     if result.get("error"):
         raise RuntimeError(f"Failed to read ground truth report: {result['error']}")
-    
+
     return result["result"].get("content", "")
 
 
@@ -501,16 +533,24 @@ async def run_bridge_predict_test(
         bridge_name: 桥梁名称，用于从 BRIDGE_CONFIGS 选择配置
                    默认 "陈家阁大桥"，可选择 "陈家阁大桥"、"朝阳寺立交桥"、"陈家湾桥"、"九中立交桥"
     """
-    # 获取桥梁配置
-    if bridge_name not in BRIDGE_CONFIGS:
-        raise ValueError(f"Unknown bridge: {bridge_name}. Available: {list(BRIDGE_CONFIGS.keys())}")
+    # 获取桥梁配置 - 优先从数据集2查找，然后从数据集1查找
+    bridge_config = None
+    if bridge_name in BRIDGE_CONFIGS_DIR2:
+        bridge_config = BRIDGE_CONFIGS_DIR2[bridge_name]
+    elif bridge_name in BRIDGE_CONFIGS:
+        bridge_config = BRIDGE_CONFIGS[bridge_name]
 
-    bridge_config = BRIDGE_CONFIGS[bridge_name]
+    if bridge_config is None:
+        all_bridges = list(BRIDGE_CONFIGS.keys()) + list(BRIDGE_CONFIGS_DIR2.keys())
+        raise ValueError(f"Unknown bridge: {bridge_name}. Available: {all_bridges}")
+
     historical_files = bridge_config["historical"]
     ground_truth_path = bridge_config["ground_truth"]
+    ground_truth_year = bridge_config.get("ground_truth_year", 2024)
 
     result = TestResult(f"bridge_predict_{bridge_name}", scenario_config)
     result.bridge_name = bridge_name
+    result.ground_truth_year = ground_truth_year
 
     stream_log_dir = get_project_root() / "logs" / "e2e_stream_traces"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -556,11 +596,16 @@ async def run_bridge_predict_test(
     print_success(f"Session created: {session_id}")
     print_dim(f"Workspace ID: {workspace_id}")
 
-    print_step(3, f"Uploading {bridge_name} historical reports (2018/2020/2022)...", Colors.CYAN)
+    print_step(3, f"Uploading {bridge_name} historical reports...", Colors.CYAN)
+    # 生成历史年份描述
+    historical_years_desc = "/".join(historical_files.keys()) if historical_files else "unknown"
+    print(f"{Colors.DIM}  Historical years: {historical_years_desc}{Colors.ENDC}")
+
     uploaded = await upload_historical_reports(api, workspace_id, verbose=verbose, historical_files=historical_files)
 
-    if len(uploaded) < 3:
-        error_msg = f"Only {len(uploaded)}/3 historical reports uploaded for {bridge_name}"
+    min_reports = len(historical_files)
+    if len(uploaded) < min_reports:
+        error_msg = f"Only {len(uploaded)}/{min_reports} historical reports uploaded for {bridge_name}"
         print_error(error_msg)
         result.errors.append(error_msg)
         return result
@@ -568,9 +613,23 @@ async def run_bridge_predict_test(
     print_success(f"All {len(uploaded)} historical reports uploaded")
 
     print_step(4, "Creating conversation with prediction prompt...", Colors.CYAN)
-    # 根据桥梁名称生成提示词
+    # 根据桥梁名称生成提示词 - 支持动态历史年份和预测年份
     prompt_template = scenario_config.get("prompt", PREDICTION_PROMPT)
-    prompt = prompt_template.format(bridge_name=bridge_name) if "{bridge_name}" in prompt_template else prompt_template
+    prompt_years_desc = "/".join([f"{y}年" for y in historical_files.keys()]) if historical_files else "2018/2020/2022年"
+
+    # 构建格式化参数字典
+    format_args = {
+        "bridge_name": bridge_name,
+        "next_year": ground_truth_year,
+        "historical_years": prompt_years_desc,
+    }
+
+    try:
+        prompt = prompt_template.format(**format_args)
+    except KeyError:
+        # 如果模板不包含某些占位符，使用默认PREDICTION_PROMPT
+        prompt = PREDICTION_PROMPT
+
     conv_result = await api.create_conversation(session_id, prompt)
 
     if not conv_result.get("success", True):
@@ -923,7 +982,7 @@ async def run_bridge_predict_test(
         if result.workspace_files_checked:
             f.write(f"\n---\n\n")
             f.write("## Workspace Check Results\n\n")
-            f.write(f"- **Prediction Report Found**: {'✅ Yes' if result.prediction_report_found else '❌ No'}\n")
+            f.write(f"- **Prediction Report Found**: {'[OK] Yes' if result.prediction_report_found else '[X] No'}\n")
             if result.prediction_report_found:
                 f.write(f"- **Report Name**: {result.prediction_report_name}\n")
                 f.write(f"- **Report Size**: {result.prediction_report_size:,} bytes ({result.prediction_report_size/1024:.1f} KB)\n")
@@ -939,7 +998,7 @@ async def run_bridge_predict_test(
         f.write(f"| 真实评级 (Ground Truth) | {ground_truth_grade or 'N/A'}级 |\n")
         f.write(f"| 预测评级 (Predicted) | {predicted_grade or 'N/A'}级 |\n")
         f.write(f"| 预测 BCI 值 | {predicted_bci or 'N/A'} |\n")
-        f.write(f"| 评级是否匹配 | {'✅ 完全匹配' if grade_comparison and grade_comparison.get('match') else '❌ 不匹配'} |\n")
+        f.write(f"| 评级是否匹配 | {'[OK] 完全匹配' if grade_comparison and grade_comparison.get('match') else '[X] 不匹配'} |\n")
         f.write(f"| 等级差距 | {grade_comparison.get('grade_distance', 'N/A') if grade_comparison else 'N/A'} 级 |\n")
         f.write(f"| BCI范围重叠 | {'Yes' if grade_comparison and grade_comparison.get('bci_approx_match') else 'No'} |\n")
         f.write(f"| **评级得分** | **{grade_score}/100** |\n")
@@ -975,16 +1034,16 @@ async def run_bridge_predict_test(
         grade_pass = grade_score >= 70 if grade_comparison else True
 
         if base_pass and grade_pass:
-            f.write("✅ **测试通过** - 所有检查项均满足要求\n")
+            f.write("[OK] **测试通过** - 所有检查项均满足要求\n")
         elif base_pass and not grade_pass:
-            f.write("⚠️ **测试基本通过，评级偏差较大** - 功能正常但预测评级与真实评级差异明显\n")
+            f.write("[W] **测试基本通过，评级偏差较大** - 功能正常但预测评级与真实评级差异明显\n")
         else:
-            f.write("❌ **测试未通过** - 存在错误或预测结果不符合预期\n")
+            f.write("[X] **测试未通过** - 存在错误或预测结果不符合预期\n")
 
         f.write(f"\n详细评分:\n")
-        f.write(f"- 功能检查: {'✅ 通过' if base_pass else '❌ 未通过'}\n")
-        f.write(f"- 评级匹配: {'✅ 通过' if grade_pass else '⚠️ 未通过'} (得分: {grade_score}/100)\n")
-        f.write(f"- 综合评级: {'✅ PASS' if (base_pass and grade_pass) else ('⚠️ MARGINAL' if base_pass else '❌ FAIL')}\n")
+        f.write(f"- 功能检查: {'[OK] 通过' if base_pass else '[X] 未通过'}\n")
+        f.write(f"- 评级匹配: {'[OK] 通过' if grade_pass else '[W] 未通过'} (得分: {grade_score}/100)\n")
+        f.write(f"- 综合评级: {'[OK] PASS' if (base_pass and grade_pass) else ('[W] MARGINAL' if base_pass else '[X] FAIL')}\n")
     
     print_success(f"Comparison report saved to: {output_log}")
     
@@ -1036,17 +1095,17 @@ async def run_bridge_predict_test(
         print(f"")
         print(f"  {Colors.BOLD}Test Result:{Colors.ENDC}")
         if base_pass and grade_pass:
-            print(f"  {Colors.GREEN}✅ PASS - All checks passed{Colors.ENDC}")
+            print(f"  {Colors.GREEN}[OK] PASS - All checks passed{Colors.ENDC}")
         elif base_pass and not grade_pass:
-            print(f"  {Colors.YELLOW}⚠️ MARGINAL - Functional OK, grade deviation{Colors.ENDC}")
+            print(f"  {Colors.YELLOW}[W] MARGINAL - Functional OK, grade deviation{Colors.ENDC}")
         else:
-            print(f"  {Colors.RED}❌ FAIL - Errors or significant grade deviation{Colors.ENDC}")
+            print(f"  {Colors.RED}[X] FAIL - Errors or significant grade deviation{Colors.ENDC}")
     elif ground_truth_grade or predicted_grade:
-        print(f"  {Colors.YELLOW}⚠️ PARTIAL - Could not extract both grades{Colors.ENDC}")
+        print(f"  {Colors.YELLOW}[W] PARTIAL - Could not extract both grades{Colors.ENDC}")
         print(f"  Ground Truth: {ground_truth_grade or 'N/A'}级")
         print(f"  Predicted:    {predicted_grade or 'N/A'}级")
     else:
-        print(f"  {Colors.YELLOW}⚠️ SKIPPED - No grade comparison available{Colors.ENDC}")
+        print(f"  {Colors.YELLOW}[W] SKIPPED - No grade comparison available{Colors.ENDC}")
 
     print(f"{Colors.CYAN}{'='*60}{Colors.ENDC}\n")
 
@@ -1173,7 +1232,7 @@ async def run_all_bridges_test(
 
     print(f"{Colors.CYAN}Individual Bridge Results:{Colors.ENDC}")
     for bridge_name, result in multi_result.bridge_results.items():
-        status = "✅" if not result.errors else "❌"
+        status = "[OK]" if not result.errors else "[X]"
         grade_info = ""
         if result.ground_truth_grade and result.predicted_grade:
             grade_info = f" | Grade: {result.predicted_grade}级 vs {result.ground_truth_grade}级 (score: {result.grade_score})"
@@ -1223,7 +1282,7 @@ async def run_all_bridges_test(
         f.write("| Bridge | Status | Ground Truth | Predicted | Grade Score |\n")
         f.write("|--------|--------|-------------|-----------|-------------|\n")
         for bridge_name, result in multi_result.bridge_results.items():
-            status = "✅ PASS" if not result.errors else "❌ FAIL"
+            status = "[OK] PASS" if not result.errors else "[X] FAIL"
             gt = result.ground_truth_grade or "N/A"
             pred = result.predicted_grade or "N/A"
             score = result.grade_score if hasattr(result, "grade_score") else "N/A"
@@ -1246,11 +1305,11 @@ async def run_all_bridges_test(
 
         f.write("\n## Conclusion\n\n")
         if summary['overall_accuracy_rate'] >= 75 and summary['overall_grade_score'] >= 70:
-            f.write("✅ **Batch Test PASSED** - Overall accuracy rate and grade score meet requirements\n")
+            f.write("[OK] **Batch Test PASSED** - Overall accuracy rate and grade score meet requirements\n")
         elif summary['overall_accuracy_rate'] >= 50:
-            f.write("⚠️ **Batch Test MARGINAL** - Overall accuracy rate is acceptable but grade score needs improvement\n")
+            f.write("[W] **Batch Test MARGINAL** - Overall accuracy rate is acceptable but grade score needs improvement\n")
         else:
-            f.write("❌ **Batch Test FAILED** - Overall accuracy rate is below acceptable threshold\n")
+            f.write("[X] **Batch Test FAILED** - Overall accuracy rate is below acceptable threshold\n")
 
     print(f"{Colors.CYAN}Summary report saved to: {summary_file}{Colors.ENDC}\n")
 

@@ -89,7 +89,7 @@ def _format_merged(msg_type, entries):
 
     return (
         f'{ts_start} === 🔍 DIAGNOSTIC: MQ PUBLISH_SYNC ===\n'
-        f'{ts_start} 📤 Message details:\n'
+        f'{ts_start} >> Message details:\n'
         f'  - type: {msg_type} (merged {len(entries)} deltas)\n'
         f'  - content length: {len(combined_content)} chars\n'
         f'  - content preview: {combined_content}\n\n'
@@ -186,7 +186,7 @@ async def run_single_bridge_test(api, scenario_cfg, bridge_name, verbose=True):
         print('\n*** TEST PASSED ***')
     elif base_pass and not grade_pass:
         print('\n*** TEST PASSED WITH GRADE DEVIATION ***')
-        print(f'    ⚠️ 预测评级偏差较大: {result.predicted_grade or "N/A"}级 vs 真实{result.ground_truth_grade or "N/A"}级')
+        print(f'    ! 预测评级偏差较大: {result.predicted_grade or "N/A"}级 vs 真实{result.ground_truth_grade or "N/A"}级')
         print(f'    评级得分: {result.grade_score}/100')
     else:
         print('\n*** TEST FAILED ***')
@@ -207,7 +207,7 @@ async def run_multi_bridge_test(api, scenario_cfg, bridges, verbose=True):
 
     # 打印每座桥的结果
     for bridge_name, result in multi_result.bridge_results.items():
-        status = "✅" if not result.errors else "❌"
+        status = "[OK]" if not result.errors else "[X]"
         grade_info = ""
         if result.ground_truth_grade and result.predicted_grade:
             grade_info = f" | Grade: {result.predicted_grade}级 vs {result.ground_truth_grade}级 (score: {result.grade_score})"
@@ -231,12 +231,109 @@ async def run_multi_bridge_test(api, scenario_cfg, bridges, verbose=True):
         print('\n*** BATCH TEST PASSED ***')
     elif overall_marginal:
         print('\n*** BATCH TEST MARGINAL ***')
-        print('    ⚠️ 整体正确率可接受，但评级得分需提升')
+        print('    ! 整体正确率可接受，但评级得分需提升')
     else:
         print('\n*** BATCH TEST FAILED ***')
     print('='*60)
 
     return multi_result
+
+
+async def run_parallel_bridges(api, scenario_cfg, bridges, verbose=True):
+    """并行运行多桥梁测试"""
+    print(f'\n>> 并行执行 {len(bridges)} 座桥梁测试...\n')
+
+    # [FIX] 为每个桥创建独立的 API client，使用不同的 user_id
+    # 这样后端会创建独立的工作区，避免并发冲突
+    def make_api(base_api, user_id):
+        new_api = APIClient(base_api.config, user_id=user_id)
+        return new_api
+
+    # 并行创建所有任务，每个任务使用独立的 API client (user_id)
+    async def run_bridge_with_user_id(bridge_name, user_id):
+        """为指定桥创建独立 API client 并运行测试"""
+        test_api = make_api(api, user_id)
+        return await run_bridge_predict_test(test_api, scenario_cfg, verbose=verbose, bridge_name=bridge_name)
+
+    # 为每个桥分配唯一的 user_id (从 10001 开始)
+    tasks = [
+        run_bridge_with_user_id(b, 10001 + idx)
+        for idx, b in enumerate(bridges)
+    ]
+
+    # 并行执行所有测试
+    results_list = await asyncio.gather(*tasks)
+
+    # 构建结果字典
+    bridge_results = dict(zip(bridges, results_list))
+
+    # 打印每座桥的结果
+    print()
+    print('='*60)
+    print('PARALLEL BRIDGE TEST RESULTS')
+    print('='*60)
+
+    for bridge_name, result in bridge_results.items():
+        status = "[OK]" if not result.errors else "[X]"
+        grade_info = ""
+        if result.ground_truth_grade and result.predicted_grade:
+            grade_info = f" | Grade: {result.predicted_grade}级 vs {result.ground_truth_grade}级 (score: {result.grade_score})"
+        elif result.ground_truth_grade:
+            grade_info = f" | Grade: N/A vs {result.ground_truth_grade}级"
+        print(f'{status} {bridge_name}{grade_info}')
+
+    # 计算汇总统计
+    total = len(bridge_results)
+    passed = sum(1 for r in bridge_results.values() if not r.errors)
+    grade_matched = sum(1 for r in bridge_results.values() if r.ground_truth_grade and r.predicted_grade == r.ground_truth_grade)
+    grade_adjacent = sum(1 for r in bridge_results.values()
+                        if r.ground_truth_grade and r.predicted_grade
+                        and abs(ord(r.ground_truth_grade) - ord(r.predicted_grade)) <= 1)
+
+    total_grade_score = sum(r.grade_score for r in bridge_results.values() if hasattr(r, 'grade_score'))
+    overall_accuracy_rate = (grade_matched / total * 100) if total > 0 else 0
+    overall_grade_score = total_grade_score / total if total > 0 else 0
+
+    print()
+    print(f'Total Bridges:     {total}')
+    print(f'Passed (no error): {passed}/{total}')
+    print(f'Grade Matched:     {grade_matched}/{total}')
+    print(f'Grade Adjacent:    {grade_adjacent}/{total}')
+    print(f'Overall Accuracy: {overall_accuracy_rate:.1f}%')
+    print(f'Overall Grade Score: {overall_grade_score:.1f}/100')
+
+    # 综合测试判定
+    overall_pass = overall_accuracy_rate >= 75 and overall_grade_score >= 70
+    overall_marginal = overall_accuracy_rate >= 50
+
+    if overall_pass:
+        print('\n*** PARALLEL BATCH TEST PASSED ***')
+    elif overall_marginal:
+        print('\n*** PARALLEL BATCH TEST MARGINAL ***')
+        print('    ! 整体正确率可接受，但评级得分需提升')
+    else:
+        print('\n*** PARALLEL BATCH TEST FAILED ***')
+    print('='*60)
+
+    # 返回模拟的 MultiBridgeResult 对象
+    class ParallelResult:
+        def __init__(self, bridge_results, summary):
+            self.bridge_results = bridge_results
+            self._summary = summary
+
+        def get_summary(self):
+            return self._summary
+
+    summary = {
+        "total_bridges": total,
+        "passed_bridges": passed,
+        "grade_matched": grade_matched,
+        "grade_adjacent": grade_adjacent,
+        "overall_accuracy_rate": overall_accuracy_rate,
+        "overall_grade_score": overall_grade_score,
+    }
+
+    return ParallelResult(bridge_results, summary)
 
 
 async def main():
@@ -247,6 +344,10 @@ async def main():
                         help='Bridge name for single mode (default: 陈家阁大桥)')
     parser.add_argument('--bridges', action='store_true',
                         help='Run all configured bridges (equivalent to --mode batch)')
+    parser.add_argument('--parallel', '-p', action='store_true',
+                        help='Run multiple bridges in parallel')
+    parser.add_argument('--parallel-bridges', nargs='+',
+                        help='Specific bridges to run in parallel (default: 3 dataset2 bridges)')
     args = parser.parse_args()
 
     log_file = r'e:\PythonProject\agentb\WorkBranch\backend\llm_decision_trace.log'
@@ -260,7 +361,7 @@ async def main():
     backend_process = start_backend()
 
     if not backend_process:
-        print('❌ Failed to start backend')
+        print('[X] Failed to start backend')
         return
 
     await asyncio.sleep(3)
@@ -273,24 +374,34 @@ async def main():
         try:
             health = await api._request('GET', '/health')
             if health.get('status') == 'ok':
-                print(f'✅ Backend ready (attempt {attempt + 1})')
+                print(f'[OK] Backend ready (attempt {attempt + 1})')
                 break
         except:
             pass
 
         if attempt < max_retries - 1:
-            print(f'⏳ Waiting for backend... ({attempt + 1}/{max_retries})')
+            print(f'Waiting for backend... ({attempt + 1}/{max_retries})')
             await asyncio.sleep(2)
     else:
-        print('❌ Backend failed to start after retries')
+        print('[X] Backend failed to start after retries')
         stop_backend(backend_process)
         return
 
     scenario_cfg = config.get('scenarios', {}).get('bridge_predict', {})
     scenario_cfg['prediction_timeout'] = 900.0
 
+    # 并行模式
+    if args.parallel:
+        # 默认使用 dataset2 的3座桥梁
+        if args.parallel_bridges:
+            bridges = args.parallel_bridges
+        else:
+            from test_cases.bridge_predict import BRIDGE_CONFIGS_DIR2
+            bridges = list(BRIDGE_CONFIGS_DIR2.keys())
+        print(f'\n>> Running parallel test for {len(bridges)} bridges: {", ".join(bridges)}\n')
+        result = await run_parallel_bridges(api, scenario_cfg, bridges, verbose=True)
     # 根据模式运行测试
-    if args.mode == 'multi' or args.mode == 'batch' or args.bridges:
+    elif args.mode == 'multi' or args.mode == 'batch' or args.bridges:
         # 多桥梁批量测试
         bridges = list(BRIDGE_CONFIGS.keys())
         print(f'\nRunning batch test for {len(bridges)} bridges: {", ".join(bridges)}\n')
@@ -300,11 +411,11 @@ async def main():
         result = await run_single_bridge_test(api, scenario_cfg, args.bridge, verbose=True)
 
     merge_delta_logs(log_file)
-    print(f'\n✅ 日志已合并: {log_file}')
+    print(f'\n>> 日志已合并: {log_file}')
 
     response_count = _save_llm_responses(log_file)
     summary_file = log_file.replace('.log', '_responses_summary.txt')
-    print(f'📝 LLM决策记录: {response_count}次 (详见 {summary_file})')
+    print(f'>> LLM决策记录: {response_count}次 (详见 {summary_file})')
 
     print('\nStopping backend...')
     stop_backend(backend_process)
