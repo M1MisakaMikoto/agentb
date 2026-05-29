@@ -78,10 +78,10 @@ class TokenCalculator:
 
 class ConvolutionCompressor:
     """卷积式压缩器"""
-    
-    def __init__(self, settings_service, llm_service, cache: CompressionCache):
+
+    def __init__(self, settings_service, fast_llm_service, cache: CompressionCache):
         self.settings = settings_service
-        self.llm_service = llm_service
+        self.fast_llm = fast_llm_service
         self.cache = cache
         self.token_calculator = TokenCalculator(settings_service)
         
@@ -242,28 +242,28 @@ class ConvolutionCompressor:
         return min(target_rate / current_rate, 1.0)
     
     def _call_llm(self, prompt: str) -> str:
-        """调用LLM"""
+        """调用快速模型"""
         messages = [
             {"role": "system", "content": COMPRESSION_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
-        
-        response = self.llm_service.chat(messages, temperature=0.3)
+
+        response = self.fast_llm.chat(messages)
         return response
 
 
 class CompressionService:
     """压缩服务"""
-    
-    def __init__(self, settings_service, llm_service):
+
+    def __init__(self, settings_service, fast_llm_service):
         self.settings = settings_service
-        self.llm_service = llm_service
-        
+        self.fast_llm = fast_llm_service
+
         self.enabled = settings_service.get("compression:enabled")
         self.compression_version = settings_service.get("compression:compression_version")
-        
+
         self.cache = CompressionCache(settings_service, self.compression_version)
-        self.compressor = ConvolutionCompressor(settings_service, llm_service, self.cache)
+        self.compressor = ConvolutionCompressor(settings_service, fast_llm_service, self.cache)
         
         self._metrics = {
             "total_requests": 0,

@@ -405,3 +405,139 @@ class LLMService:
 def get_llm_service(settings_service=None) -> LLMService:
     """获取 LLM 服务单例"""
     return LLMService(settings_service)
+
+
+class FastLLMService:
+    """快速模型服务：用于压缩、摘要等轻量任务"""
+
+    _instance = None
+
+    def __new__(cls, settings_service=None):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self, settings_service=None):
+        if self._initialized:
+            return
+
+        self._settings = settings_service
+        self._llm = None
+        self._initialized = True
+
+    def _get_llm(self) -> ChatOpenAI:
+        """获取缓存的 LLM 实例"""
+        if self._llm is None:
+            self._llm = ChatOpenAI(
+                api_key=self._settings.get("llm:api_key"),
+                base_url=self._settings.get("llm:fast_base_url"),
+                model=self._settings.get("llm:fast_model"),
+                temperature=self._settings.get("llm:fast_temperature"),
+                max_tokens=self._settings.get("llm:fast_max_tokens"),
+                timeout=httpx.Timeout(120.0, connect=30.0),
+            )
+        return self._llm
+
+    def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        http_client: Any = None,
+        http_async_client: Any = None,
+    ) -> str:
+        """
+        发送聊天请求（同步）
+
+        Args:
+            messages: 消息列表
+            system_prompt: 系统提示词
+
+        Returns:
+            AI 响应文本
+        """
+        if http_client is not None or http_async_client is not None:
+            llm = ChatOpenAI(
+                api_key=self._settings.get("llm:api_key"),
+                base_url=self._settings.get("llm:fast_base_url"),
+                model=self._settings.get("llm:fast_model"),
+                temperature=self._settings.get("llm:fast_temperature"),
+                max_tokens=self._settings.get("llm:fast_max_tokens"),
+                timeout=httpx.Timeout(120.0, connect=30.0),
+                http_client=http_client,
+                http_async_client=http_async_client,
+            )
+        else:
+            llm = self._get_llm()
+
+        lc_messages = self._build_lc_messages(messages, system_prompt, allow_multimodal=False)
+
+        from core.logging import console
+        console.info(f"[FastLLM] 发送请求: {len(lc_messages)} 条消息，模型: {self._settings.get('llm:fast_model')}")
+
+        start_time = time.perf_counter()
+        response = llm.invoke(lc_messages)
+
+        from singleton import get_logging_runtime
+        logger = get_logging_runtime().get_logger("agent")
+        logger.info(
+            event="llm.call.completed",
+            msg="fast llm call completed",
+            extra={
+                "operation": "fast_chat",
+                "provider": "openai_compatible",
+                "model": self._settings.get("llm:fast_model"),
+                "latency_ms": round((time.perf_counter() - start_time) * 1000),
+            },
+        )
+
+        response_text = response.content if isinstance(response.content, str) else str(response.content)
+        return response_text
+
+    def _build_lc_messages(self, messages: List[Dict[str, Any]], system_prompt: Optional[str], *, allow_multimodal: bool) -> List[Any]:
+        """构建 LangChain 消息列表"""
+        from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+        from service.session_service.message_content import (
+            build_user_message,
+            has_image_parts,
+            normalize_chat_messages,
+            parts_to_plain_text,
+        )
+
+        normalized_messages = normalize_chat_messages(messages)
+        lc_messages = []
+
+        if system_prompt:
+            lc_messages.append(SystemMessage(content=system_prompt))
+
+        for msg in normalized_messages:
+            role = msg.get("role", "user")
+            content = self._to_langchain_content(msg, role=role, allow_multimodal=allow_multimodal)
+
+            if role == "user":
+                lc_messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                lc_messages.append(AIMessage(content=content))
+            elif role == "system":
+                lc_messages.append(SystemMessage(content=content))
+
+        return lc_messages
+
+    def _to_langchain_content(self, message: Dict[str, Any], *, role: str, allow_multimodal: bool) -> Any:
+        """转换消息内容"""
+        parts = message.get("parts") or []
+        if not parts:
+            return message.get("content", "")
+
+        if role != "user":
+            return parts_to_plain_text(parts)
+
+        if not has_image_parts(parts):
+            return parts_to_plain_text(parts)
+
+        return parts_to_plain_text(parts)
+
+
+def get_fast_llm_service(settings_service=None) -> FastLLMService:
+    """获取快速 LLM 服务单例"""
+    return FastLLMService(settings_service)

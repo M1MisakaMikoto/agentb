@@ -55,7 +55,11 @@ DEFAULT_SETTINGS = {
         "max_tokens": 4096,
         "supports_vision": False,
         "vision_input_mode": "url",
-        "reject_image_when_unsupported": False
+        "reject_image_when_unsupported": False,
+        "fast_model": "qwen3-vl-flash",
+        "fast_temperature": 0.3,
+        "fast_max_tokens": 2048,
+        "fast_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
     },
     "workspace": {
         "base_dir": "workspaces"

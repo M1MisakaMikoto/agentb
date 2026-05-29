@@ -129,10 +129,10 @@ def get_logging_runtime() -> LoggingRuntime:
 
 @lru_cache(maxsize=1)
 def get_compression_service():
-    from service.agent_service.service import CompressionService
+    from service.agent_service.service import CompressionService, FastLLMService
     settings = get_settings_service()
-    llm = get_llm_service()
-    return CompressionService(settings, llm)
+    fast_llm = FastLLMService(settings)
+    return CompressionService(settings, fast_llm)
 
 
 async def clear_all_singletons_async():
