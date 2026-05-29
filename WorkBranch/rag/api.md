@@ -30,6 +30,7 @@
 - `POST /rag/api/documents/upload`
   - form: `file`, `category_id?`, `kb_id?`
   - 上传后会触发 ingestion
+  - **旧版 `.doc` 会在服务端自动转为 `.docx` 再入库**（需安装 LibreOffice；Windows 可回退本机 Word + pywin32）。列表中文件名为 `.docx`，预览与分块按 docx 处理。
 - `GET /rag/api/documents?category_id=&keyword=&page=1&size=20`
 - `GET /rag/api/documents/{document_id}`
 - `GET /rag/api/documents/{document_id}/file`（直接按文档 ID 返回文件内容）
