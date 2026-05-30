@@ -10,6 +10,7 @@ from datetime import datetime
 
 from core.logging import bind_ctx
 from .service import WorkspaceService
+from .service.intent_analysis_service import IntentAnalysisService, get_intent_analysis_service
 from .graph import run_graph, run_graph_v2
 from .agents.registry import AgentRegistry
 from .tools.executors import ToolExecutor
@@ -187,6 +188,10 @@ class AgentService:
                 client.close()
             except Exception:
                 pass
+
+    def _get_intent_analysis_service(self) -> IntentAnalysisService:
+        """获取意图分析服务"""
+        return get_intent_analysis_service(self._get_settings())
 
     def _log_agent_event(
         self,
@@ -390,8 +395,7 @@ class AgentService:
                 extra={"session_id": session_id, "message_id": message_id, "parent_chain_count": len(parent_chain_messages) if parent_chain_messages else 0, "current_conv_count": len(current_conversation_messages) if current_conversation_messages else 0},
             )
 
-            text_started = False
-
+            # 定义消息发送函数（在意图分析之前，以便恶意请求时可以直接使用）
             def send_message(
                 content: str = "",
                 block_type: SegmentType = SegmentType.TEXT_DELTA,
@@ -401,7 +405,7 @@ class AgentService:
                 merged_metadata = {"message_id": message_id}
                 if metadata:
                     merged_metadata.update(metadata)
-                
+
                 if block_type == SegmentType.TEXT_DELTA:
                     if not text_started:
                         msg = MessageBuilder.text_start(
@@ -413,7 +417,7 @@ class AgentService:
                         )
                         mq.publish_sync(msg)
                         text_started = True
-                    
+
                     msg = MessageBuilder.text_delta(
                         message_id=message_id,
                         conversation_id=conversation_id,
@@ -435,6 +439,63 @@ class AgentService:
                 published = mq.publish_sync(msg)
                 if not published:
                     print(f"[AgentStream] publish_sync failed: type={block_type}, conversation_id={conversation_id}")
+
+            # 意图分析：在 Graph 执行前进行恶意请求过滤和意图改写
+            message_text = get_message_text(message)
+            history_messages = (current_conversation_messages or []) + (parent_chain_messages or [])
+            intent_service = self._get_intent_analysis_service()
+
+            self._log_agent_event(
+                "INFO",
+                "intent.analysis.started",
+                "开始意图分析",
+                conversation_id=conversation_id,
+                workspace_id=workspace_id,
+                extra={"message_length": len(message_text)},
+            )
+
+            intent_result = intent_service.analyze(
+                user_message=message_text,
+                history=history_messages,
+                http_client=http_client,
+            )
+
+            if intent_result.is_malicious:
+                # 恶意请求：返回错误消息并结束对话
+                self._log_agent_event(
+                    "WARNING",
+                    "intent.malicious_blocked",
+                    "恶意请求被拦截",
+                    conversation_id=conversation_id,
+                    workspace_id=workspace_id,
+                    extra={"original_message": message_text[:100]},
+                )
+
+                send_message("抱歉，我无法处理此请求", SegmentType.ERROR, {"message_id": message_id, "error": "malicious_request"})
+
+                msg = MessageBuilder.done(
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    metadata={"message_id": message_id, "status": "blocked"},
+                )
+                mq.publish_sync(msg)
+                return {"status": "blocked", "reason": "malicious_request"}
+
+            if intent_result.rewritten_query != message_text:
+                self._log_agent_event(
+                    "INFO",
+                    "intent.query_rewritten",
+                    "用户意图已改写",
+                    conversation_id=conversation_id,
+                    workspace_id=workspace_id,
+                    extra={"original": message_text[:50], "rewritten": intent_result.rewritten_query[:50]},
+                )
+                # 更新消息内容
+                message = build_user_message("user", intent_result.rewritten_query)
+
+            text_started = False
 
             def cancel_check():
                 """检查对话是否被取消，如果取消则抛出异常"""

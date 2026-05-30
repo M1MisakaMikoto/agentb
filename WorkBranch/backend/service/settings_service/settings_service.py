@@ -107,6 +107,11 @@ DEFAULT_SETTINGS = {
         "max_workers": 3,
         "compression_timeout": 30
     },
+    "intent_analysis": {
+        "enabled": True,
+        "rule_keywords": [],
+        "timeout_seconds": 60
+    },
     "debug": {
         "consistency_check": False
     }
