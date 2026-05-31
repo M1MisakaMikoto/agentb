@@ -360,9 +360,13 @@ async def main():
 
     backend_process = start_backend()
 
-    if not backend_process:
+    if backend_process is None:
+        print('[OK] Using existing backend server (port 8000 already in use)')
+    elif not backend_process:
         print('[X] Failed to start backend')
         return
+    else:
+        print('[OK] Backend started, waiting for readiness...')
 
     await asyncio.sleep(3)
 
@@ -418,6 +422,7 @@ async def main():
     print(f'>> LLM决策记录: {response_count}次 (详见 {summary_file})')
 
     print('\nStopping backend...')
-    stop_backend(backend_process)
+    if backend_process:
+        stop_backend(backend_process)
 
 asyncio.run(main())

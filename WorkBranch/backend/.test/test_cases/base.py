@@ -86,11 +86,27 @@ def wait_for_backend(host: str = "127.0.0.1", port: int = 8000, timeout: float =
     return False
 
 
+def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    """检查指定端口是否已被占用"""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return False
+        except OSError:
+            return True
+
+
 def start_backend() -> Optional[subprocess.Popen]:
     backend_dir = Path(__file__).parent.parent.parent.resolve()
     workspace_root = backend_dir.parent  # WorkBranch/
     project_root = workspace_root.parent  # agentb/
-    
+
+    # [FIX] 检查端口是否已被占用，如果已被占用则不启动新进程
+    if is_port_in_use(8000):
+        print(f"{Colors.YELLOW}[WARN] Port 8000 already in use - will use existing backend{Colors.ENDC}")
+        return None
+
     python_executable = str(Path(sys.executable))
     venv_python = project_root / ".venv" / "Scripts" / "python.exe"
     if venv_python.exists():
