@@ -218,7 +218,7 @@ def create_orchestrator_graph(llm_service=None, token_callback: Optional[Callabl
     })
     
     graph.add_edge("compaction", "build_flow")
-    
+
     return graph.compile()
 
 

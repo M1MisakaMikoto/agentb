@@ -225,8 +225,12 @@ def build_tool_schema_prompt(tool_names: List[str], agent_type: str = "unknown")
 
     try:
         import datetime
+        from pathlib import Path
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        # 使用绝对路径，避免 Windows 上的路径问题
+        backend_dir = Path(__file__).parent.parent.parent
+        log_path = backend_dir / 'llm_decision_trace.log'
+        with open(log_path, 'a', encoding='utf-8') as f:
             f.write(f"\n{'='*80}\n")
             f.write(f"[{timestamp}] === TOOL LIST FOR {agent_type} ===\n")
             f.write(f"Total tools: {len(tool_names)}\n")
@@ -667,8 +671,12 @@ def build_intent_analysis_messages(
     # Log the complete prompt sent to LLM
     try:
         import datetime
+        from pathlib import Path
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        # 使用绝对路径，避免 Windows 上的路径问题
+        backend_dir = Path(__file__).parent.parent.parent
+        log_path = backend_dir / 'llm_decision_trace.log'
+        with open(log_path, 'a', encoding='utf-8') as f:
             f.write(f"\n{'='*80}\n")
             f.write(f"[{timestamp}] === INTENT ANALYSIS PROMPT ===\n")
             f.write(f"Agent Type: {agent_type}\n")

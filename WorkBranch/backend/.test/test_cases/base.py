@@ -720,7 +720,7 @@ async def collect_stream_output(
                     print(f"{Colors.DIM}[RAW {timestamp}] {raw_line}{Colors.ENDC}")
 
                 if raw_line.startswith(": heartbeat"):
-                    _write_stream_log(stream_log_fh, f"[{time.strftime('%H:%M:%S.%f')[:-3]}] [HEARTBEAT]\n")
+                    _write_stream_log(stream_log_fh, f"[{_get_timestamp_ms()}] [HEARTBEAT]\n")
                     if verbose and loop_count % 15 == 0:
                         print(f"{Colors.DIM}[heartbeat]{Colors.ENDC}")
                     try:
@@ -760,7 +760,7 @@ async def collect_stream_output(
                 seen_event_keys.add(dedup_key)
 
                 result.event_count += 1
-                timestamp = time.strftime("%H:%M:%S.%f")[:-3]
+                timestamp = _get_timestamp_ms()
                 
                 _write_stream_log(stream_log_fh, f"[{timestamp}] [SEQ:{result.event_count:04d}] [{event_type}]\n")
 
@@ -909,6 +909,14 @@ def _write_stream_log(fh, content: str):
         fh.flush()
     except Exception as e:
         pass
+
+
+def _get_timestamp_ms():
+    """获取带毫秒精度的时间戳字符串（兼容 Windows）"""
+    now = time.time()
+    sec = int(now)
+    ms = int((now - sec) * 1000)
+    return time.strftime("%H:%M:%S", time.localtime(sec)) + f".{ms:03d}"
 
 
 def print_test_header(description: str):

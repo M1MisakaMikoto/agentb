@@ -121,7 +121,7 @@ def create_compaction_subgraph():
     
     graph.add_edge("compress", END)
     graph.add_edge("skip", END)
-    
+
     return graph.compile()
 
 

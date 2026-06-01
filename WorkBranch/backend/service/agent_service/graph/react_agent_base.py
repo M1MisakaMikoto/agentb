@@ -513,7 +513,7 @@ class ReActAgentBase:
         
         return state
     
-    def _create_error_summary_node(self, llm_service=None):
+    def _create_error_summary_node(self, llm_service=None, message_context=None):
         def error_summary_node(state: AgentState) -> dict:
             error_type = state.get("error_summary_type", "unknown")
             tool_history = state.get("tool_history", []) or []
@@ -629,7 +629,7 @@ class ReActAgentBase:
             )
         
         loop_graph.add_edge("error_summary", END)
-        
+
         return loop_graph.compile()
     
     def _create_decide_node(self, llm_service=None, settings_service=None, message_context=None):
@@ -657,7 +657,18 @@ class ReActAgentBase:
                     "pending_tools": [],
                     "iteration_count": iteration_count,
                 }
-            
+
+            # ===== 决策错误保护 =====
+            # 当决策连续失败时，防止无限循环重试，直接终止
+            decision_error_count = state.get("decision_error_count", 0) or 0
+            if decision_error_count >= 3:
+                return {
+                    "force_error_summary": True,
+                    "error_summary_type": "decision_repeated_failure",
+                    "pending_tools": [],
+                    "iteration_count": iteration_count,
+                }
+
             if iteration_count > 0 and iteration_count % 8 == 0:
                 from .director_agent import _check_loop_or_stuck
                 check_result = _check_loop_or_stuck(
@@ -701,6 +712,28 @@ class ReActAgentBase:
                 current_todo_index=state.get('current_todo_index', 0) or 0,
             )
             
+            import datetime as _dt
+            _ts = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+
+            # 记录完整的请求上下文（在调用前记录，确保异常时也有记录）
+            try:
+                with open('llm_decision_trace.log', 'a', encoding='utf-8') as _f:
+                    _f.write(f"\n[{_ts}] === 🔄 LLM REQUEST START ===\n")
+                    _f.write(f"[{_ts}] Agent: {agent_type}, Iteration: {iteration_count}/{max_iterations}\n")
+                    _f.write(f"[{_ts}] Tool history: {len(tool_history)} items\n")
+                    if tool_history:
+                        for _idx, _item in enumerate(tool_history[-5:], 1):
+                            _f.write(f"[{_ts}]   history[{_idx}]: tool={_item.get('tool_name', 'N/A')}, result_len={len(str(_item.get('result', '')))}\n")
+                    _f.write(f"[{_ts}] Last tool result: {str(last_tool_result)[:500] if last_tool_result else 'None'}\n")
+                    _f.write(f"\n[{_ts}] --- SYSTEM PROMPT (first 1000 chars) ---\n")
+                    _f.write(system_prompt[:1000] if system_prompt else "(empty)")
+                    _f.write(f"\n[{_ts}] --- USER MESSAGE (first 1000 chars) ---\n")
+                    _f.write(context_prompt[:1000] if context_prompt else "(empty)")
+                    _f.write(f"\n[{_ts}] === 🔄 LLM REQUEST END ===\n\n")
+                    _f.flush()
+            except Exception as _log_err:
+                pass
+
             try:
                 response = llm_service.chat(
                     messages=[{"role": "user", "content": context_prompt}],
@@ -716,15 +749,10 @@ class ReActAgentBase:
                     response_text = response_text[:-3]
                 response_text = response_text.strip()
 
-                import datetime as _dt
-                _ts = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+                # 记录 LLM 原始响应
                 with open('llm_decision_trace.log', 'a', encoding='utf-8') as _f:
                     _f.write(f"\n[{_ts}] === 🤖 LLM RAW RESPONSE ===\n")
                     _f.write(f"[{_ts}] Raw response ({len(response_text)} chars):\n{response_text}\n")
-                    _f.write(f"[{_ts}] Tool history in prompt: {len(tool_history)} items\n")
-                    if tool_history:
-                        for _idx, _item in enumerate(tool_history[-3:], 1):
-                            _f.write(f"[{_ts}]   history[{_idx}]: tool={_item.get('tool_name', 'N/A')}, result_len={len(str(_item.get('result', '')))}\n")
                     _f.flush()
 
                 # 防御性处理：检查 LLM 是否返回空响应
@@ -733,6 +761,19 @@ class ReActAgentBase:
 
                 decision_data = json.loads(response_text)
             except Exception as e:
+                # 记录完整的异常信息
+                import traceback as _tb
+                import datetime as _dt
+                _ts = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+                with open('llm_decision_trace.log', 'a', encoding='utf-8') as _f:
+                    _f.write(f"\n[{_ts}] === ❌ LLM CALL EXCEPTION ===\n")
+                    _f.write(f"[{_ts}] Exception Type: {type(e).__name__}\n")
+                    _f.write(f"[{_ts}] Exception Message: {str(e)}\n")
+                    _f.write(f"[{_ts}] Response object: {response if 'response' in locals() else 'NOT_AVAILABLE'}\n")
+                    _f.write(f"[{_ts}] Response text: {response_text if 'response_text' in locals() else 'NOT_AVAILABLE'}\n")
+                    _f.write(f"[{_ts}] Full Traceback:\n{_tb.format_exc()}\n")
+                    _f.write(f"[{_ts}] === ❌ LLM CALL EXCEPTION END ===\n")
+                    _f.flush()
                 # 决策失败时尝试重试，而不是立即终止
                 decision_error_count = (state.get("decision_error_count", 0) or 0) + 1
                 max_decision_retries = 3
@@ -765,6 +806,23 @@ class ReActAgentBase:
             
             kind = decision_data.get("kind")
             if kind in ("step_done", "blocked"):
+                # ===== 【关键修复】检查 Agent 是否遗漏了 chat 工具调用 =====
+                if kind == "step_done":
+                    has_document_call = any(t.get("tool_name") == "document" for t in tool_history)
+                    has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
+
+                    if has_document_call and not has_chat_call:
+                        # Agent 完成了数据分析但忘记调用 chat 工具输出结果
+                        # 强制注入 chat 工具调用
+                        console.warning("[_create_decide_node] Agent 遗漏了 chat 工具调用，强制注入最终回复输出")
+                        return {
+                            "pending_tools": [{"tool_name": "chat", "args": {
+                                "description": "已完成分析并提取病害信息。请输出最终结果。"
+                            }}],
+                            "has_tool_use": True,
+                            "todo_status": None,  # 清除状态，等待 chat 执行
+                        }
+
                 return {
                     "todo_status": kind,
                     "has_tool_use": False,
@@ -964,12 +1022,41 @@ class ReActAgentBase:
         if state.get("final_reply"):
             return "done"
 
+        # ===== 【关键修复】前置迭代次数检查，防止 LangGraph 递归限制 =====
+        iteration_count = state.get("iteration_count", 0) or 0
+        max_iterations = state.get("max_iterations", 10) or 10
+        if iteration_count >= max_iterations:
+            return "error_summary"
+
         next_action = state.get("next_action") or {}
         if next_action.get("kind") in ("reply", "enter_plan"):
             return "done"
 
         if state.get("pending_tools"):
             return "execute"
+
+        # ===== 决策错误保护 =====
+        # 当决策连续失败时，防止无限循环重试
+        decision_error_count = state.get("decision_error_count", 0) or 0
+        if decision_error_count >= 3:
+            return "error_summary"
+
+        # ===== 【关键修复】检查 Agent 是否遗漏了 chat 工具调用 =====
+        tool_history = state.get("tool_history", []) or []
+        has_document_call = any(t.get("tool_name") == "document" for t in tool_history)
+        has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
+
+        if has_document_call and not has_chat_call:
+            # Agent 完成了数据分析但忘记调用 chat 工具输出结果
+            # 强制注入 chat 工具调用
+            console.warning("[_route_after_decide] Agent 遗漏了 chat 工具调用，强制注入最终回复输出")
+            return {
+                "pending_tools": [{"tool_name": "chat", "args": {
+                    "description": "已完成分析并提取病害信息。请输出最终结果。"
+                }}],
+                "has_tool_use": True,
+                "todo_status": None,
+            }
 
         # 特殊情况：当 prediction agent 返回 step_done 但没有 pending_tools 时
         # 检查工具历史，如果已有分析数据但还没生成报告，强制调用 document
@@ -991,38 +1078,100 @@ class ReActAgentBase:
     def _route_after_execute(self, state: AgentState) -> str:
         if state.get("final_reply"):
             return "done"
-        
+
         if state.get("force_error_summary"):
             return "error_summary"
-        
+
+        # ===== 【关键修复】前置迭代次数检查，防止 LangGraph 递归限制 =====
+        iteration_count = state.get("iteration_count", 0) or 0
+        max_iterations = state.get("max_iterations", 10) or 10
+        if iteration_count >= max_iterations:
+            return "error_summary"
+
         next_action = state.get("next_action") or {}
         if next_action.get("kind") == "enter_plan":
             return "done"
-        
+
         if state.get("pending_tools"):
             return "execute"
-        
+
         if state.get("force_error_summary"):
             return "error_summary"
-        
+
+        # ===== 新增：检测工具失败循环 =====
+        # 当工具持续失败且没有进展时，强制结束循环
+        iteration_count = state.get("iteration_count", 0) or 0
+        last_tool_success = state.get("last_tool_success")
+        last_tool_name = state.get("last_tool_name")
+        last_tool_result = state.get("last_tool_result") or ""
+        tool_history = state.get("tool_history", []) or []
+
+        # 基础保护：如果迭代次数过多（超过15次）且没有pending_tools，强制终止
+        if iteration_count > 15 and not state.get("pending_tools"):
+            return "error_summary"
+
+        # ===== 新增：检测 document 工具读取空内容循环 =====
+        if last_tool_name == "document" and last_tool_success is not False:
+            # document 工具没有报错，但检查是否返回空内容
+            result_str = str(last_tool_result) if last_tool_result else ""
+            is_empty_result = len(result_str) < 100  # 结果很短
+
+            if is_empty_result:
+                # 检查最近几次 document 读取是否都是空的
+                recent_empty_reads = 0
+                for item in reversed(tool_history[-6:]):
+                    if item.get("tool_name") == "document":
+                        result = str(item.get("result", "") or "")
+                        if len(result) < 100:
+                            recent_empty_reads += 1
+
+                # 如果连续 3 次 document 读取都返回空内容，强制终止
+                if recent_empty_reads >= 3:
+                    return "error_summary"
+        # ===== 结束新增 =====
+
+        if last_tool_success is False and last_tool_name:
+            # 检查最近是否有连续失败
+            recent_failures = 0
+            repeated_same_tool = 0
+            last_failed_args = None
+
+            for item in reversed(tool_history[-10:]):
+                if item.get("tool_name") == last_tool_name:
+                    if item.get("result") is None or item.get("error"):
+                        recent_failures += 1
+                        current_args = item.get("args", {})
+                        if last_failed_args == current_args:
+                            repeated_same_tool += 1
+                        last_failed_args = current_args
+
+            # 如果同一工具连续失败超过3次，且参数相同，强制报告问题
+            if repeated_same_tool >= 3:
+                return "error_summary"
+
+            # 如果最近5次工具有4次以上失败，强制报告问题
+            if recent_failures >= 4 and len(tool_history) >= 5:
+                return "error_summary"
+        # ===== 结束新增 =====
+
         return "decide"
 
     def create_graph(self):
         """创建 LangGraph StateGraph（可选）
-        
+
         如果需要将 ReActAgentBase 集成到 LangGraph 中，
         可以重写此方法返回一个完整的图。
         """
         from langgraph.graph import StateGraph, END
-        
+
         graph = StateGraph(AgentState)
-        
+
         def execute_node(state: AgentState) -> dict:
             result = self.execute(state)
             if result.get("updated_state"):
                 return result["updated_state"].__dict__
             return {}
-        
+
         graph.add_node("execute", execute_node)
         graph.set_entry_point("execute")
         graph.add_conditional_edges(
@@ -1030,7 +1179,7 @@ class ReActAgentBase:
             lambda s: "end" if not getattr(s, 'pending_tools', None) else "execute",
             {"end": END, "execute": "execute"},
         )
-        
+
         return graph.compile()
 
 

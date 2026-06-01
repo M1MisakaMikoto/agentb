@@ -215,7 +215,15 @@ def run_agent_graph(
     )
     import traceback
     try:
-        final_state = graph.invoke(initial_state)
+        # 【关键修复】通过 config 传递 recursion_limit，防止 LangGraph 递归限制
+        max_iterations = initial_state.get('max_iterations', 10) or 10
+        graph_config = {'recursion_limit': max(max_iterations + 5, 15)}  # 留出额外缓冲
+
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] Graph invoke with recursion_limit: {graph_config['recursion_limit']}\n")
+            f.flush()
+
+        final_state = graph.invoke(initial_state, config=graph_config)
     except Exception as e:
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
         with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
