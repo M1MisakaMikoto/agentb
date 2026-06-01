@@ -88,11 +88,25 @@ def _pdf_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
                 for page in reader.pages:
                     text_parts.append(page.extract_text() or "")
                 full_text = "\n".join(text_parts)
-        
+
         total_length = len(full_text)
+
+        # 防御性处理：当 start_idx >= total_length 时，说明文档已经读完
+        # ⚠️ 这个检查必须在切片之前！
+        if start_idx >= total_length and total_length > 0:
+            return _make_result({
+                "content": "",
+                "metadata": {},
+                "total_length": total_length,
+                "read_range": f"{total_length}-{total_length}",
+                "truncated": False,
+                "status": "end_of_file",
+                "message": f"文档已读取完毕（总长度: {total_length}）"
+            })
+
         end_idx = min(start_idx + max_length, total_length)
         content = full_text[start_idx:end_idx]
-        
+
         metadata = {}
         if include_metadata:
             try:
@@ -417,6 +431,21 @@ def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
 
         full_text = "\n\n".join(paragraphs)
         total_length = len(full_text)
+
+        # 防御性处理：当 start_idx >= total_length 时，说明文档已经读完
+        # ⚠️ 这个检查必须在切片之前！
+        if start_idx >= total_length and total_length > 0:
+            return _make_result({
+                "content": "",
+                "metadata": {},
+                "structure": structure[:20],
+                "total_length": total_length,
+                "read_range": f"{total_length}-{total_length}",
+                "truncated": False,
+                "status": "end_of_file",
+                "message": f"文档已读取完毕（总长度: {total_length}）"
+            })
+
         end_idx = min(start_idx + max_length, total_length)
         content = full_text[start_idx:end_idx]
 
@@ -430,10 +459,10 @@ def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
                 "title": str(core_props.title) if core_props.title else None,
                 "subject": str(core_props.subject) if core_props.subject else None,
             }
-        
+
         if cleanup and actual_path != file_path:
             os.unlink(actual_path)
-        
+
         return _make_result({
             "content": content,
             "metadata": metadata,
@@ -1192,9 +1221,24 @@ def _excel_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
         
         full_text = "\n\n".join(all_content)
         total_length = len(full_text)
+
+        # 防御性处理：当 start_idx >= total_length 时，说明文档已经读完
+        # ⚠️ 这个检查必须在切片之前！
+        if start_idx >= total_length and total_length > 0:
+            return _make_result({
+                "content": "",
+                "metadata": {},
+                "structure": sheet_info,
+                "total_length": total_length,
+                "read_range": f"{total_length}-{total_length}",
+                "truncated": False,
+                "status": "end_of_file",
+                "message": f"文档已读取完毕（总长度: {total_length}）"
+            })
+
         end_idx = min(start_idx + max_length, total_length)
         content = full_text[start_idx:end_idx]
-        
+
         metadata = {}
         if include_metadata:
             metadata = {
@@ -1424,7 +1468,7 @@ def execute_document(tool_args: dict) -> dict:
     file_path = tool_args.get("file_path")
     
     if not operation:
-        return _make_result(error="缺少 operation 参数 (r|w|a|u)")
+        return _make_result(error="缺少 operation 参数 (r|w|a|u|s)")
     
     if not file_path:
         return _make_result(error="缺少 file_path 参数")
@@ -1455,10 +1499,17 @@ def execute_document(tool_args: dict) -> dict:
     
     # ---- READ ----
     if operation == "r":
-        start_idx = tool_args.get("start_idx", 0)
-        max_length = tool_args.get("max_length", 10000)
+        # 防御性类型转换，防止 LLM 传入字符串类型的参数
+        try:
+            start_idx = int(tool_args.get("start_idx", 0))
+        except (ValueError, TypeError):
+            start_idx = 0
+        try:
+            max_length = int(tool_args.get("max_length", 10000))
+        except (ValueError, TypeError):
+            max_length = 10000
         include_metadata = tool_args.get("include_metadata", True)
-        
+
         if ext == ".pdf":
             result = _pdf_read(file_path, start_idx, max_length, include_metadata, use_llm_parsing)
         elif ext in {".doc", ".docx"}:

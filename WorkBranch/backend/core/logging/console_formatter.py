@@ -205,35 +205,67 @@ class ConsoleFormatter:
 
     @classmethod
     def messages_box(cls, title: str, messages: list, width: int = 80) -> None:
-        print()
-        print(cls.BOX_CHARS["top_left"] + "─" + f" {title} " + "─" * (width - len(title) - 5) + cls.BOX_CHARS["top_right"])
-        print(cls.BOX_CHARS["vertical"])
-
-        for msg in messages:
-            content = cls._stringify_message_content(getattr(msg, "content", msg))
-            lines = content.split("\n")
-            for line in lines:
-                print(cls.BOX_CHARS["vertical"] + "  " + line)
+        try:
+            print()
+            print(cls.BOX_CHARS["top_left"] + "─" + f" {title} " + "─" * (width - len(title) - 5) + cls.BOX_CHARS["top_right"])
             print(cls.BOX_CHARS["vertical"])
 
-        print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
+            max_lines = 100  # 限制最大行数避免递归问题
+            line_count = 0
+
+            for msg in messages:
+                content = cls._stringify_message_content(getattr(msg, "content", msg))
+                lines = content.split("\n")
+
+                # 限制单条消息的输出行数
+                if line_count >= max_lines:
+                    print(cls.BOX_CHARS["vertical"] + "  ... (内容已截断)")
+                    break
+
+                for line in lines:
+                    if line_count >= max_lines:
+                        break
+                    try:
+                        print(cls.BOX_CHARS["vertical"] + "  " + line[:200])  # 限制单行长度
+                    except Exception:
+                        print(cls.BOX_CHARS["vertical"] + "  [无法显示该行]")
+                    line_count += 1
+
+                if line_count < max_lines:
+                    print(cls.BOX_CHARS["vertical"])
+
+            print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
+        except Exception as e:
+            # 备用输出：简单打印消息数量
+            print(f"[{title}] 共 {len(messages)} 条消息")
     
     @classmethod
     def response_box(cls, content: str, width: int = 80, char_count: Optional[int] = None) -> None:
-        print()
-        print(cls.BOX_CHARS["top_left"] + "─" + f" 大模型的回复 " + "─" * (width - 17) + cls.BOX_CHARS["top_right"])
-        print(cls.BOX_CHARS["vertical"])
-        
-        if char_count:
-            print(cls.BOX_CHARS["vertical"] + cls._colorize(f"  响应长度: {char_count} 字符", "dim"))
+        try:
+            print()
+            print(cls.BOX_CHARS["top_left"] + "─" + f" 大模型的回复 " + "─" * (width - 17) + cls.BOX_CHARS["top_right"])
             print(cls.BOX_CHARS["vertical"])
-        
-        lines = content.split("\n")
-        for line in lines:
-            print(cls.BOX_CHARS["vertical"] + "  " + line)
-        
-        print(cls.BOX_CHARS["vertical"])
-        print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
+
+            if char_count:
+                print(cls.BOX_CHARS["vertical"] + cls._colorize(f"  响应长度: {char_count} 字符", "dim"))
+                print(cls.BOX_CHARS["vertical"])
+
+            lines = content.split("\n")
+            max_lines = 100
+            for i, line in enumerate(lines):
+                if i >= max_lines:
+                    print(cls.BOX_CHARS["vertical"] + "  ... (内容已截断)")
+                    break
+                try:
+                    print(cls.BOX_CHARS["vertical"] + "  " + line[:200])
+                except Exception:
+                    print(cls.BOX_CHARS["vertical"] + "  [无法显示该行]")
+
+            print(cls.BOX_CHARS["vertical"])
+            print(cls.BOX_CHARS["bottom_left"] + "─" * (width - 2) + cls.BOX_CHARS["bottom_right"])
+        except Exception as e:
+            # 备用输出
+            print(f"[大模型回复] {len(content) if content else 0} 字符")
     
     @classmethod
     def task_list_box(cls, tasks: list[dict], width: int = 80) -> None:

@@ -1176,7 +1176,7 @@ def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callbac
                 False,
             )
             try:
-                outcome = future.result(timeout=45)
+                outcome = future.result(timeout=300)
             except FutureTimeoutError:
                 future.cancel()
                 outcome = {
@@ -1186,8 +1186,8 @@ def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callbac
                     "produced_user_reply": False,
                     "exit_info": {
                         "code": "subgraph_timeout",
-                        "message": "explore_agent 子图执行超时",
-                        "details": {"agent_type": "explore_agent", "timeout_seconds": 45},
+                        "message": "explore_agent 子图执行超时（300秒）",
+                        "details": {"agent_type": "explore_agent", "timeout_seconds": 300},
                     },
                 }
         if outcome.get("status") == "failed":
@@ -1247,7 +1247,7 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
                 False,
             )
             try:
-                outcome = future.result(timeout=45)
+                outcome = future.result(timeout=300)
             except FutureTimeoutError:
                 future.cancel()
                 outcome = {
@@ -1257,8 +1257,8 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
                     "produced_user_reply": False,
                     "exit_info": {
                         "code": "subgraph_timeout",
-                        "message": "review_agent 子图执行超时",
-                        "details": {"agent_type": "review_agent", "timeout_seconds": 45},
+                        "message": "review_agent 子图执行超时（300秒）",
+                        "details": {"agent_type": "review_agent", "timeout_seconds": 300},
                     },
                 }
         if outcome.get("status") == "failed":

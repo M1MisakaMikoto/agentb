@@ -157,7 +157,7 @@ class IntentAnalysisService:
         http_client: Optional[httpx.Client] = None,
     ) -> IntentAnalysisResult:
         """
-        分析用户意图
+        分析用户意图 - 仅用于恶意请求检测，不进行意图改写
 
         Args:
             user_message: 用户输入
@@ -171,14 +171,18 @@ class IntentAnalysisService:
         if not self._is_enabled():
             return IntentAnalysisResult(is_malicious=False, rewritten_query=user_message)
 
-        # 规则层过滤
+        # 规则层过滤 - 仅用于恶意关键词检测
         if self._rule_filter(user_message):
             return IntentAnalysisResult(is_malicious=True, rewritten_query="")
 
-        # 调用 FastLLM
+        # 调用 FastLLM 进行恶意检测，但不使用其改写结果
         try:
             result = self._call_fast_llm(user_message, history or [], http_client)
-            return result
+            # [禁用意图改写] 始终返回原始消息，只使用 LLM 的恶意检测结果
+            return IntentAnalysisResult(
+                is_malicious=result.is_malicious,
+                rewritten_query=user_message,
+            )
         except Exception as e:
             # 超时或其他错误，记录日志但允许继续
             self._get_logger().error(

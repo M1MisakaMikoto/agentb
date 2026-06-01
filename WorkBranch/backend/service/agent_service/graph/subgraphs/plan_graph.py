@@ -501,7 +501,7 @@ def create_plan_subgraph(llm_service=None, token_callback: Optional[Callable[[st
     graph.add_edge("phase3", "phase4")
     graph.add_edge("phase4", "phase5")
     graph.add_edge("phase5", END)
-    
+
     return graph.compile()
 
 

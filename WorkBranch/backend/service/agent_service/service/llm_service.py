@@ -315,13 +315,28 @@ class LLMService:
 
         lc_messages = self._build_lc_messages(messages, system_prompt, allow_multimodal=True)
 
-        console.messages_box("LLM 原始提示词", lc_messages)
+        try:
+            # 限制消息输出行数，避免递归和输出过长问题
+            safe_messages = []
+            for msg in lc_messages[:20]:  # 最多20条消息
+                content = msg.content if hasattr(msg, 'content') else str(msg)
+                if len(content) > 2000:
+                    content = content[:2000] + "...(截断)"
+                safe_messages.append(type(msg)(content=content))
+            console.messages_box("LLM 原始提示词", safe_messages)
+        except Exception:
+            console.info(f"LLM 原始提示词: {len(lc_messages)} 条消息")
         console.info(f"发送请求: {len(lc_messages)} 条消息")
 
         response = self._invoke_with_logging("chat", lambda: llm.invoke(lc_messages))
 
         response_text = response.content if isinstance(response.content, str) else str(response.content)
-        console.success(f"收到响应: {len(response_text)} 字符")
+        try:
+            safe_response = response_text[:3000] + "..." if len(response_text) > 3000 else response_text
+            console.success(f"收到响应: {len(response_text)} 字符")
+            console.response_box(safe_response, char_count=len(response_text))
+        except Exception:
+            console.success(f"收到响应: {len(response_text)} 字符")
         return response_text
 
     def chat_stream(
@@ -340,7 +355,10 @@ class LLMService:
 
         lc_messages = self._build_lc_messages(messages, system_prompt, allow_multimodal=True)
 
-        console.messages_box("LLM 原始提示词", lc_messages)
+        try:
+            console.messages_box("LLM 原始提示词", lc_messages)
+        except Exception:
+            console.info(f"LLM 原始提示词: {len(lc_messages)} 条消息")
         console.info(f"发送流式请求: {len(lc_messages)} 条消息")
         console.section("流式输出")
 

@@ -355,13 +355,132 @@ def _mode_name(value) -> Optional[str]:
     return str(value).split(".")[-1].upper()
 
 
-def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute", "done"]:
+def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute", "done", "error_summary"]:
+    # 添加详细日志追踪状态
+    _iter = state.get("iteration_count", 0) or 0
+    _pending = len(state.get("pending_tools") or [])
+    _final = state.get("final_reply")
+    _forced_err = state.get("force_error_summary")
+    _dec_err = state.get("decision_error_count", 0) or 0
+    print(f"[TRACE check_state_v3] iter={_iter}, pending={_pending}, final_reply={bool(_final)}, force_err={_forced_err}, dec_err={_dec_err}")
+
+    # ===== 【关键修复】前置迭代次数检查，防止无限循环 =====
+    # 在检查 pending_tools 之前，先检查迭代次数是否已达上限
+    # 这样可以确保即使有 pending_tools，如果迭代次数过多也会终止
+    iteration_count = state.get("iteration_count", 0) or 0
+    max_iterations = state.get("max_iterations", 10) or 10
+    if iteration_count >= max_iterations:
+        console.warning(
+            f"[check_state_v3] 迭代次数已达上限 ({iteration_count}/{max_iterations})，强制终止"
+        )
+        return "error_summary"
+
+    # 检查是否有待执行的工具
     if state.get("pending_tools"):
+        print(f"[TRACE check_state_v3] -> execute (pending_tools exists)")
         return "execute"
 
+    # 检查是否有最终回复
     if state.get("final_reply"):
         return "done"
 
+    # 检查是否强制错误总结
+    if state.get("force_error_summary"):
+        return "error_summary"
+
+    # ===== 决策错误保护 =====
+    # 当决策连续失败时，防止无限循环重试
+    decision_error_count = state.get("decision_error_count", 0) or 0
+    if decision_error_count >= 3:
+        console.warning(
+            f"[check_state_v3] 决策连续失败 {decision_error_count} 次，强制终止"
+        )
+        return "error_summary"
+
+    # ===== 【关键修复】检查 todo_status = step_done =====
+    # 当 decide 节点返回 step_done 时，表示任务已完成，应该结束
+    todo_status = state.get("todo_status")
+    if todo_status == "step_done":
+        console.info(f"[check_state_v3] 检测到 todo_status=step_done，任务完成，结束循环")
+        return "done"
+
+    # ===== 【关键修复】检测 Agent 忘记调用 chat 工具 =====
+    # 如果已执行过 document 工具且没有 pending_tools，但还没有调用过 chat 工具
+    # 强制注入一个 chat 工具调用来输出结果
+    tool_history = state.get("tool_history", []) or []
+    has_document_call = any(t.get("tool_name") == "document" for t in tool_history)
+    has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
+    has_pending = bool(state.get("pending_tools"))
+
+    if has_document_call and not has_chat_call and not has_pending:
+        last_tool_result = state.get("last_tool_result") or ""
+        console.warning(
+            f"[check_state_v3] 检测到 Agent 遗漏了 chat 工具调用，强制注入最终回复输出"
+        )
+        return {
+            "pending_tools": [{"tool_name": "chat", "args": {
+                "description": f"已从检测报告中提取病害信息并完成分析。请输出最终结果。"
+            }}],
+            "has_tool_use": True,
+        } if False else "decide"  # 保持当前行为，让 decide 节点决定
+
+    # 实际的 chat 工具注入逻辑在 decide 节点中：
+    # 当检测到这种情况时，decide 节点应该返回 chat 工具调用
+
+    # ===== 新增：检测工具失败循环 =====
+    # 当工具持续失败且没有进展时，强制结束循环
+    iteration_count = state.get("iteration_count", 0) or 0
+    last_tool_success = state.get("last_tool_success")
+    last_tool_name = state.get("last_tool_name")
+    tool_history = state.get("tool_history", []) or []
+
+    # 基础保护：如果迭代次数过多（超过20次）且没有pending_tools，强制终止
+    # 这是一个保守的保护措施，防止任何形式的无限循环
+    if iteration_count > 20 and not state.get("pending_tools"):
+        console.warning(
+            f"[check_state_v3] 迭代次数过多 ({iteration_count})，强制进入错误总结"
+        )
+        return "error_summary"
+
+    if last_tool_success is False and last_tool_name:
+        # 检查最近是否有连续失败
+        recent_failures = 0
+        repeated_same_tool = 0
+        last_failed_tool = None
+        last_failed_args = None
+
+        for item in reversed(tool_history[-10:]):  # 检查最近10次
+            if item.get("tool_name") == last_tool_name:
+                if item.get("result") is None or item.get("error"):
+                    recent_failures += 1
+                    if last_failed_tool == last_tool_name:
+                        # 检查参数是否相同
+                        current_args = item.get("args", {})
+                        if last_failed_args == current_args:
+                            repeated_same_tool += 1
+                        last_failed_args = current_args
+                    last_failed_tool = last_tool_name
+
+        # 如果同一工具连续失败超过3次，且参数相同，强制报告问题
+        if repeated_same_tool >= 3:
+            console.warning(
+                f"[check_state_v3] 检测到工具失败循环: "
+                f"{last_tool_name} 连续失败 {repeated_same_tool} 次，参数相同"
+            )
+            return "error_summary"
+
+        # 如果最近5次工具有4次以上失败，强制报告问题
+        if recent_failures >= 4 and len(tool_history) >= 5:
+            recent_tools = [item.get("tool_name") for item in tool_history[-5:]]
+            console.warning(
+                f"[check_state_v3] 检测到工具失败循环: "
+                f"最近5次调用中有 {recent_failures} 次失败，工具列表: {recent_tools}"
+            )
+            return "error_summary"
+    # ===== 结束新增 =====
+
+    # 如果所有保护都通过，返回 decide
+    print(f"[TRACE check_state_v3] -> decide (last_tool_success={last_tool_success}, tool_history_len={len(tool_history)})")
     return "decide"
 
 
@@ -537,22 +656,28 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             current_conversation_messages=current_conversation_messages,
         )
 
+        # 在 LLM 调用前记录完整的请求上下文（确保异常时也有记录）
         try:
             import datetime
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
             with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
                 f.write(f"\n{'='*80}\n")
-                f.write(f"[{timestamp}] === COMPLETE PROMPT FOR LLM CALL ===\n")
-                f.write(f"Agent Type: {current_agent_type}\n")
-                f.write(f"Mode: {'PLAN' if is_plan_mode else 'DIRECT'}\n")
-                f.write(f"Iteration: {iteration_count}/{max_iterations}\n")
-                f.write(f"\n{'='*40} SYSTEM PROMPT {'='*40}\n")
-                f.write(system_prompt)
-                f.write(f"\n\n{'='*40} USER MESSAGE {'='*40}\n")
-                f.write(context_prompt)
-                f.write(f"\n{'='*80}\n")
+                f.write(f"[{timestamp}] === 🔄 DIRECTOR LLM REQUEST START ===\n")
+                f.write(f"[{timestamp}] Agent Type: {current_agent_type}\n")
+                f.write(f"[{timestamp}] Mode: {'PLAN' if is_plan_mode else 'DIRECT'}\n")
+                f.write(f"[{timestamp}] Iteration: {iteration_count}/{max_iterations}\n")
+                f.write(f"[{timestamp}] Tool history: {len(tool_history)} items\n")
+                if tool_history:
+                    for idx, item in enumerate(tool_history[-5:], 1):
+                        f.write(f"[{timestamp}]   history[{idx}]: tool={item.get('tool_name', 'N/A')}, result_len={len(str(item.get('result', '')))}\n")
+                f.write(f"[{timestamp}] Last tool result: {str(last_tool_result)[:500] if last_tool_result else 'None'}\n")
+                f.write(f"\n[{'='*40} SYSTEM PROMPT (first 1000 chars) {'='*40}\n")
+                f.write(system_prompt[:1000] if system_prompt else "(empty)")
+                f.write(f"\n[{'='*40} USER MESSAGE (first 1000 chars) {'='*40}\n")
+                f.write(context_prompt[:1000] if context_prompt else "(empty)")
+                f.write(f"\n[{timestamp}] === 🔄 DIRECTOR LLM REQUEST END ===\n\n")
                 f.flush()
-        except Exception as e:
+        except Exception as log_err:
             pass
 
         response = None
@@ -571,6 +696,15 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 response_text = response_text[:-3]
             response_text = response_text.strip()
 
+            # 记录 LLM 响应
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"[{timestamp}] === 🤖 DIRECTOR LLM RAW RESPONSE ===\n")
+                f.write(f"[{timestamp}] Raw response ({len(response_text)} chars):\n{response_text}\n")
+                f.write(f"{'='*80}\n")
+                f.flush()
+
             # 防御性处理：检查 LLM 是否返回空响应
             if not response_text:
                 raise ValueError("LLM 返回了空响应，可能是 API 超时或模型异常")
@@ -583,11 +717,12 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
                     f.write(f"\n{'='*80}\n")
                     f.write(f"[{timestamp}] === ❌ DIRECTOR AGENT DECISION EXCEPTION ===\n")
-                    f.write(f"Exception Type: {type(e).__name__}\n")
-                    f.write(f"Exception Message: {str(e)}\n")
-                    f.write(f"Error Code (errno): {getattr(e, 'errno', 'N/A')}\n")
-                    f.write(f"Response Text: {response_text if 'response_text' in locals() else (response if response else 'No response')}\n")
-                    f.write(f"Full Traceback:\n{traceback.format_exc()}\n")
+                    f.write(f"[{timestamp}] Exception Type: {type(e).__name__}\n")
+                    f.write(f"[{timestamp}] Exception Message: {str(e)}\n")
+                    f.write(f"[{timestamp}] Error Code (errno): {getattr(e, 'errno', 'N/A')}\n")
+                    f.write(f"[{timestamp}] Response object: {response if 'response' in dir() else 'NOT_IN_SCOPE'}\n")
+                    f.write(f"[{timestamp}] Response text: {response_text if 'response_text' in dir() else 'NOT_IN_SCOPE'}\n")
+                    f.write(f"[{timestamp}] Full Traceback:\n{traceback.format_exc()}\n")
                     f.write(f"{'='*80}\n")
                     f.flush()
             except Exception:
@@ -599,30 +734,56 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
 
             # 决策失败时尝试重试
             decision_error_count = (state.get("decision_error_count", 0) or 0) + 1
-            max_decision_retries = 3
 
-            if is_json_error and decision_error_count < max_decision_retries:
-                console.decision_box("decide", f"决策解析失败，使用相同提示词重试第 {decision_error_count}/{max_decision_retries} 次")
+            # ===== 重要：所有错误类型都增加计数，超过3次强制终止 =====
+            console.warning(
+                f"[create_decide_tool_action_node] 决策失败 #{decision_error_count}: {type(e).__name__}: {str(e)[:200]}"
+            )
+
+            if decision_error_count >= 3:
+                # 超过3次决策失败，强制终止
+                reply = f"决策多次失败，无法继续执行任务。"
+                _emit_final_reply(reply, message_context)
                 return {
-                    "next_action": None,
-                    "final_reply": None,
+                    "next_action": {"kind": "reply", "reply": reply, "task_description": user_message},
+                    "final_reply": reply,
                     "has_tool_use": False,
                     "pending_tools": [],
+                    "force_error_summary": True,
+                    "error_summary_type": "decision_repeated_failure",
                     "decision_error_count": decision_error_count,
                 }
 
-            console.box("决策解析失败", response_text if 'response_text' in locals() else str(response) if response else "No response")
-            reply = f"当前无法自动决策下一步：{e}；原始回复：{response_text if 'response_text' in locals() else (response if response else 'No response')}"
-            _emit_final_reply(reply, message_context)
+            # 决策失败但还在重试范围内，返回空让 graph 继续
+            console.decision_box("decide", f"决策失败，使用相同提示词重试第 {decision_error_count}/3 次")
             return {
-                "next_action": {"kind": "reply", "reply": reply, "task_description": user_message},
-                "final_reply": reply,
+                "next_action": None,
+                "final_reply": None,
                 "has_tool_use": False,
                 "pending_tools": [],
+                "decision_error_count": decision_error_count,
             }
 
         kind = decision_data.get("kind")
         if kind == "step_done":
+            # ===== 【关键修复】检查 Agent 是否遗漏了 chat 工具调用 =====
+            has_document_call = any(t.get("tool_name") == "document" for t in tool_history)
+            has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
+
+            if has_document_call and not has_chat_call:
+                # Agent 完成了数据分析但忘记调用 chat 工具输出结果
+                # 强制注入 chat 工具调用
+                console.warning("[create_decide_tool_action_node] Agent 遗漏了 chat 工具调用，强制注入最终回复输出")
+                last_result = state.get("last_tool_result") or ""
+                return {
+                    "pending_tools": [{"tool_name": "chat", "args": {
+                        "description": f"已完成桥梁检测报告的病害信息提取和分析。请以结构化格式输出最终的病害信息汇总。"
+                    }}],
+                    "has_tool_use": True,
+                    "todo_status": None,  # 清除 step_done 状态，等待 chat 执行
+                }
+
+            # 正常情况：已经有 chat 调用，可以结束
             return {
                 "todo_status": "step_done",
                 "has_tool_use": False,
@@ -1252,7 +1413,7 @@ def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callbac
                 False,
             )
             try:
-                outcome = future.result(timeout=45)
+                outcome = future.result(timeout=300)
             except FutureTimeoutError:
                 future.cancel()
                 outcome = {
@@ -1262,8 +1423,8 @@ def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callbac
                     "produced_user_reply": False,
                     "exit_info": {
                         "code": "subgraph_timeout",
-                        "message": "explore_agent 子图执行超时",
-                        "details": {"agent_type": "explore_agent", "timeout_seconds": 45},
+                        "message": "explore_agent 子图执行超时（300秒）",
+                        "details": {"agent_type": "explore_agent", "timeout_seconds": 300},
                     },
                 }
         if outcome.get("status") == "failed":
@@ -1318,7 +1479,7 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
                 False,
             )
             try:
-                outcome = future.result(timeout=45)
+                outcome = future.result(timeout=300)
             except FutureTimeoutError:
                 future.cancel()
                 outcome = {
@@ -1328,8 +1489,8 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
                     "produced_user_reply": False,
                     "exit_info": {
                         "code": "subgraph_timeout",
-                        "message": "review_agent 子图执行超时",
-                        "details": {"agent_type": "review_agent", "timeout_seconds": 45},
+                        "message": "review_agent 子图执行超时（300秒）",
+                        "details": {"agent_type": "review_agent", "timeout_seconds": 300},
                     },
                 }
         if outcome.get("status") == "failed":
@@ -1799,21 +1960,43 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
         console.step("执行节点", "无", "没有任务可执行")
         console.decision_box("done", "没有任务可执行，执行完成")
 
+        # 当 pending_tools 为空时，返回 final_reply 以打破循环
+        # 否则如果没有 final_reply，路由函数会继续循环
         return {
             "pending_tools": [],
             "in_plan_mode": False,
             "execution_mode": None,
-            "has_tool_use": False
+            "has_tool_use": False,
+            # 添加 final_reply 防止空状态循环
+            "final_reply": state.get("last_tool_result") or "任务执行完成",
         }
     
     return execute_node
 
 
 def route_after_todo_review(_state: AgentState) -> str:
+    # 防止 execute 返回空状态后循环回到 decide
+    # 如果 iteration_count 已经很高，应该终止
+    iteration_count = _state.get("iteration_count", 0) or 0
+    max_iterations = _state.get("max_iterations", 10) or 10
+    if iteration_count >= max_iterations:
+        return "error_summary"
     return "decide"
 
 
 def route_after_execute(state: AgentState) -> str:
+    # ===== 【关键修复】前置迭代次数检查 =====
+    iteration_count = state.get("iteration_count", 0) or 0
+    max_iterations = state.get("max_iterations", 10) or 10
+    if iteration_count >= max_iterations:
+        return "error_summary"
+
+    # ===== 安全保护：防止无限循环 =====
+    # 1. 检查决策错误次数
+    decision_error_count = state.get("decision_error_count", 0) or 0
+    if decision_error_count >= 3:
+        return "error_summary"
+
     if state.get("final_reply"):
         return "done"
 
@@ -1922,11 +2105,17 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         message_context=message_context,
     ))
 
+    graph.add_node("error_summary", director_base._create_error_summary_node(
+        llm_service=llm_service,
+        message_context=message_context,
+    ))
+
     graph.add_conditional_edges("decide", check_state_v3, {
         "analyze": "analyze",
         "decide": "decide",
         "execute": "execute",
-        "done": END
+        "done": END,
+        "error_summary": "error_summary"
     })
 
     graph.add_conditional_edges("execute", route_after_execute, {
@@ -1941,9 +2130,14 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         "decide": "decide",
     })
 
+    graph.add_edge("error_summary", END)
+
     graph.add_conditional_edges("plan", lambda s: END, {END: END})
 
-    return graph.compile()
+    return graph.compile(
+        interrupt_before=None,
+        debug=False,
+    )
 
 
 def run_graph_v3(

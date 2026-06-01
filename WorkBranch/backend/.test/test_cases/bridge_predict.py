@@ -211,8 +211,9 @@ def analyze_grade_in_prediction(text: str) -> Optional[Dict]:
     if not bci_value:
         # 通用 BCI 提取模式
         general_bci_patterns = [
-            r'BCI[值\s：:＝=：]*(\d{2}\.?\d*)',  # BCI:93.5
+            r'BCI[值\s：:＝=：为]*(\d{2}\.?\d*)',  # BCI:93.5, BCI值93.5, BCI值为93.5
             r'BCI\s*[为是]+\s*(\d{2}\.?\d*)',  # BCI为93.5
+            r'BCI[值为]\s*(\d{2}\.?\d*)',  # BCI值为93.5, BCI为93.5
             r'(\d{2}\.?\d*)\s*级',  # 93.5级
             r'技术状况指数[为是：:：]*(\d{2}\.?\d*)',
         ]
@@ -267,6 +268,38 @@ def analyze_grade_in_prediction(text: str) -> Optional[Dict]:
                 result["grade"] = grade_match2.group(1)
                 result["confidence"] = "medium"
                 result["source"] = "text_pattern"
+
+    # ============================================================
+    # 第六步：如果仍未提取到等级，尝试从 "BCI值XX级" 格式中提取
+    # 例如："89.69（B级，良好）" 或 "BCI值89.69，B级"
+    # ============================================================
+    if not result["grade"]:
+        # 匹配 BCI值XX级 或 (XX级 格式
+        grade_in_parentheses = re.search(r'[（(]\s*([A-E])级', text)
+        if grade_in_parentheses:
+            result["grade"] = grade_in_parentheses.group(1)
+            result["confidence"] = "medium"
+            result["source"] = "parentheses_pattern"
+        else:
+            # 匹配 "B级" 在数字附近的模式
+            grade_near_number = re.search(r'(\d{2}\.?\d*)[^（(]*[（(]?\s*([A-E])级', text)
+            if grade_near_number:
+                result["grade"] = grade_near_number.group(2)
+                result["confidence"] = "medium"
+                result["source"] = "near_number_pattern"
+
+    # ============================================================
+    # 第七步：特殊处理 "BCI值为89.69（B级）" 这种格式
+    # 同时提取 BCI 值和等级
+    # ============================================================
+    bci_with_grade = re.search(r'BCI[值为\s]*(\d{2}\.?\d*)[^）)]*[（(]\s*([A-E])级', text)
+    if bci_with_grade:
+        if not result["bci"]:
+            result["bci"] = float(bci_with_grade.group(1))
+        if not result["grade"]:
+            result["grade"] = bci_with_grade.group(2)
+            result["confidence"] = "high"
+            result["source"] = "bci_grade_combined"
 
     return result
 
