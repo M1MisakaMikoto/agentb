@@ -1,3 +1,5 @@
+import os
+
 from data.file_storage_system import FileStorageSystem
 
 
@@ -135,6 +137,52 @@ DEFAULT_SETTINGS_METADATA = {
     }
 }
 
+ENV_SETTING_MAPPINGS = {
+    "mysql:host": ("MYSQL_HOST", str),
+    "mysql:port": ("MYSQL_PORT", int),
+    "mysql:user": ("MYSQL_USER", str),
+    "mysql:password": ("MYSQL_PASSWORD", str),
+    "mysql:database": ("MYSQL_DATABASE", str),
+    "llm:api_key": ("LLM_API_KEY", str),
+    "llm:base_url": ("LLM_BASE_URL", str),
+    "llm:model": ("LLM_MODEL", str),
+    "llm:temperature": ("LLM_TEMPERATURE", float),
+    "llm:max_tokens": ("LLM_MAX_TOKENS", int),
+    "agent_tools:sql:default_database": ("AGENT_SQL_DEFAULT_DATABASE", str),
+    "agent_tools:sql:databases:BTManager:host": ("AGENT_SQL_BT_HOST", str),
+    "agent_tools:sql:databases:BTManager:port": ("AGENT_SQL_BT_PORT", int),
+    "agent_tools:sql:databases:BTManager:user": ("AGENT_SQL_BT_USER", str),
+    "agent_tools:sql:databases:BTManager:password": ("AGENT_SQL_BT_PASSWORD", str),
+}
+
+
+def _cast_env_value(raw_value: str, caster):
+    if caster is bool:
+        return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+    return caster(raw_value)
+
+
+def _set_nested_value(target: dict, key: str, value) -> None:
+    parts = key.split(":")
+    node = target
+    for part in parts[:-1]:
+        child = node.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            node[part] = child
+        node = child
+    node[parts[-1]] = value
+
+
+def _apply_env_overrides(current: dict) -> dict:
+    merged = dict(current)
+    for key, (env_name, caster) in ENV_SETTING_MAPPINGS.items():
+        raw_value = os.getenv(env_name)
+        if raw_value is None or raw_value == "":
+            continue
+        _set_nested_value(merged, key, _cast_env_value(raw_value, caster))
+    return merged
+
 
 class SettingsService:
     """设置服务层：解析配置文件并对外提供读取与修改接口。"""
@@ -149,7 +197,7 @@ class SettingsService:
     def _reload(self):
         data = self._fs.read_settings()
         merged, changed = _merge_missing_defaults(DEFAULT_SETTINGS, data)
-        self._data = merged
+        self._data = _apply_env_overrides(merged)
         if changed:
             self._persist()
 

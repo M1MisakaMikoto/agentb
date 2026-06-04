@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  agentb-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentb-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      GUNICORN_BIND: 0.0.0.0:8000
+      GUNICORN_WORKERS: 2
+      GUNICORN_LOG_LEVEL: info
+    volumes:
+      - ./logs:/app/logs
+      - ./workspaces:/app/workspaces
+      - ./WorkBranch/backend/data:/app/WorkBranch/backend/data
+      - ./setting.json:/app/setting.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
