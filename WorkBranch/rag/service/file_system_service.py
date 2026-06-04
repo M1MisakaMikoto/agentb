@@ -66,6 +66,20 @@ class FileSystemService:
             "content": content,
         }
 
+    def read_file_bytes(self, path: str) -> dict[str, Any]:
+        target = self._resolve_under_root(path)
+        if not target.exists():
+            raise FileNotFoundError("File not found")
+        if not target.is_file():
+            raise IsADirectoryError("Path is not a file")
+        content = target.read_bytes()
+        return {
+            "path": self._to_rel(target),
+            "name": target.name,
+            "size": len(content),
+            "content": content,
+        }
+
     def create_file(self, path: str, item_type: Literal["file", "dir"], content: str, overwrite: bool) -> dict[str, Any]:
         target = self._resolve_under_root(path)
         if target.exists() and not overwrite:
