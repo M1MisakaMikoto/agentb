@@ -3,9 +3,10 @@
 import hashlib
 import mimetypes
 from pathlib import Path
+from urllib.parse import quote
 from typing import Literal, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 
 from rag.DAO.file_meta_dao import FileMetaDAO
@@ -32,6 +33,13 @@ from rag.model.vo.file.DocumentCategoryBindVO import DocumentCategoryBindVO
 from rag.model.vo.file.DocumentUploadVO import DocumentUploadVO
 from rag.model.vo.file.IdResultVO import IdResultVO
 from rag.model.vo.file.KnowledgeBaseMutationVO import KnowledgeBaseMutationVO
+from rag.service.doc_convert_service import (
+    DOCX_MIME,
+    DocConvertError,
+    convert_doc_bytes_to_docx,
+    docx_display_name,
+    is_legacy_doc,
+)
 from rag.service.document_delete_service import DocumentDeleteService
 from rag.service.file_system_service import FileSystemService
 from rag.service.ingestion import IngestionService
@@ -221,17 +229,31 @@ async def upload_document(
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="File too large (max 100 MB)")
     mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
+    display_name = file.filename or "unnamed"
+    converted_from_doc = False
+
+    if is_legacy_doc(display_name, mime):
+        try:
+            content = convert_doc_bytes_to_docx(content, display_name)
+            display_name = docx_display_name(display_name)
+            mime = DOCX_MIME
+            converted_from_doc = True
+            LOGGER.info("upload_doc_converted display_name=%s size_bytes=%s", display_name, len(content))
+        except DocConvertError as exc:
+            LOGGER.warning("upload_doc_convert_failed filename=%s error=%s", file.filename, exc)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     size = len(content)
     hash_sha = _sha256_bytes(content)
-    display_name = file.filename or "unnamed"
     LOGGER.info(
-        "upload_received filename=%s category_id=%s kb_id=%s size_bytes=%s mime=%s sha256=%s",
+        "upload_received filename=%s category_id=%s kb_id=%s size_bytes=%s mime=%s sha256=%s converted_from_doc=%s",
         display_name,
         category_id,
         kb_id,
         size,
         mime,
         hash_sha,
+        converted_from_doc,
     )
 
     try:
@@ -431,16 +453,108 @@ def list_files(path: str = Query(default="", description="Relative directory pat
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.get("/api/file", deprecated=True)
+def _deprecation_headers() -> dict[str, str]:
+    return {
+        "Deprecation": "true",
+        "Sunset": "Mon, 30 Jun 2026 00:00:00 GMT",
+        "Link": '</rag/api/documents/{document_id}/file>; rel="successor-version"',
+    }
+
+
+def _media_type_for_binary_download(filename: str) -> str:
+    lower = filename.lower()
+    if lower.endswith(".docx"):
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed or "application/octet-stream"
+
+
+# 这些扩展名不能安全放进 JSON 字符串（read_text 会破坏字节），始终返回原始 body。
+_RAW_BODY_SUFFIXES: frozenset[str] = frozenset(
+    {
+        ".docx",
+        ".xlsx",
+        ".pptx",
+        ".pdf",
+        ".zip",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".ico",
+        ".doc",
+        ".xls",
+        ".ppt",
+        ".mp4",
+        ".mp3",
+        ".wav",
+        ".ogg",
+        ".wasm",
+        ".7z",
+        ".rar",
+    }
+)
+
+
+def _path_requires_raw_bytes(path: str) -> bool:
+    suffix = Path(path.replace("\\", "/").rstrip("/")).suffix.lower()
+    return suffix in _RAW_BODY_SUFFIXES
+
+
+def _quoted_string_token(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _content_disposition_attachment(filename: str) -> str:
+    """RFC 6266: latin-1 filename= + UTF-8 filename* so Starlette can encode headers."""
+    ext = Path(filename).suffix
+    try:
+        filename.encode("latin-1")
+        return f'attachment; filename="{_quoted_string_token(filename)}"'
+    except UnicodeEncodeError:
+        ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").strip() or "download"
+        if ext and not ascii_fallback.lower().endswith(ext.lower()):
+            ascii_fallback = f"{ascii_fallback}{ext}"
+        star = quote(filename, safe="")
+        return (
+            f'attachment; filename="{_quoted_string_token(ascii_fallback)}"; '
+            f"filename*=UTF-8''{star}"
+        )
+
+
+@router.get("/api/file", deprecated=True, response_model=None)
 def read_file(
+    request: Request,
     response: Response,
     path: str = Query(..., description="Relative file path"),
-) -> dict:
-    response.headers["Deprecation"] = "true"
-    response.headers["Sunset"] = "Mon, 30 Jun 2026 00:00:00 GMT"
-    response.headers["Link"] = '</rag/api/documents/{document_id}/file>; rel="successor-version"'
+) -> dict | Response:
     LOGGER.warning("deprecated_api_used endpoint=/rag/api/file path=%s", path)
+    accept = request.headers.get("accept", "")
+    wants_octet_stream = "application/octet-stream" in accept
+    serve_raw = wants_octet_stream or _path_requires_raw_bytes(path)
     try:
+        if serve_raw:
+            payload = FILE_SYSTEM_SERVICE.read_file_bytes(path=path)
+            body: bytes = payload["content"]
+            name: str = payload["name"]
+            if is_legacy_doc(name):
+                try:
+                    body = convert_doc_bytes_to_docx(body, name)
+                    name = docx_display_name(name)
+                    LOGGER.info("read_file_doc_converted path=%s out_name=%s", path, name)
+                except DocConvertError as exc:
+                    LOGGER.warning("read_file_doc_convert_failed path=%s error=%s", path, exc)
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+            media_type = _media_type_for_binary_download(name)
+            headers = {
+                **_deprecation_headers(),
+                "Content-Disposition": _content_disposition_attachment(name),
+            }
+            return Response(content=body, media_type=media_type, headers=headers)
+        for key, value in _deprecation_headers().items():
+            response.headers[key] = value
         payload = FILE_SYSTEM_SERVICE.read_file(path=path)
         return FILE_RESPONSE_ASSEMBLER.to_read_vo(payload).model_dump()
     except FileNotFoundError as exc:
