@@ -23,7 +23,7 @@ class StreamState:
 class HybridMessageQueue:
     """混合消息队列：内存实时推送 + SQLite持久化（断点续传）"""
 
-    def __init__(self, db_path: str = "data/mq.db", max_size: int = 1000):
+    def __init__(self, db_path: str = "data/db/mq.db", max_size: int = 1000):
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._max_size = max_size

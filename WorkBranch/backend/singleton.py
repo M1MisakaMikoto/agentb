@@ -111,7 +111,7 @@ def get_message_queue() -> MessageQueue:
     try:
         db_path = settings.get("mq:db_path")
     except KeyError:
-        db_path = "data/mq.db"
+        db_path = "data/db/mq.db"
     
     try:
         max_size = settings.get("mq:max_size")

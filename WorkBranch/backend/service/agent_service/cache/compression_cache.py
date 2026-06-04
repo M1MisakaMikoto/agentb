@@ -71,7 +71,7 @@ class CompressionCache:
         )
         
         self.l2_cache = SQLiteCacheBackend(
-            db_path="data/compression_cache.db"
+            db_path="data/db/compression_cache.db"
         )
         
         self.invalidation_manager = CacheInvalidationManager(

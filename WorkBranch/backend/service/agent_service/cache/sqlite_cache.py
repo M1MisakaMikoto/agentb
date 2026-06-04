@@ -9,7 +9,7 @@ import os
 class SQLiteCacheBackend:
     """SQLite持久化缓存"""
     
-    def __init__(self, db_path: str = "data/compression_cache.db"):
+    def __init__(self, db_path: str = "data/db/compression_cache.db"):
         self.db_path = db_path
         self._lock = threading.RLock()
         
