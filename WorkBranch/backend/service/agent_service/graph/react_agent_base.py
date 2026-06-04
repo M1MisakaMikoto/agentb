@@ -518,21 +518,56 @@ class ReActAgentBase:
             error_type = state.get("error_summary_type", "unknown")
             tool_history = state.get("tool_history", []) or []
             iteration_count = state.get("iteration_count", 0) or 0
+            max_iterations = state.get("max_iterations", 10) or 10
+            decision_error_count = state.get("decision_error_count", 0) or 0
             user_message = state.get("user_message") or ""
-            
+            last_tool_name = state.get("last_tool_name")
+            last_tool_result = state.get("last_tool_result") or ""
+            pending_tools = state.get("pending_tools") or []
+
+            # ===== 输出详细的错误原因 =====
+            console.warning("=" * 60)
+            console.warning(f"[error_summary] ⚠️ 进入错误总结节点")
+            console.warning(f"  错误类型: {error_type}")
+            console.warning(f"  迭代次数: {iteration_count}/{max_iterations}")
+            console.warning(f"  决策错误次数: {decision_error_count}")
+            console.warning(f"  待执行工具: {len(pending_tools)} 个")
+            console.warning(f"  工具历史: {len(tool_history)} 条")
+            if last_tool_name:
+                console.warning(f"  最后执行工具: {last_tool_name}")
+                console.warning(f"  最后工具结果: {str(last_tool_result)[:200]}...")
+            console.warning("=" * 60)
+
+            # 构建详细的状态摘要
+            state_summary = f"""
+## 错误摘要
+- 错误类型: {error_type}
+- 触发原因: {
+    "迭代次数超限" if error_type == "max_iterations" else
+    "决策连续失败" if error_type == "decision_repeated_failure" else
+    "检测到循环/卡死" if "loop" in str(error_type).lower() else
+    error_type
+}
+- 迭代次数: {iteration_count}/{max_iterations}
+- 决策错误次数: {decision_error_count}
+- 待执行工具数量: {len(pending_tools)}
+"""
+
             summary_prompt = f"""【任务执行异常终止 - 需要总结报告】
 
 错误类型: {error_type}
-执行轮次: {iteration_count}
+执行轮次: {iteration_count}/{max_iterations}
 原始任务: {user_message}
+{state_summary}
 
 【工具调用历史】(共{len(tool_history)}次)
 """
             for idx, item in enumerate(tool_history[-15:], 1):
                 tool_name = item.get("tool_name", "unknown")
                 result_preview = str(item.get("result", ""))[:200]
-                summary_prompt += f"\n{idx}. {tool_name}: {result_preview}...\n"
-            
+                error_info = " [失败]" if item.get("error") else ""
+                summary_prompt += f"\n{idx}. {tool_name}{error_info}: {result_preview}...\n"
+
             summary_prompt += """
 【要求】
 请基于以上完整的任务执行历史，生成一份面向用户的总结报告，包括：
@@ -543,7 +578,7 @@ class ReActAgentBase:
 5. 对后续处理的建议
 
 请用中文输出，语气专业但易懂。直接输出总结内容，不要添加额外格式。"""
-            
+
             if llm_service:
                 try:
                     response = llm_service.chat(
@@ -555,14 +590,16 @@ class ReActAgentBase:
                     reply = f"任务因 [{error_type}] 终止，已执行 {iteration_count} 轮。(总结生成失败: {e})"
             else:
                 reply = f"任务因 [{error_type}] 终止，已执行 {iteration_count} 轮，共调用工具 {len(tool_history)} 次。"
-            
+
+            console.warning(f"[error_summary] 生成总结: {reply[:200]}...")
+
             return {
                 "final_reply": reply,
                 "has_tool_use": False,
                 "pending_tools": [],
                 "force_error_summary": False,
             }
-        
+
         return error_summary_node
     
     def build_react_loop_graph(self, config: dict = None):
@@ -614,23 +651,114 @@ class ReActAgentBase:
         execute_routes = {"decide": "decide", "execute": "execute", "done": END, "error_summary": "error_summary"}
         if enable_todo:
             execute_routes["todo_review"] = "todo_review"
-        
+
         loop_graph.add_conditional_edges(
             "execute",
             self._route_after_execute,
             execute_routes
         )
-        
+
         if enable_todo:
             loop_graph.add_conditional_edges(
                 "todo_review",
                 lambda s: "decide",
                 {"decide": "decide"}
             )
-        
+
         loop_graph.add_edge("error_summary", END)
 
         return loop_graph.compile()
+
+    def _route_after_execute(self, state: AgentState) -> str:
+        """路由 after_execute"""
+        # ===== 防止 pending_tools 为空时进入未知状态 =====
+        if not state.get("pending_tools"):
+            console.warning("[_route_after_execute] ⚠️ pending_tools 为空，正常流程应设置 final_reply 或进入 todo_review")
+
+        if state.get("final_reply"):
+            return "done"
+
+        if state.get("force_error_summary"):
+            return "error_summary"
+
+        # ===== 【关键修复】前置迭代次数检查，防止 LangGraph 递归限制 =====
+        iteration_count = state.get("iteration_count", 0) or 0
+        max_iterations = state.get("max_iterations", 10) or 10
+        if iteration_count >= max_iterations:
+            console.warning(f"[_route_after_execute] 迭代次数已达上限 ({iteration_count}/{max_iterations})")
+            return "error_summary"
+
+        next_action = state.get("next_action") or {}
+        if next_action.get("kind") == "enter_plan":
+            return "done"
+
+        if state.get("pending_tools"):
+            return "execute"
+
+        if state.get("force_error_summary"):
+            return "error_summary"
+
+        # ===== 新增：检测工具失败循环 =====
+        # 当工具持续失败且没有进展时，强制结束循环
+        iteration_count = state.get("iteration_count", 0) or 0
+        last_tool_success = state.get("last_tool_success")
+        last_tool_name = state.get("last_tool_name")
+        last_tool_result = state.get("last_tool_result") or ""
+        tool_history = state.get("tool_history", []) or []
+
+        # 基础保护：如果迭代次数过多（超过15次）且没有pending_tools，强制终止
+        if iteration_count > 15 and not state.get("pending_tools"):
+            console.warning(f"[_route_after_execute] 迭代次数过多 ({iteration_count})")
+            return "error_summary"
+
+        # ===== 新增：检测 document 工具读取空内容循环 =====
+        if last_tool_name == "document" and last_tool_success is not False:
+            # document 工具没有报错，但检查是否返回空内容
+            result_str = str(last_tool_result) if last_tool_result else ""
+            is_empty_result = len(result_str) < 100  # 结果很短
+
+            if is_empty_result:
+                # 检查最近几次 document 读取是否都是空的
+                recent_empty_reads = 0
+                for item in reversed(tool_history[-6:]):
+                    if item.get("tool_name") == "document":
+                        result = str(item.get("result", "") or "")
+                        if len(result) < 100:
+                            recent_empty_reads += 1
+
+                # 如果连续 3 次 document 读取都返回空内容，强制终止
+                if recent_empty_reads >= 3:
+                    console.warning(f"[_route_after_execute] document 工具连续 {recent_empty_reads} 次返回空内容")
+                    return "error_summary"
+        # ===== 结束新增 =====
+
+        if last_tool_success is False and last_tool_name:
+            # 检查最近是否有连续失败
+            recent_failures = 0
+            repeated_same_tool = 0
+            last_failed_args = None
+
+            for item in reversed(tool_history[-10:]):
+                if item.get("tool_name") == last_tool_name:
+                    if item.get("result") is None or item.get("error"):
+                        recent_failures += 1
+                        current_args = item.get("args", {})
+                        if last_failed_args == current_args:
+                            repeated_same_tool += 1
+                        last_failed_args = current_args
+
+            # 如果同一工具连续失败超过3次，且参数相同，强制报告问题
+            if repeated_same_tool >= 3:
+                console.warning(f"[_route_after_execute] 工具 {last_tool_name} 连续失败 {repeated_same_tool} 次")
+                return "error_summary"
+
+            # 如果最近5次工具有4次以上失败，强制报告问题
+            if recent_failures >= 4 and len(tool_history) >= 5:
+                console.warning(f"[_route_after_execute] 最近5次工具中有 {recent_failures} 次失败")
+                return "error_summary"
+        # ===== 结束新增 =====
+
+        return "decide"
     
     def _create_decide_node(self, llm_service=None, settings_service=None, message_context=None):
         from service.agent_service.prompts.graph_prompts import generate_prompt
@@ -876,6 +1004,15 @@ class ReActAgentBase:
         
         def execute_node(state: AgentState) -> dict:
             pending_tools = state.get("pending_tools", [])
+
+            # 【关键修复】防止 pending_tools 为空时访问 [0] 导致 IndexError
+            if not pending_tools:
+                console.info("[_create_execute_node] pending_tools 为空，直接返回")
+                return {
+                    "pending_tools": [],
+                    "has_tool_use": False,
+                    "final_reply": state.get("last_tool_result") or "任务执行完成",
+                }
 
             tool_name = pending_tools[0].get("tool_name")
             tool_args = pending_tools[0].get("args", {})

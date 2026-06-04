@@ -609,24 +609,33 @@ def _build_user_message(
 
 
 def _format_tool_history(tool_history: List[dict]) -> str:
-    """格式化工具历史"""
+    """格式化工具历史 - 使用摘要而非截断"""
     if not tool_history:
         return "(暂无工具执行历史)"
+
+    def _make_summary(text: str, limit: int = 2000) -> str:
+        """简单的文本摘要"""
+        compact = " ".join(text.split())
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 3] + "..."
 
     history_lines = []
     for idx, item in enumerate(tool_history[-5:], 1):
         result_text = str(item.get("result") or "")
-        if len(result_text) > 800:
-            result_text = result_text[:800] + "...[已截断]"
+        # 使用摘要，让 LLM 看到足够的信息
+        if len(result_text) > 2000:
+            result_text = _make_summary(result_text)
         history_lines.append(f"{idx}. tool={item.get('tool_name')} args={item.get('args')} result={result_text}")
     return "\n".join(history_lines)
 
 
 def _format_last_result(last_tool_result: Optional[str]) -> str:
-    """格式化最近工具结果"""
+    """格式化最近工具结果 - 移除截断"""
     if not last_tool_result:
         return "(无)"
-    return last_tool_result if len(last_tool_result) <= 1500 else last_tool_result[:1500] + "...[已截断]"
+    # 不再截断，让 LLM 看到完整内容
+    return last_tool_result
 
 
 def _format_todo_intro(todos: List[str], current_todo_index: int) -> str:
@@ -733,8 +742,8 @@ def build_special_tool_prompt(
     if previous_results:
         context_parts.append("\n--- 之前任务的执行结果 ---")
         for i, prev_result in enumerate(previous_results, 1):
-            truncated = prev_result[:500] + "..." if len(prev_result) > 500 else prev_result
-            context_parts.append(f"任务{i}结果:\n{truncated}")
+            # 移除截断，让 LLM 看到完整结果
+            context_parts.append(f"任务{i}结果:\n{prev_result}")
         context_parts.append("---\n")
 
     context_parts.append(final_instruction)

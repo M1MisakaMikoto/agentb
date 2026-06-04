@@ -216,8 +216,9 @@ def run_agent_graph(
     import traceback
     try:
         # 【关键修复】通过 config 传递 recursion_limit，防止 LangGraph 递归限制
+        # 决策失败可能导致多次重试，需要足够的递归深度
         max_iterations = initial_state.get('max_iterations', 10) or 10
-        graph_config = {'recursion_limit': max(max_iterations + 5, 15)}  # 留出额外缓冲
+        graph_config = {'recursion_limit': max(max_iterations * 4, 50)}  # 决策重试需要更多深度
 
         with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
             f.write(f"[{timestamp}] Graph invoke with recursion_limit: {graph_config['recursion_limit']}\n")

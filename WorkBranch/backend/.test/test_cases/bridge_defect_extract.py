@@ -164,15 +164,27 @@ async def upload_report_file(api: APIClient, workspace_id: str, file_path: Path,
     try:
         upload_result = await api.upload_workspace_file(workspace_id, full_path)
 
-        if upload_result.get("success", False):
+        # 兼容 Result 格式 (code/message/data) 和 success 格式
+                # 兼容 Result 格式 (code/message/data) 和 success 格式
+        if upload_result.get("success") or upload_result.get("code") == 200:
             data = upload_result.get("data", {})
-            uploaded_files = data.get("uploaded", []) if isinstance(data, dict) else []
+            uploaded_files = data if isinstance(data, list) else []
+            if not uploaded_files:
+                uploaded_files = data.get("uploaded", []) if isinstance(data, dict) else []
+
+            print(f"DEBUG upload_result: {upload_result}")
+            print(f"DEBUG data: {data}")
+            print(f"DEBUG uploaded_files: {uploaded_files}")
 
             if uploaded_files:
-                filename = uploaded_files[0].get("name") if isinstance(uploaded_files[0], dict) else str(uploaded_files[0])
+                file_info = uploaded_files[0]
+                filename = file_info.get("original_filename") or file_info.get("saved_as") or file_info.get("name") or str(file_info)
                 if verbose:
                     print_success(f"Uploaded: {filename}")
                 return filename
+            else:
+                print_error(f"Upload result has no data: {upload_result}")
+                return None
         else:
             print_error(f"Upload failed: {upload_result.get('message', 'Unknown error')}")
             return None

@@ -478,8 +478,12 @@ def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute",
 
 
 def route_after_analyze(state: dict) -> str:
-    if state.get("pending_tools"):
+    """路由 after_analyze — 理论上 analyze 不应该返回 pending_tools"""
+    pending = state.get("pending_tools")
+    if pending:
+        console.warning(f"[route_after_analyze] ⚠️ 意外：analyze 返回了 pending_tools (count={len(pending)})")
         return "execute"
+    # 直接进入决策，不需要绕路
     return "decide"
 
 
@@ -521,6 +525,8 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
             "confidence": 0.7,
         }
 
+        # analyze 始终只做模式分析，不直接注入工具
+        # pending_tools 始终为空，由 decide 阶段决策下一步
         result = {
             "intent_analysis": intent_analysis,
             "execution_mode": mode_decision["mode"],
@@ -528,12 +534,24 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
             "suggested_tools": [],
             "has_tool_use": False,
             "final_reply": None,
-            "pending_tools": [],
+            "pending_tools": [],  # analyze 不返回工具，统一在 decide 决策
             "next_action": None,
         }
 
+        # 多模态支持：检测到图片输入时，直接在 decide 阶段注入 chat 工具
         if _should_use_native_multimodal_chat(state, _settings_service):
-            result.update(_build_native_multimodal_chat_task(state))
+            # 多模态图片输入，不需要 LLM 决策，直接生成 chat 回复
+            result["pending_tools"] = [{
+                "tool_name": "chat",
+                "args": {
+                    "description": user_message or "请直接分析这张图片并回答用户。",
+                    "multimodal_parts": state.get("current_user_message_parts") or get_last_user_message_parts(state),
+                }
+            }]
+            result["has_tool_use"] = True
+            result["mode_reason"] = "检测到图片输入，DIRECT 模式直接走原生多模态 chat"
+            console.decision_box("execute", f"执行模式: {result['execution_mode']} (多模态图片输入，跳过 LLM 决策)")
+            return result
 
         console.decision_box(
             route_after_analyze({'execution_mode': mode_decision['mode']}),
@@ -760,17 +778,19 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         kind = decision_data.get("kind")
         if kind == "step_done":
             # ===== 【关键修复】检查 Agent 是否遗漏了 chat 工具调用 =====
-            has_document_call = any(t.get("tool_name") == "document" for t in tool_history)
+            # 当返回 step_done 时，如果最后一个工具调用不是 chat，应该自动跑一次 chat 工具汇总结果
             has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
+            last_tool = tool_history[-1] if tool_history else None
+            last_tool_name = last_tool.get("tool_name") if last_tool else None
 
-            if has_document_call and not has_chat_call:
+            if not has_chat_call:
                 # Agent 完成了数据分析但忘记调用 chat 工具输出结果
                 # 强制注入 chat 工具调用
-                console.warning("[create_decide_tool_action_node] Agent 遗漏了 chat 工具调用，强制注入最终回复输出")
+                console.warning(f"[create_decide_tool_action_node] Agent 遗漏了 chat 工具调用（最后工具: {last_tool_name}），强制注入最终回复输出")
                 last_result = state.get("last_tool_result") or ""
                 return {
                     "pending_tools": [{"tool_name": "chat", "args": {
-                        "description": f"已完成桥梁检测报告的病害信息提取和分析。请以结构化格式输出最终的病害信息汇总。"
+                        "description": f"请汇总已提取的桥梁病害信息，以结构化格式输出最终结果。"
                     }}],
                     "has_tool_use": True,
                     "todo_status": None,  # 清除 step_done 状态，等待 chat 执行
@@ -1848,9 +1868,7 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                 message_context=enhanced_message_context,
             )
 
-            result_str = str(tool_result.get("result", "")) if tool_result.get("result") is not None else ""
-            if len(result_str) > 4000:
-                result_str = result_str[:4000] + "..."
+            result_str = str(tool_result.get("result", "") if tool_result.get("result") is not None else "")
             console.box("工具执行结果", result_str[:200])
 
             new_tool_history = state.get("tool_history", []) + [{
@@ -1862,7 +1880,7 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
 
             new_current_conv_msgs = list(current_conversation_messages)
             tool_error = tool_result.get("error")
-            content = f"[工具执行: {tool_name}]\n结果: {result_str[:1000]}"
+            content = f"[工具执行: {tool_name}]\n结果: {result_str}"
             if tool_error:
                 content += f"\n错误: {tool_error}"
             new_current_conv_msgs.append({
@@ -1978,16 +1996,23 @@ def route_after_todo_review(_state: AgentState) -> str:
 
 
 def route_after_execute(state: AgentState) -> str:
+    """路由 after_execute"""
+    # ===== 防止 pending_tools 为空时进入未知状态 =====
+    if not state.get("pending_tools"):
+        console.warning("[route_after_execute] ⚠️ pending_tools 为空，正常流程应设置 final_reply 或进入 todo_review")
+
     # ===== 【关键修复】前置迭代次数检查 =====
     iteration_count = state.get("iteration_count", 0) or 0
     max_iterations = state.get("max_iterations", 10) or 10
     if iteration_count >= max_iterations:
+        console.warning(f"[route_after_execute] 迭代次数已达上限 ({iteration_count}/{max_iterations})")
         return "error_summary"
 
     # ===== 安全保护：防止无限循环 =====
     # 1. 检查决策错误次数
     decision_error_count = state.get("decision_error_count", 0) or 0
     if decision_error_count >= 3:
+        console.warning(f"[route_after_execute] 决策连续失败 {decision_error_count} 次")
         return "error_summary"
 
     if state.get("final_reply"):
@@ -2127,6 +2152,8 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
 
     graph.add_conditional_edges("plan", lambda s: END, {END: END})
 
+    # ⚠️ 注意：StateGraph.compile() 不支持 recursion_limit 参数！
+    # 如需限制递归深度，应在 check_state_v3 中通过 iteration_count 检查来控制
     return graph.compile(
         interrupt_before=None,
         debug=False,
@@ -2165,10 +2192,10 @@ def run_graph_v3(
 
     graph = create_orchestrator_graph_v3(llm_service, token_callback, memory_mode, window_size, settings_service, message_context)
 
-    # 【关键修复】通过 config 传递 recursion_limit，防止 LangGraph 递归限制
-    # 预留缓冲空间：每次循环可能经过 decide -> execute -> todo_review -> decide 等多个节点
+    # ✅ 正确做法：通过 graph.invoke() 的 config 参数传递 recursion_limit
+    # ⚠️ compile() 不接受此参数！必须在 invoke() 时传入
     _max_iters = definition.meta.max_iterations
-    graph_config = {'recursion_limit': max(_max_iters + 15, 25)}  # 确保足够的递归深度
+    graph_config = {'recursion_limit': max(_max_iters * 4, 50)}
 
     final_state = graph.invoke(initial_state, config=graph_config)
 
