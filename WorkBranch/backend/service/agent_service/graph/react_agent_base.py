@@ -992,7 +992,26 @@ class ReActAgentBase:
     def _create_todo_review_node(self, llm_service=None, message_context=None):
         def step_review_node(state: AgentState) -> dict:
             todos = state.get("todos") or []
-            
+
+            # ===== 【关键修复】检测 Agent 忘记调用 chat 工具 =====
+            # 条件：有工具调用历史 + 没有 pending_tools + 没有调用过 chat
+            # 说明：Agent 已完成工作但忘记调用 chat 输出结果，强制注入 chat 工具
+            tool_history = state.get("tool_history", []) or []
+            has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
+            has_pending = bool(state.get("pending_tools"))
+
+            if tool_history and not has_chat_call and not has_pending:
+                from core.logging import console
+                console.warning("[todo_review] 检测到 Agent 遗漏了 chat 工具调用，注入 chat 工具")
+                # 【关键修复】直接返回 pending_tools，让 graph 回到 execute 节点
+                return {
+                    "pending_tools": [{"tool_name": "chat", "args": {
+                        "description": "任务分析已完成，请输出最终结果。"
+                    }}],
+                    "has_tool_use": True,
+                    "todo_status": None,
+                }
+
             if not todos:
                 return {
                     "todo_status": "continue",
@@ -1000,7 +1019,7 @@ class ReActAgentBase:
                     "pending_tools": [],
                     "todos": todos,
                 }
-            
+
             if state.get("last_tool_success") is False:
                 return {
                     "todo_status": "blocked",
@@ -1008,14 +1027,14 @@ class ReActAgentBase:
                     "pending_tools": [],
                     "todos": todos,
                 }
-            
+
             return {
                 "todo_status": state.get("todo_status") or "continue",
                 "has_tool_use": False,
                 "pending_tools": [],
                 "todos": todos,
             }
-        
+
         return step_review_node
     
     def _route_after_decide(self, state: AgentState) -> str:
@@ -1042,21 +1061,17 @@ class ReActAgentBase:
             return "error_summary"
 
         # ===== 【关键修复】检查 Agent 是否遗漏了 chat 工具调用 =====
+        # 条件：有工具调用历史 + 没有调用过 chat
+        # 说明：Agent 已完成工作但忘记调用 chat 输出结果，强制注入 chat 工具
+        # 注意：不强制要求 document 工具，因为 explore_agent 可能不需要调用 document
         tool_history = state.get("tool_history", []) or []
-        has_document_call = any(t.get("tool_name") == "document" for t in tool_history)
         has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
 
-        if has_document_call and not has_chat_call:
-            # Agent 完成了数据分析但忘记调用 chat 工具输出结果
-            # 强制注入 chat 工具调用
-            console.warning("[_route_after_decide] Agent 遗漏了 chat 工具调用，强制注入最终回复输出")
-            return {
-                "pending_tools": [{"tool_name": "chat", "args": {
-                    "description": "已完成分析并提取病害信息。请输出最终结果。"
-                }}],
-                "has_tool_use": True,
-                "todo_status": None,
-            }
+        if tool_history and not has_chat_call:
+            # Agent 完成了工作但忘记调用 chat 工具输出结果
+            # 【关键修复】返回字符串节点名，而不是字典
+            console.warning("[_route_after_decide] Agent 遗漏了 chat 工具调用，返回 execute 节点")
+            return "execute"
 
         # 特殊情况：当 prediction agent 返回 step_done 但没有 pending_tools 时
         # 检查工具历史，如果已有分析数据但还没生成报告，强制调用 document

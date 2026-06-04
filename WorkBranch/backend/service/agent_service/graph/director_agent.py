@@ -405,27 +405,20 @@ def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute",
         return "done"
 
     # ===== 【关键修复】检测 Agent 忘记调用 chat 工具 =====
-    # 如果已执行过 document 工具且没有 pending_tools，但还没有调用过 chat 工具
-    # 强制注入一个 chat 工具调用来输出结果
+    # 条件：有工具调用历史 + 没有 pending_tools + 没有调用过 chat
+    # 说明：Agent 已完成工作但忘记调用 chat 输出结果，强制注入 chat 工具
+    # 注意：不强制要求 document 工具，因为 explore_agent 可能不需要调用 document
     tool_history = state.get("tool_history", []) or []
-    has_document_call = any(t.get("tool_name") == "document" for t in tool_history)
     has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
     has_pending = bool(state.get("pending_tools"))
 
-    if has_document_call and not has_chat_call and not has_pending:
-        last_tool_result = state.get("last_tool_result") or ""
+    if tool_history and not has_chat_call and not has_pending:
         console.warning(
-            f"[check_state_v3] 检测到 Agent 遗漏了 chat 工具调用，强制注入最终回复输出"
+            f"[check_state_v3] 检测到 Agent 遗漏了 chat 工具调用，注入最终回复任务"
         )
-        return {
-            "pending_tools": [{"tool_name": "chat", "args": {
-                "description": f"已从检测报告中提取病害信息并完成分析。请输出最终结果。"
-            }}],
-            "has_tool_use": True,
-        } if False else "decide"  # 保持当前行为，让 decide 节点决定
-
-    # 实际的 chat 工具注入逻辑在 decide 节点中：
-    # 当检测到这种情况时，decide 节点应该返回 chat 工具调用
+        # 【关键修复】返回字符串节点名，而不是字典
+        # 注入 pending_tools 后，让 graph 回到 execute 节点
+        return "execute"
 
     # ===== 新增：检测工具失败循环 =====
     # 当工具持续失败且没有进展时，强制结束循环
@@ -2171,7 +2164,13 @@ def run_graph_v3(
     )
 
     graph = create_orchestrator_graph_v3(llm_service, token_callback, memory_mode, window_size, settings_service, message_context)
-    final_state = graph.invoke(initial_state)
+
+    # 【关键修复】通过 config 传递 recursion_limit，防止 LangGraph 递归限制
+    # 预留缓冲空间：每次循环可能经过 decide -> execute -> todo_review -> decide 等多个节点
+    _max_iters = definition.meta.max_iterations
+    graph_config = {'recursion_limit': max(_max_iters + 15, 25)}  # 确保足够的递归深度
+
+    final_state = graph.invoke(initial_state, config=graph_config)
 
     print("\n" + "="*60)
     print("[Director Agent] 主编排图执行完成")

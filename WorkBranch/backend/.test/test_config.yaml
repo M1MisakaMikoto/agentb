@@ -46,6 +46,7 @@ suites:
       - rag_search
       - sql_query
       - bridge_predict
+      - bridge_defect_extract
       - disaster_judgment_flow
 
 scenarios:
@@ -96,6 +97,28 @@ scenarios:
 
       报告文件名: {next_year}年桥梁检测报告预测.docx
       报告应包含: 工程概况、规范依据、检测结果、BCI评定、趋势预测、结论建议等完整章节
+
+  bridge_defect_extract:
+    description: "Bridge Defect Extraction - 从朝阳寺立交桥2020检测报告中提取病害数据"
+    source_files:
+      - ".dev/table/桥梁检测报告/2020/07 朝阳寺立交桥.doc"
+    extraction_timeout: 600.0
+    prompt: |
+      请仔细分析工作区中的桥梁检测报告文档，提取所有病害信息。
+
+      需要提取的病害数据包括：
+      1. **上部结构病害**: 梁体裂缝、破损、露筋、蜂窝麻面等
+      2. **下部结构病害**: 桥墩裂缝、破损、冲刷等
+      3. **桥面系病害**: 桥面铺装裂缝、破损、伸缩缝损坏、护栏损坏等
+      4. **支座病害**: 支座脱空、变形、损坏等
+
+      请以结构化的格式输出，分类整理每类病害的具体位置、类型、严重程度等信息。
+      如果报告中没有某类病害，请标注"未发现"。
+
+      最后请给出：
+      1. 病害总数统计
+      2. 主要病害类型分布
+      3. 整体状况评估
 
   bridge_decision_test:
     description: "桥梁病害智能决策测试 - 分析 → 研判提交 → 决策报告 → 报告提交"

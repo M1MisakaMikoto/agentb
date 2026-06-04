@@ -15,6 +15,117 @@ DOCUMENT_CHUNK_SIZE = 500
 DOCUMENT_MAX_MEMORY_MB = 300
 FORCE_GC_AFTER_CHUNKS = 3
 
+# ============================================================
+# Pandoc 转换相关
+# ============================================================
+
+def _find_pandoc() -> Optional[str]:
+    """查找 pandoc 可执行文件路径"""
+    import shutil
+
+    # 检查环境变量
+    for env_name in ["PANDOC_PATH", "PANDOC_HOME"]:
+        env_path = os.environ.get(env_name)
+        if env_path:
+            candidates = [
+                os.path.join(env_path, "pandoc.exe"),
+                os.path.join(env_path, "pandoc"),
+            ]
+            for candidate in candidates:
+                if os.path.isfile(candidate):
+                    return candidate
+
+    # 检查常见安装位置
+    common_paths = [
+        r"C:\Program Files\Pandoc\pandoc.exe",
+        r"C:\Program Files (x86)\Pandoc\pandoc.exe",
+    ]
+    for path in common_paths:
+        if os.path.isfile(path):
+            return path
+
+    # 通过 shutil.which 查找
+    pandoc_path = shutil.which("pandoc")
+    if pandoc_path:
+        return pandoc_path
+
+    return None
+
+
+def _convert_via_pandoc(content: str, output_path: str) -> bool:
+    """
+    使用 pandoc 将 Markdown 内容转换为 DOCX
+
+    Args:
+        content: Markdown 格式的文本内容
+        output_path: 输出的 docx 文件路径
+
+    Returns:
+        成功返回 True，失败返回 False
+    """
+    pandoc_path = _find_pandoc()
+    if not pandoc_path:
+        print("[PANDOC] 未找到 pandoc")
+        return False
+
+    try:
+        import subprocess
+
+        # 创建临时 Markdown 文件
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            suffix='.md',
+            encoding='utf-8',
+            delete=False
+        ) as tmp_md:
+            tmp_md.write(content)
+            tmp_md_path = tmp_md.name
+
+        try:
+            # 调用 pandoc 转换
+            cmd = [
+                pandoc_path,
+                "--standalone",           # 生成完整的文档（包含页眉页脚等）
+                "--from", "markdown",
+                "--to", "docx",
+                "-o", output_path,
+                tmp_md_path
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            )
+
+            if result.returncode == 0:
+                # 验证输出文件
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    print(f"[PANDOC] 转换成功: {output_path}")
+                    return True
+                else:
+                    print(f"[PANDOC] 转换失败：输出文件为空或不存在")
+                    return False
+            else:
+                print(f"[PANDOC] 转换失败: {result.stderr}")
+                return False
+
+        finally:
+            # 清理临时文件
+            try:
+                os.unlink(tmp_md_path)
+            except Exception:
+                pass
+
+    except subprocess.TimeoutExpired:
+        print("[PANDOC] 转换超时（120秒）")
+        return False
+    except Exception as e:
+        print(f"[PANDOC] 转换异常: {e}")
+        return False
+
 
 def _get_ext(file_path: str) -> str:
     return os.path.splitext(file_path)[1].lower()
@@ -961,20 +1072,36 @@ def _markdown_to_docx_content(markdown_text: str, doc, chunk_size: int = 500) ->
 
 
 def _docx_write(file_path: str, content: str, metadata: Optional[dict] = None) -> dict:
+    """写入 Word 文档，优先使用 pandoc 转换 Markdown，然后回退到 python-docx"""
+
+    ext = _get_ext(file_path)
+    target_path = file_path if ext == ".docx" else tempfile.mktemp(suffix=".docx")
+
+    # 尝试使用 pandoc 转换
+    print(f"[DOCX] 尝试使用 pandoc 转换 Markdown...")
+    pandoc_success = _convert_via_pandoc(content, target_path)
+
+    if pandoc_success:
+        # pandoc 转换成功
+        if ext == ".doc":
+            return _convert_docx_to_doc(target_path, file_path)
+
+        return _make_result({"message": f"Word文档创建成功: {file_path}", "method": "pandoc"})
+
+    # pandoc 不可用，回退到 python-docx
+    print(f"[DOCX] pandoc 不可用，回退到 python-docx 模式...")
+
     try:
         from docx import Document
     except ImportError:
         return _make_result(error="缺少依赖: pip install python-docx")
-    
+
     try:
         if not _check_memory_before_operation():
             return _make_result(error=f"内存不足，当前使用超过 {DOCUMENT_MAX_MEMORY_MB}MB")
-        
-        ext = _get_ext(file_path)
-        target_path = file_path if ext == ".docx" else tempfile.mktemp(suffix=".docx")
-        
+
         doc = Document()
-        
+
         meta = metadata or {}
         if meta.get("author"):
             doc.core_properties.author = meta["author"]
@@ -982,23 +1109,23 @@ def _docx_write(file_path: str, content: str, metadata: Optional[dict] = None) -
             doc.core_properties.title = meta["title"]
         if meta.get("subject"):
             doc.core_properties.subject = meta["subject"]
-        
+
         total_chars = len(content)
         print(f"[DOCX-CHUNKED] 开始分块处理文档 (总字符: {total_chars:,})")
-        
+
         chunks = list(_split_content_into_chunks(content))
         total_chunks = len(chunks)
         print(f"[DOCX-CHUNKED] 分为 {total_chunks} 个块 (每块 ~{DOCUMENT_CHUNK_SIZE} 行)")
-        
+
         processed_chunks = 0
-        
+
         for chunk_idx, chunk in enumerate(chunks):
             for line in chunk:
                 if line.strip():
                     p = doc.add_paragraph(line)
                     try:
                         from docx.shared import Cm, Pt
-                        p.paragraph_format.first_line_indent = Cm(0.74) if any('\u4e00' <= c <= '\u9fff' for c in line) else None
+                        p.paragraph_format.first_line_indent = Cm(0.74) if any('一' <= c <= '鿿' for c in line) else None
                         p.paragraph_format.line_spacing = 1.5
                         for run in p.runs:
                             run.font.name = 'SimSun'
@@ -1006,46 +1133,32 @@ def _docx_write(file_path: str, content: str, metadata: Optional[dict] = None) -
                             run.font.size = Pt(12)
                     except Exception:
                         pass
-            
+
             processed_chunks += 1
-            
+
             if processed_chunks % FORCE_GC_AFTER_CHUNKS == 0:
                 progress_pct = (processed_chunks / total_chunks) * 100
                 print(f"[DOCX-CHUNKED] 处理进度: {progress_pct:.1f}% (块 {processed_chunks}/{total_chunks})")
-                
+
                 collected = gc.collect()
                 if collected > 0:
                     print(f"[DOCX-CHUNKED] 执行 GC 回收了 {collected} 个对象")
-                
+
                 if not _check_memory_before_operation(DOCUMENT_MAX_MEMORY_MB * 1.5):
                     print(f"[WARNING] 内存持续偏高，但继续处理...")
-        
+
         print(f"[DOCX-CHUNKED] 所有块处理完成 ({processed_chunks}/{total_chunks})")
-        
+
         doc.save(target_path)
         print(f"[DOCX-CHUNKED] 文档已保存到: {target_path}")
-        
+
         del doc
         gc.collect()
-        
+
         if ext == ".doc":
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ["libreoffice", "--headless", "--convert-to", "doc",
-                     "--outdir", os.path.dirname(os.path.abspath(file_path)), target_path],
-                    capture_output=True, timeout=30
-                )
-                os.unlink(target_path)
-                if result.returncode == 0:
-                    return _make_result({"message": f"DOC文档创建成功: {file_path}"})
-                else:
-                    return _make_result(error=f"DOC转换失败: {result.stderr.decode()}")
-            except FileNotFoundError:
-                os.unlink(target_path)
-                return _make_result(error="创建DOC需要LibreOffice支持，已生成DOCX版本")
-        
-        return _make_result({"message": f"Word文档创建成功: {file_path}"})
+            return _convert_docx_to_doc(target_path, file_path)
+
+        return _make_result({"message": f"Word文档创建成功: {file_path}", "method": "python-docx"})
     except MemoryError as e:
         import traceback
         error_detail = traceback.format_exc()
@@ -1056,6 +1169,30 @@ def _docx_write(file_path: str, content: str, metadata: Optional[dict] = None) -
         error_detail = traceback.format_exc()
         print(f"[ERROR] DOCX写入失败详情:\n{error_detail}")
         return _make_result(error=f"Word文档写入失败: {str(e)}")
+
+
+def _convert_docx_to_doc(docx_path: str, target_doc_path: str) -> dict:
+    """将 DOCX 转换为 DOC 格式（使用 LibreOffice）"""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["libreoffice", "--headless", "--convert-to", "doc",
+             "--outdir", os.path.dirname(os.path.abspath(target_doc_path)), docx_path],
+            capture_output=True,
+            timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        )
+        os.unlink(docx_path)
+        if result.returncode == 0:
+            return _make_result({"message": f"DOC文档创建成功: {target_doc_path}"})
+        else:
+            return _make_result(error=f"DOC转换失败: {result.stderr}")
+    except FileNotFoundError:
+        os.unlink(docx_path)
+        return _make_result(error="创建DOC需要LibreOffice支持，已生成DOCX版本")
+    except subprocess.TimeoutExpired:
+        os.unlink(docx_path)
+        return _make_result(error="DOC转换超时")
 
 
 def _docx_append(file_path: str, content: str) -> dict:

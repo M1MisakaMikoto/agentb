@@ -16,6 +16,9 @@ from .base import (
     get_project_root,
 )
 
+# 测试用例模块
+from .bridge_defect_extract import run_defect_extraction_test, TEST_FILE_PATH, DEFECT_EXTRACTION_PROMPT
+
 __all__ = [
     "APIClient",
     "TestResult",
@@ -32,4 +35,8 @@ __all__ = [
     "collect_stream_output",
     "load_config",
     "get_project_root",
+    # 测试用例
+    "run_defect_extraction_test",
+    "TEST_FILE_PATH",
+    "DEFECT_EXTRACTION_PROMPT",
 ]
