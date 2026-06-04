@@ -201,10 +201,10 @@ async def run_workspace_upload_read_document_test(
     
     print_step(7, "Validating results...", Colors.CYAN)
     
-    if "read_document" in result.tool_calls:
-        print_success("read_document tool was called")
+    if "document" in result.tool_calls:
+        print_success("document tool was called")
     else:
-        print_error("read_document tool was not called")
+        print_error("document tool was not called")
     
     if result.response_text:
         print_success(f"Response length: {len(result.response_text)} chars")

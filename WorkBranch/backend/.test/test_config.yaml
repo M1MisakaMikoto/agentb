@@ -86,8 +86,8 @@ scenarios:
   workspace_upload_read_document:
     description: "Workspace Upload - Read Document Test"
     source_files:
-      - ".dev/table/doc/测试 PDF 文档.pdf"
-    prompt: "请读取 workspace 中的文件并总结主要内容。"
+      - ".dev/table/桥梁检测报告/2020/07 朝阳寺立交桥.doc"
+    prompt: "请仔细分析工作区中的桥梁检测报告文档，提取所有病害信息。需要提取的病害数据包括：1) 上部结构病害: 梁体裂缝、破损、露筋等 2) 下部结构病害: 桥墩裂缝、破损等 3) 桥面系病害: 桥面铺装裂缝、破损等 4) 支座病害。请以结构化格式输出，最后给出病害统计。"
 
   bridge_predict:
     description: "Bridge Inspection Report - Historical Data Prediction Test"
