@@ -157,11 +157,12 @@ def _check_loop_or_stuck(
     
     try:
         if isinstance(llm_service, LLMService):
-            response = llm_service.chat(
+            response = llm_service.chat_with_json_mode(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
             )
         else:
+            # 兜底：非 LLMService 实例走 chat 模式（保持原行为，依赖下游剥 ```json 包裹）
             response = llm_service.chat(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
@@ -694,19 +695,13 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
 
         response = None
         try:
-            response = llm_service.chat(
+            # 使用厂商 JSON Mode 强制返回纯 JSON，避免手工剥 ```json 包裹
+            response = llm_service.chat_with_json_mode(
                 messages=[{"role": "user", "content": context_prompt}],
                 system_prompt=system_prompt,
             )
             console.response_box(response)
             response_text = response.strip()
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.startswith("```"):
-                response_text = response_text[3:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-            response_text = response_text.strip()
 
             # 记录 LLM 响应
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
@@ -908,19 +903,13 @@ def create_plan_node(llm_service=None, token_callback=None, settings_service=Non
             system_prompt, messages = build_director_plan_messages(user_message)
 
             try:
-                response = llm_service.chat(messages, system_prompt=system_prompt)
+                # 使用厂商 JSON Mode 强制返回纯 JSON，避免手工剥 ```json 包裹
+                response = llm_service.chat_with_json_mode(messages, system_prompt=system_prompt)
 
                 console.response_box(response)
 
                 import json
                 response_text = response.strip()
-                if response_text.startswith("```json"):
-                    response_text = response_text[7:]
-                if response_text.startswith("```"):
-                    response_text = response_text[3:]
-                if response_text.endswith("```"):
-                    response_text = response_text[:-3]
-                response_text = response_text.strip()
 
                 data = json.loads(response_text)
                 raw_tasks = data.get("tasks") if isinstance(data, dict) else None

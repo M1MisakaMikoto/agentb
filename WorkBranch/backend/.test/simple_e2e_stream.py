@@ -299,7 +299,7 @@ async def wait_for_conversation_state(api: APIClient, conversation_id: str, expe
         data = conversation_result.get("data") or {}
         if data.get("state") == expected_state:
             return conversation_result
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(1.0)
     return conversation_result
 
 

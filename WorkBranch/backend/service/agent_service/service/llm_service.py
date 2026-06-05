@@ -339,6 +339,56 @@ class LLMService:
             console.success(f"收到响应: {len(response_text)} 字符")
         return response_text
 
+    def chat_with_json_mode(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        http_client: Any = None,
+        http_async_client: Any = None,
+    ) -> str:
+        """
+        发送聊天请求，强制厂商 JSON Mode（response_format=json_object）。
+
+        适用于期望 LLM 直接返回纯 JSON 字符串的场景（如 director agent 决策、计划生成）。
+        提示词中必须包含 "json" 关键词，否则百炼 API 会返回 400 错误：
+        'messages' must contain the word 'json' in some form, to use 'response_format' of type 'json_object'.
+
+        复用 chat() 的消息构造、日志、token 统计逻辑，仅在 LLM 实例上链一个
+        bind(response_format=...) 来注入 JSON Mode。
+        """
+        if http_client is not None or http_async_client is not None:
+            llm = self._build_llm(http_client=http_client, http_async_client=http_async_client)
+        else:
+            llm = self._get_llm()
+
+        # 关键：用 bind() 把 response_format 注入到 LLM 调用链
+        json_llm = llm.bind(response_format={"type": "json_object"})
+
+        lc_messages = self._build_lc_messages(messages, system_prompt, allow_multimodal=True)
+
+        try:
+            safe_messages = []
+            for msg in lc_messages[:20]:
+                content = msg.content if hasattr(msg, 'content') else str(msg)
+                if len(content) > 2000:
+                    content = content[:2000] + "...(截断)"
+                safe_messages.append(type(msg)(content=content))
+            console.messages_box("LLM 原始提示词(JSON Mode)", safe_messages)
+        except Exception:
+            console.info(f"LLM 原始提示词(JSON Mode): {len(lc_messages)} 条消息")
+        console.info(f"发送 JSON Mode 请求: {len(lc_messages)} 条消息")
+
+        response = self._invoke_with_logging("chat_with_json_mode", lambda: json_llm.invoke(lc_messages))
+
+        response_text = response.content if isinstance(response.content, str) else str(response.content)
+        try:
+            safe_response = response_text[:3000] + "..." if len(response_text) > 3000 else response_text
+            console.success(f"收到 JSON Mode 响应: {len(response_text)} 字符")
+            console.response_box(safe_response, char_count=len(response_text))
+        except Exception:
+            console.success(f"收到 JSON Mode 响应: {len(response_text)} 字符")
+        return response_text
+
     def chat_stream(
         self,
         messages: List[Dict[str, Any]],

@@ -863,19 +863,13 @@ class ReActAgentBase:
                 pass
 
             try:
-                response = llm_service.chat(
+                # 使用厂商 JSON Mode 强制返回纯 JSON，避免手工剥 ```json 包裹
+                response = llm_service.chat_with_json_mode(
                     messages=[{"role": "user", "content": context_prompt}],
                     system_prompt=system_prompt,
                 )
 
                 response_text = response.strip()
-                if response_text.startswith("```json"):
-                    response_text = response_text[7:]
-                if response_text.startswith("```"):
-                    response_text = response_text[3:]
-                if response_text.endswith("```"):
-                    response_text = response_text[:-3]
-                response_text = response_text.strip()
 
                 # 记录 LLM 原始响应
                 with open('llm_decision_trace.log', 'a', encoding='utf-8') as _f:
