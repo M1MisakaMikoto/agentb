@@ -311,6 +311,7 @@ def build_initial_state(
         "plan_file": plan_file,
         "plan_content": plan_content,
         "forced_execution_mode": forced_execution_mode,
+        "execution_mode": ExecutionMode.DIRECT,
         "last_tool_result": None,
         "iteration_count": 0,
         "max_iterations": max_iterations,
@@ -1900,9 +1901,6 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                     "last_tool_name": tool_name,
                     "last_tool_success": tool_success,
                     "last_tool_error": tool_error,
-                    "iteration_count": (state.get("iteration_count", 0) or 0) + 1,
-                    "current_todo_iteration_count": (state.get("current_todo_iteration_count", 0) or 0) + 1,
-                    "todo_status": "in_progress",
                     "next_action": None,
                 }
                 if tool_success and tool_name == "update_todo":
@@ -1997,23 +1995,9 @@ def route_after_todo_review(_state: AgentState) -> str:
 
 def route_after_execute(state: AgentState) -> str:
     """路由 after_execute"""
-    # ===== 防止 pending_tools 为空时进入未知状态 =====
+    # 【修复】非空检查只在开始执行前，execute 执行完后直接回到 decide
     if not state.get("pending_tools"):
-        console.warning("[route_after_execute] ⚠️ pending_tools 为空，正常流程应设置 final_reply 或进入 todo_review")
-
-    # ===== 【关键修复】前置迭代次数检查 =====
-    iteration_count = state.get("iteration_count", 0) or 0
-    max_iterations = state.get("max_iterations", 10) or 10
-    if iteration_count >= max_iterations:
-        console.warning(f"[route_after_execute] 迭代次数已达上限 ({iteration_count}/{max_iterations})")
-        return "error_summary"
-
-    # ===== 安全保护：防止无限循环 =====
-    # 1. 检查决策错误次数
-    decision_error_count = state.get("decision_error_count", 0) or 0
-    if decision_error_count >= 3:
-        console.warning(f"[route_after_execute] 决策连续失败 {decision_error_count} 次")
-        return "error_summary"
+        return "decide"
 
     if state.get("final_reply"):
         return "done"
@@ -2024,8 +2008,7 @@ def route_after_execute(state: AgentState) -> str:
 
     if state.get("pending_tools"):
         return "execute"
-    if _mode_name(state.get("execution_mode")) == "DIRECT" and not state.get("pending_tools"):
-        return "todo_review"
+
     return check_state_v3(state)
 
 

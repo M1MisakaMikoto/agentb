@@ -284,11 +284,11 @@ async def stream_conversation_message(
                 
                 while not done_received and timeout_counter < max_timeout:
                     try:
-                        print(f"[STREAM-DEBUG] Waiting for message (timeout=5s, iteration #{timeout_counter+1})...")
-                        
+                        print(f"[STREAM-DEBUG] Waiting for message (timeout=10s, iteration #{timeout_counter+1})...")
+
                         message, seq = await asyncio.wait_for(
                             subscriber.get(),
-                            timeout=5.0,
+                            timeout=10.0,
                         )
                         
                         print(f"[STREAM-DEBUG] ✓ Got message: type={message.type}, seq={seq}")
