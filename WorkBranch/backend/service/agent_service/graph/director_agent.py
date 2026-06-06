@@ -40,6 +40,11 @@ from service.agent_service.prompts.graph_prompts import (
     format_todo_prompt_block as _graph_format_todo_prompt_block,
     generate_prompt,
 )
+from service.agent_service.prompts.error_injection import (
+    ToolCallError,
+    create_json_format_error,
+    create_tool_name_error,
+)
 from service.session_service.canonical import SegmentType
 from service.agent_service.service.plan_file_service import plan_file_service
 from service.agent_service.service.workspace_service import WorkspaceService
@@ -54,6 +59,25 @@ MAX_MESSAGES = 10
 CHECK_INTERVAL = 8
 
 workspace_service = get_workspace_service()
+
+
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """计算两个字符串之间的编辑距离"""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    return previous_row[-1]
 
 
 def _build_loop_check_prompt(
@@ -667,6 +691,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             plan_content=plan_content,
             parent_chain_messages=parent_chain_messages,
             current_conversation_messages=current_conversation_messages,
+            last_error=state.get("last_error"),
         )
 
         # 在 LLM 调用前记录完整的请求上下文（确保异常时也有记录）
@@ -763,12 +788,19 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
 
             # 决策失败但还在重试范围内，返回空让 graph 继续
             console.decision_box("decide", f"决策失败，使用相同提示词重试第 {decision_error_count}/3 次")
+
+            # 设置错误信息，让下一次 prompt 注入错误提示
+            last_error = create_json_format_error(
+                original_json=response_text if 'response_text' in dir() else "",
+                parse_error=str(e)
+            )
             return {
                 "next_action": None,
                 "final_reply": None,
                 "has_tool_use": False,
                 "pending_tools": [],
                 "decision_error_count": decision_error_count,
+                "last_error": last_error,
             }
 
         kind = decision_data.get("kind")
@@ -790,6 +822,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                     }}],
                     "has_tool_use": True,
                     "todo_status": None,  # 清除 step_done 状态，等待 chat 执行
+                    "last_error": None,  # 清除错误信息
                 }
 
             # 正常情况：已经有 chat 调用，可以结束
@@ -797,6 +830,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 "todo_status": "step_done",
                 "has_tool_use": False,
                 "pending_tools": [],
+                "last_error": None,  # 清除错误信息
             }
         if kind == "blocked":
             reply = decision_data.get("reply") or "当前 todo 被阻塞"
@@ -806,6 +840,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 "final_reply": reply,
                 "has_tool_use": False,
                 "pending_tools": [],
+                "last_error": None,  # 清除错误信息
             }
 
         tool_name = decision_data.get("tool_name")
@@ -817,12 +852,21 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             retry_count = (state.get("invalid_tool_retry_count", 0) or 0) + 1
             if retry_count <= 3:
                 console.decision_box("decide", f"工具决策无效，使用相同提示词重试第 {retry_count}/3 次")
+                # 设置错误信息，让下一次 prompt 注入错误提示
+                allowed_tools = get_allowed_tools(current_agent_type, settings_service)
+                suggestions = [t for t in allowed_tools if tool_name and (t.startswith(tool_name[:3]) or _levenshtein_distance(tool_name, t) <= 3)]
+                last_error = create_tool_name_error(
+                    invalid_name=tool_name or "",
+                    suggestions=suggestions[:3],  # 最多提供3个建议
+                    original_json=json.dumps(decision_data, ensure_ascii=False)
+                )
                 return {
                     "pending_tools": [],
                     "has_tool_use": False,
                     "final_reply": None,
                     "next_action": None,
                     "invalid_tool_retry_count": retry_count,
+                    "last_error": last_error,
                 }
 
             reply = f"工具决策无效，无法继续执行：{tool_name}；原始回复：{json.dumps(decision_data, ensure_ascii=False)}"
@@ -847,6 +891,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             "has_tool_use": True,
             "final_reply": None,
             "invalid_tool_retry_count": 0,
+            "last_error": None,  # 清除错误信息
         }
 
     return decide_tool_action_node

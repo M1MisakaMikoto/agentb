@@ -4,6 +4,11 @@ from typing import Dict, Any, Optional, Callable, List
 from .agent_definition import AgentDefinition
 from core.logging import console
 from ..state import AgentState
+from service.agent_service.prompts.error_injection import (
+    ToolCallError,
+    create_json_format_error,
+    create_tool_name_error,
+)
 
 
 class MemoryManager:
@@ -152,6 +157,25 @@ class LoopController:
     def reset(self):
         self._iteration_count = 0
         self._recent_tools = []
+
+
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """计算两个字符串之间的编辑距离"""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    return previous_row[-1]
 
 
 class ReActAgentBase:
@@ -838,6 +862,7 @@ class ReActAgentBase:
                 last_tool_result=last_tool_result,
                 todos=state.get('todos') or [],
                 current_todo_index=state.get('current_todo_index', 0) or 0,
+                last_error=state.get("last_error"),
             )
             
             import datetime as _dt
@@ -908,12 +933,18 @@ class ReActAgentBase:
                         _f.write(f"[{_ts}] ⚠️ 决策尝试 #{decision_error_count} 失败，将重试：{e}\n")
                         _f.flush()
 
+                    # 设置错误信息，让下一次 prompt 注入错误提示
+                    last_error = create_json_format_error(
+                        original_json=response_text if 'response_text' in locals() else "",
+                        parse_error=str(e)
+                    )
                     return {
                         "next_action": None,
                         "final_reply": None,
                         "has_tool_use": False,
                         "pending_tools": [],
                         "decision_error_count": decision_error_count,
+                        "last_error": last_error,
                     }
 
                 # 重试次数用完，返回错误
@@ -943,12 +974,14 @@ class ReActAgentBase:
                             }}],
                             "has_tool_use": True,
                             "todo_status": None,  # 清除状态，等待 chat 执行
+                            "last_error": None,  # 清除错误信息
                         }
 
                 return {
                     "todo_status": kind,
                     "has_tool_use": False,
                     "pending_tools": [],
+                    "last_error": None,  # 清除错误信息
                 }
             
             tool_name = decision_data.get("tool_name")
@@ -958,12 +991,21 @@ class ReActAgentBase:
             if not tool_name or not is_tool_allowed(tool_name, agent_type, settings_service):
                 retry_count = (state.get("invalid_tool_retry_count", 0) or 0) + 1
                 if retry_count <= 3:
+                    # 设置错误信息，让下一次 prompt 注入错误提示
+                    allowed_tools = get_allowed_tools(agent_type, settings_service)
+                    suggestions = [t for t in allowed_tools if tool_name and (t.startswith(tool_name[:3]) or _levenshtein_distance(tool_name, t) <= 3)]
+                    last_error = create_tool_name_error(
+                        invalid_name=tool_name or "",
+                        suggestions=suggestions[:3],  # 最多提供3个建议
+                        original_json=json.dumps(decision_data, ensure_ascii=False)
+                    )
                     return {
                         "pending_tools": [],
                         "has_tool_use": False,
                         "final_reply": None,
                         "next_action": None,
                         "invalid_tool_retry_count": retry_count,
+                        "last_error": last_error,
                     }
                 reply = f"工具决策无效，无法继续执行：{tool_name}"
                 return {
@@ -972,8 +1014,9 @@ class ReActAgentBase:
                     "has_tool_use": False,
                     "pending_tools": [],
                     "invalid_tool_retry_count": retry_count,
+                    "last_error": None,  # 清除错误信息
                 }
-            
+
             pending = [{"tool_name": tool_name, "args": dict(tool_args), "reason": reason}]
             return {
                 "next_action": {
@@ -986,6 +1029,7 @@ class ReActAgentBase:
                 "has_tool_use": True,
                 "final_reply": None,
                 "invalid_tool_retry_count": 0,
+                "last_error": None,  # 清除错误信息
             }
         
         return decide_tool_action_node

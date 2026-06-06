@@ -14,6 +14,7 @@ from .templates import (
     PLAN_MODE_SYSTEM_PROMPT,
     INTENT_ANALYSIS_PROMPT,
 )
+from .error_injection import ToolCallError, format_error_for_prompt
 
 workspace_service = get_workspace_service()
 
@@ -369,6 +370,7 @@ def generate_prompt(
     plan_content: Optional[str] = None,
     parent_chain_messages: List[dict] = None,
     current_conversation_messages: List[dict] = None,
+    last_error: Optional[ToolCallError] = None,
 ) -> Tuple[str, str]:
     """
     统一的提示词生成入口（已简化：直接使用核心组件）
@@ -393,6 +395,7 @@ def generate_prompt(
         plan_content: 计划文件内容
         parent_chain_messages: 父链消息
         current_conversation_messages: 当前对话消息
+        last_error: 上一次工具调用的错误信息（如果有）
 
     Returns:
         Tuple[str, str]: (system_prompt, user_message)
@@ -468,6 +471,11 @@ def generate_prompt(
     # 6. 追加工具历史
     if tool_history_section:
         user_message_text += tool_history_section
+
+    # 7. 注入错误信息（如果存在）
+    if last_error:
+        error_prompt = format_error_for_prompt(last_error)
+        user_message_text += "\n\n" + error_prompt
 
     return system_prompt, user_message_text
 
