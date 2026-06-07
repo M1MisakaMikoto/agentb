@@ -621,11 +621,11 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         last_tool_result = state.get("last_tool_result")
         parent_chain_messages = state.get("parent_chain_messages", []) or []
         current_conversation_messages = state.get("current_conversation_messages", []) or []
-        iteration_count = state.get("iteration_count", 0) or 0
+        iteration_count = (state.get("iteration_count", 0) or 0) + 1
         max_iterations = state.get("max_iterations", 10) or 10
         todos = state.get("todos") or []
 
-        console.step(title, subtitle, f"第 {iteration_count + 1}/{max_iterations} 轮")
+        console.step(title, subtitle, f"第 {iteration_count}/{max_iterations} 轮")
 
         if iteration_count >= max_iterations:
             reply = "抱歉，当前任务在限定步骤内未完成。我已经停止继续调用工具，请你细化要求或分步执行。"
@@ -801,6 +801,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 "pending_tools": [],
                 "decision_error_count": decision_error_count,
                 "last_error": last_error,
+                "iteration_count": iteration_count,
             }
 
         kind = decision_data.get("kind")
@@ -823,6 +824,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                     "has_tool_use": True,
                     "todo_status": None,  # 清除 step_done 状态，等待 chat 执行
                     "last_error": None,  # 清除错误信息
+                    "iteration_count": iteration_count,
                 }
 
             # 正常情况：已经有 chat 调用，可以结束
@@ -831,6 +833,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 "has_tool_use": False,
                 "pending_tools": [],
                 "last_error": None,  # 清除错误信息
+                "iteration_count": iteration_count,
             }
         if kind == "blocked":
             reply = decision_data.get("reply") or "当前 todo 被阻塞"
@@ -841,6 +844,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 "has_tool_use": False,
                 "pending_tools": [],
                 "last_error": None,  # 清除错误信息
+                "iteration_count": iteration_count,
             }
 
         tool_name = decision_data.get("tool_name")
@@ -867,6 +871,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                     "next_action": None,
                     "invalid_tool_retry_count": retry_count,
                     "last_error": last_error,
+                    "iteration_count": iteration_count,
                 }
 
             reply = f"工具决策无效，无法继续执行：{tool_name}；原始回复：{json.dumps(decision_data, ensure_ascii=False)}"
@@ -877,6 +882,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 "has_tool_use": False,
                 "pending_tools": [],
                 "invalid_tool_retry_count": retry_count,
+                "iteration_count": iteration_count,
             }
 
         pending = [{"tool_name": tool_name, "args": dict(tool_args)}]
@@ -892,6 +898,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             "final_reply": None,
             "invalid_tool_retry_count": 0,
             "last_error": None,  # 清除错误信息
+            "iteration_count": iteration_count,
         }
 
     return decide_tool_action_node

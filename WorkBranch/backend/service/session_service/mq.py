@@ -317,13 +317,13 @@ class HybridMessageQueue:
 
     def subscribe(
         self, conversation_id: str, last_seq: int = 0
-    ) -> asyncio.Queue:
-        subscriber_queue: asyncio.Queue = asyncio.Queue()
+    ) -> queue.Queue:
+        subscriber_queue: queue.Queue = queue.Queue()
 
         with self._subscribers_lock:
             subscribers = self._subscribers.setdefault(conversation_id, [])
             subscribers.append(subscriber_queue)
-        
+
         print(f"[MQ] subscribe: conv={conversation_id}, last_seq={last_seq}, total_subscribers={len(subscribers)}")
 
         if last_seq > 0:
@@ -340,12 +340,12 @@ class HybridMessageQueue:
                     content=msg_data["content"],
                     metadata=msg_data["metadata"]
                 )
-                subscriber_queue.put_nowait((message, msg_data["seq"]))
+                subscriber_queue.put((message, msg_data["seq"]))
 
         return subscriber_queue
 
     def unsubscribe(
-        self, conversation_id: str, subscriber_queue: asyncio.Queue
+        self, conversation_id: str, subscriber_queue: queue.Queue
     ) -> None:
         with self._subscribers_lock:
             subscribers = self._subscribers.get(conversation_id)
@@ -363,7 +363,7 @@ class HybridMessageQueue:
         print(f"[MQ] _publish_to_subscribers: conv={message.conversation_id}, type={message.type.value}, seq={seq}, subscribers_count={len(subscribers)}")
         for subscriber in subscribers:
             try:
-                subscriber.put_nowait((message, seq))
+                subscriber.put((message, seq))
                 print(f"[MQ] Message put into subscriber queue")
             except asyncio.QueueFull:
                 print(f"[MQ] Queue full, skipping subscriber")
@@ -393,20 +393,58 @@ class HybridMessageQueue:
         )
         self._sync_bridge_thread.start()
 
+    def _do_put(self, queue: queue.Queue, message, seq) -> None:
+        """Helper function to put message into queue, called via call_soon_threadsafe"""
+        try:
+            queue.put((message, seq))
+            print(f"[MQ Bridge] _do_put succeeded")
+        except Exception as e:
+            print(f"[MQ Bridge] _do_put: error {e}")
+            pass
+
     def _sync_bridge_loop(self) -> None:
         print(f"[MQ Bridge] Starting sync bridge loop")
+
         while self._sync_bridge_running:
             try:
                 item = self._sync_queue.get(timeout=0.1)
                 message, seq = item
                 print(f"[MQ Bridge] Got message: type={message.type.value}, seq={seq}")
-                if self._main_loop and self._main_loop.is_running():
-                    print(f"[MQ Bridge] Dispatching to subscribers")
-                    self._main_loop.call_soon_threadsafe(
-                        lambda m=message, s=seq: self._main_loop.create_task(
-                            self._dispatch_to_subscribers(m, s)
+
+                # 获取订阅者列表（在线程安全的方式下）
+                with self._subscribers_lock:
+                    subscribers = list(self._subscribers.get(message.conversation_id, []))
+
+                if not subscribers:
+                    print(f"[MQ Bridge] No subscribers for conversation {message.conversation_id}")
+                    continue
+
+                print(f"[MQ Bridge] Dispatching to {len(subscribers)} subscribers")
+
+                # 优先使用 _main_loop（从测试的 async fixture 传入）
+                # 如果 _main_loop 是测试的事件循环，通知机制应该能正常工作
+                if self._main_loop:
+                    print(f"[MQ Bridge] Using _main_loop for dispatch")
+                    # 使用 call_soon_threadsafe 直接调度 put 操作到订阅者队列
+                    for i, subscriber in enumerate(subscribers):
+                        print(f"[MQ Bridge] Scheduling put for subscriber {i}")
+                        self._main_loop.call_soon_threadsafe(
+                            lambda s=subscriber, m=message, sn=seq:
+                                self._do_put(s, m, sn)
                         )
-                    )
+                    print(f"[MQ Bridge] All puts scheduled")
+                    continue
+
+                # 回退方案：直接放入队列
+                print(f"[MQ Bridge] Using fallback (direct put)")
+                for subscriber in subscribers:
+                    try:
+                        subscriber.put_nowait((message, seq))
+                        print(f"[MQ Bridge] Direct put succeeded")
+                    except Exception as e:
+                        print(f"[MQ Bridge] Direct put failed: {e}")
+                        continue
+
             except queue.Empty:
                 continue
             except Exception as e:
