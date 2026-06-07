@@ -44,6 +44,7 @@ from test_cases.mq_resume import run_mq_resume_test
 from test_cases.parallel import run_parallel_test
 from test_cases.bridge_predict import run_bridge_predict_test
 from test_cases.bridge_defect_extract import run_defect_extraction_test
+from test_cases.bridge_defect_extract_parallel import run_parallel_defect_extraction_test
 from test_cases.disaster_judgment_flow import run_disaster_judgment_test
 
 
@@ -63,6 +64,7 @@ SCENARIO_RUNNERS = {
     "parallel": run_parallel_test,
     "bridge_predict": run_bridge_predict_test,
     "bridge_defect_extract": run_defect_extraction_test,
+    "bridge_defect_extract_parallel": run_parallel_defect_extraction_test,
     "disaster_judgment_flow": run_disaster_judgment_test,
 }
 
