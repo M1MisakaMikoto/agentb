@@ -73,14 +73,12 @@ EXPLORE_AGENT_PROMPT = """你是桥梁检测报告分析专家，专注于从桥
 
 ## 决策返回格式（JSON，仅返回一种）
 
-**⚠️ 关键约束：必须完成所有步骤才能结束 ⚠️**
-
 1. 调用工具：
 ```json
 {"kind":"tool","tool_name":"工具名","tool_args":{...},"task_description":"调用原因"}
 ```
 
-2. 当前子步骤完成（仅用于子步骤内部，最终任务必须调用 chat）：
+2. 任务已完成：
 ```json
 {"kind":"step_done"}
 ```
@@ -89,16 +87,7 @@ EXPLORE_AGENT_PROMPT = """你是桥梁检测报告分析专家，专注于从桥
 ```json
 {"kind":"blocked","reply":"阻塞原因"}
 ```
-
-## 任务完成判定规则
-
-**只有同时满足以下条件才能结束任务：**
-1. ✅ 已调用 document 读取检测报告内容
-2. ✅ 已分析报告提取病害信息
-3. ✅ 已调用 chat 工具向上级汇报结果
-
-**违反规则会导致任务失败！**"""
-
+"""
 
 PLAN_AGENT_PROMPT = """你是软件架构师和规划专家，专注于设计高质量的实现方案。
 
@@ -187,7 +176,7 @@ REVIEW_AGENT_PROMPT = """你是代码审查专家，专注于发现问题和提�
   "task_description": "调用当前步骤的原因"
 }
 
-2. 当前 todo 已完成：
+2. 任务已完成：
 {
   "kind": "step_done"
 }
@@ -293,12 +282,10 @@ PREDICTION_AGENT_PROMPT = """你是桥梁技术状况评估与预测专家，基
 
 ## 决策格式（JSON，仅返回一种）
 
-**⚠️ 关键约束：必须完成所有步骤才能结束 ⚠️**
-
 1. 调用工具：
    {"kind":"tool","tool_name":"工具名","tool_args":{...},"task_description":"调用原因"}
 
-2. 当前步骤完成（仅用于子步骤内部，最终任务必须调用 document 和 chat）：
+2. 任务已完成：
    {"kind":"step_done"}
 
 3. 无法继续（缺少必要数据或遇到阻塞）：
@@ -307,10 +294,9 @@ PREDICTION_AGENT_PROMPT = """你是桥梁技术状况评估与预测专家，基
 ## 任务完成判定规则
 
 **只有同时满足以下条件才能结束任务：**
-1. ✅ 已调用 bridge_report_parser 解析历史报告
-2. ✅ 已调用 calculate_bci 或 predict_trend 进行分析
-3. ✅ 已调用 document(w) 生成预测报告文件
-4. ✅ 已调用 chat 工具向上级汇报
+1. 已调用 bridge_report_parser 解析历史报告
+2. 已调用 calculate_bci 或 predict_trend 进行分析
+3. 已调用 document(w) 生成预测报告文件
+4. 已调用 chat 工具向上级汇报结果
 
-**违反规则会导致任务失败！**
-"""
+**违反规则会导致任务失败！**"""

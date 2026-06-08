@@ -816,10 +816,23 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 # Agent 完成了数据分析但忘记调用 chat 工具输出结果
                 # 强制注入 chat 工具调用
                 console.warning(f"[create_decide_tool_action_node] Agent 遗漏了 chat 工具调用（最后工具: {last_tool_name}），强制注入最终回复输出")
-                last_result = state.get("last_tool_result") or ""
+
+                # 🔧 修复：将之前的工具执行结果注入到 chat 工具参数中
+                previous_results = [
+                    {
+                        "tool_name": item.get("tool_name", "unknown"),
+                        "result": item.get("result", ""),
+                        "reason": "",
+                        "timestamp": item.get("timestamp", ""),
+                    }
+                    for item in tool_history
+                    if item.get("result")
+                ]
+
                 return {
                     "pending_tools": [{"tool_name": "chat", "args": {
-                        "description": f"请汇总已提取的桥梁病害信息，以结构化格式输出最终结果。"
+                        "description": f"请汇总已提取的桥梁病害信息，以结构化格式输出最终结果。",
+                        "previous_results": previous_results,  # 🔧 关键修复：传递历史结果
                     }}],
                     "has_tool_use": True,
                     "todo_status": None,  # 清除 step_done 状态，等待 chat 执行
@@ -1774,52 +1787,115 @@ def _director_chat_strategy(
     config: dict,
 ) -> dict:
     """Director Agent 的 chat 工具策略
-    
-    与子Agent的差异：
-    - 支持多模态内容 (multimodal_parts)
-    - 使用 _build_direct_chat_messages() 构建消息
-    - 从 settings_service 动态获取系统提示词
+
+    🔧 关键修复：
+    - 直接使用当前 agent 的完整提示词（与 decide 节点相同）
+    - 在底部注入：当前任务是向用户回复（主题：...）
     """
     if not llm_service:
         result = f"回复任务: {task_description} (LLM 服务未配置)"
         console.info(f"结果: {result}")
         return {"result": result, "error": None}
 
-    next_task = task_description
-    if tool_args:
-        next_task = tool_args.get("next_task") or tool_args.get("description") or task_description
+    # 从 config(state) 获取完整状态
+    state = config if isinstance(config, dict) else {}
+    current_agent_type = state.get("agent_type") or "director_agent"
+    execution_mode = state.get("execution_mode")
+    is_plan_mode = _mode_name(execution_mode) == "PLAN"
 
-    console.info(f"调用 LLM 进行对话回复，任务: {next_task}")
+    # 获取主题（从 tool_args 或 task_description）
+    chat_topic = (
+        tool_args.get("description")
+        or tool_args.get("next_task")
+        or tool_args.get("topic")
+        or task_description
+        or "向用户输出回复"
+    )
+
+    # 获取与 decide 节点相同的所有上下文
+    user_message = get_last_user_message_text(state)
+    tool_history = state.get("tool_history", []) or []
+    last_tool_result = state.get("last_tool_result")
+    iteration_count = (state.get("iteration_count", 0) or 0) + 1
+    max_iterations = state.get("max_iterations", 10) or 10
+    todos = state.get("todos") or []
+
+    parent_chain_messages = message_context.get("parent_chain_messages", []) if message_context else []
+    current_conversation_messages = message_context.get("current_conversation_messages", []) if message_context else []
+
+    # 加载工具列表和 schema
+    settings_service = message_context.get("settings_service") if message_context else None
+    allowed_tools = get_allowed_tools(current_agent_type, settings_service)
+    tool_schema_prompt = _graph_build_tool_schema_prompt(allowed_tools, agent_type=current_agent_type)
+
+    # 加载 plan 内容
+    plan_content = None
+    if not is_plan_mode:
+        plan_content, _ = _load_plan_content_for_state(state)
+
+    # 使用与 decide 节点相同的 generate_prompt 构建完整提示词
+    from service.agent_service.prompts.graph_prompts import generate_prompt
+    system_prompt, context_prompt = generate_prompt(
+        agent_type=current_agent_type,
+        mode="PLAN" if is_plan_mode else "DIRECT",
+        user_message=user_message,
+        workspace_id=state['workspace_id'],
+        iteration_count=iteration_count,
+        max_iterations=max_iterations,
+        tool_schema_prompt=tool_schema_prompt,
+        tool_history=tool_history,
+        last_tool_result=last_tool_result,
+        todos=todos,
+        current_todo_index=state.get("current_todo_index", 0) or 0,
+        plan_content=plan_content,
+        parent_chain_messages=parent_chain_messages,
+        current_conversation_messages=current_conversation_messages,
+        last_error=state.get("last_error"),
+    )
+
+    # 🔧 关键：在底部注入任务主题
+    # 把当前任务追加到 context_prompt 末尾
+    task_injection = f"\n\n## 当前任务\n当前任务是向用户回复（主题：{chat_topic}）"
+
+    console.info(f"[chat] 使用完整提示词，注入主题: {chat_topic}")
+    console.info(f"[chat] tool_history: {len(tool_history)} 条, conversation: {len(current_conversation_messages)} 条")
+
     send_message = message_context.get("send_message") if message_context else None
 
     if send_message:
         send_message("", SegmentType.CHAT_START, {
-            "task_description": next_task,
+            "task_description": f"输出最终回复: {chat_topic}",
             "is_start": True
         })
 
     try:
-        parent_chain_messages = message_context.get("parent_chain_messages", []) if message_context else []
-        current_conversation_messages = message_context.get("current_conversation_messages", []) if message_context else []
-        multimodal_parts = tool_args.get("multimodal_parts")
-        
-        messages = _build_direct_chat_messages(
-            task_description=next_task,
-            parent_chain_messages=parent_chain_messages,
-            current_conversation_messages=current_conversation_messages,
-            multimodal_parts=multimodal_parts,
-            message_context=message_context,
-        )
-
         def chat_token_callback(token: str):
             if send_message:
                 send_message(token, SegmentType.CHAT_DELTA, {
-                    "task_description": next_task,
+                    "task_description": f"输出最终回复: {chat_topic}",
                     "is_delta": True
                 })
 
+        # 构建消息：使用注入任务主题的 context_prompt
+        messages = [{"role": "user", "content": context_prompt + task_injection}]
+
+        # 记录日志
+        import datetime
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"[{timestamp}] === CHAT TOOL REQUEST (DIRECTOR) ===\n")
+            f.write(f"[{timestamp}] Topic: {chat_topic}\n")
+            f.write(f"[{timestamp}] Tool history: {len(tool_history)} items\n")
+            f.write(f"\n[{'='*40} SYSTEM PROMPT {'='*40}\n")
+            f.write(system_prompt[:2000] if system_prompt else "(empty)")
+            f.write(f"\n[{'='*40} USER MESSAGE + TASK INJECTION {'='*40}\n")
+            f.write(context_prompt + task_injection)
+            f.write(f"\n{'='*80}\n")
+            f.flush()
+
         result = ""
-        chat_system_prompt = _build_chat_system_prompt(message_context.get("settings_service") if message_context else None)
+        chat_system_prompt = _build_chat_system_prompt(settings_service)
         for chunk in llm_service.chat_stream(messages, chat_system_prompt, chat_token_callback):
             result += chunk
 
@@ -1827,7 +1903,7 @@ def _director_chat_strategy(
 
         if send_message:
             send_message("", SegmentType.CHAT_END, {
-                "task_description": next_task,
+                "task_description": f"输出最终回复: {chat_topic}",
                 "is_end": True,
                 "result": result
             })
@@ -1838,7 +1914,7 @@ def _director_chat_strategy(
         console.error(f"LLM 调用失败: {e}")
         if send_message:
             send_message("", SegmentType.CHAT_END, {
-                "task_description": next_task,
+                "task_description": f"输出最终回复: {chat_topic}",
                 "is_end": True,
                 "error": str(e)
             })
@@ -2036,12 +2112,13 @@ def route_after_todo_review(_state: AgentState) -> str:
 
 def route_after_execute(state: AgentState) -> str:
     """路由 after_execute"""
-    # 【修复】非空检查只在开始执行前，execute 执行完后直接回到 decide
-    if not state.get("pending_tools"):
-        return "decide"
-
+    # 【修复】优先检查 final_reply，确保 chat 工具执行后直接结束
     if state.get("final_reply"):
         return "done"
+
+    # 检查 pending_tools
+    if not state.get("pending_tools"):
+        return "decide"
 
     next_action = state.get("next_action") or {}
     if next_action.get("kind") == "enter_plan":

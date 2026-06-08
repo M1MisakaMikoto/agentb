@@ -461,13 +461,14 @@ class ReActAgentBase:
         
         elif tool_name == "chat":
             # 使用策略模式：调用 self.chat_strategy
+            # 🔧 关键修复：传入 state 而不是 config，让 chat_strategy 能获取 tool_history
             return self.chat_strategy(
                 tool_name=tool_name,
                 tool_args=tool_args,
                 task_description=reason,
                 llm_service=llm_service,
                 message_context=message_context,
-                config=config,
+                config=state,  # 传入 state，让 chat_strategy 能获取 tool_history 等上下文
             )
         
         else:

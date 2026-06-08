@@ -750,8 +750,20 @@ def build_special_tool_prompt(
     if previous_results:
         context_parts.append("\n--- 之前任务的执行结果 ---")
         for i, prev_result in enumerate(previous_results, 1):
-            # 移除截断，让 LLM 看到完整结果
-            context_parts.append(f"任务{i}结果:\n{prev_result}")
+            # 🔧 修复：支持字典格式的 previous_results（包含 tool_name 和 result）
+            if isinstance(prev_result, dict):
+                tool_name = prev_result.get("tool_name", "unknown")
+                result = prev_result.get("result", "")
+                reason = prev_result.get("reason", "")
+                # 格式化：工具名 + 结果内容
+                formatted_result = f"[工具: {tool_name}]"
+                if reason:
+                    formatted_result += f"\n原因: {reason}"
+                formatted_result += f"\n结果:\n{result}"
+                context_parts.append(f"任务{i}结果:\n{formatted_result}")
+            else:
+                # 字符串格式，兼容旧代码
+                context_parts.append(f"任务{i}结果:\n{prev_result}")
         context_parts.append("---\n")
 
     context_parts.append(final_instruction)

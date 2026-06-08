@@ -96,8 +96,8 @@ ALL_TOOLS = {
     },
     "chat": {
         "name": "chat",
-        "description": "与用户对话工具，用于向用户输出回复",
-        "params": 'chat:{"next_task":"(回复任务描述，例如：向用户总结xxx并说明xxx)"}'
+        "description": "与用户对话工具，用于向用户输出最终回复",
+        "params": 'chat:{"description": "(必填)本次回复的主题/话题，简洁描述要回复什么)"}'
     },
     "call_explore_agent": {
         "name": "call_explore_agent",

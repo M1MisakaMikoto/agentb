@@ -172,22 +172,30 @@ class HybridMessageQueue:
             
             seq = self._get_next_seq(message.conversation_id)
             
-            is_thinking_delta = message.type.value == "thinking_delta"
-            content_preview = str(message.content)[:100] if message.content else "(empty)"
-            
+            # 判断是否为流式事件（delta类型）
+            is_streaming_delta = message.type.value.endswith("_delta")
+            full_content = str(message.content) if message.content else ""
+
             diagnostic_log_lines = []
             diagnostic_log_lines.append(f"\n[{publish_timestamp}] === 🔍 DIAGNOSTIC: MQ PUBLISH_SYNC ===")
             diagnostic_log_lines.append(f"[{publish_timestamp}] 📤 Message details:")
             diagnostic_log_lines.append(f"  - conversation_id: {message.conversation_id}")
             diagnostic_log_lines.append(f"  - seq: {seq}")
             diagnostic_log_lines.append(f"  - type: {message.type.value}")
-            diagnostic_log_lines.append(f"  - content length: {len(str(message.content)) if message.content else 0} chars")
-            diagnostic_log_lines.append(f"  - content preview: {content_preview}")
+
+            if is_streaming_delta:
+                # 流式事件：记录完整内容，禁止截断
+                diagnostic_log_lines.append(f"  - content ({len(full_content)} chars): {full_content}")
+            else:
+                # 非流式事件：保持原有格式
+                diagnostic_log_lines.append(f"  - content length: {len(full_content)} chars")
+                diagnostic_log_lines.append(f"  - content preview: {full_content[:100] if full_content else '(empty)'}")
+
             diagnostic_log_lines.append(f"  - subscribers count: {len(self._subscribers.get(message.conversation_id, []))}")
-            
-            if is_thinking_delta:
-                diagnostic_log_lines.append(f"[{publish_timestamp}] ⚠️  THINKING_DELTA DETECTED!")
-                diagnostic_log_lines.append(f"[{publish_timestamp}] 📊 This is thinking token #{seq} for this conversation")
+
+            if is_streaming_delta:
+                diagnostic_log_lines.append(f"[{publish_timestamp}] ⚠️  STREAMING_DELTA DETECTED!")
+                diagnostic_log_lines.append(f"[{publish_timestamp}] 📊 This is streaming token #{seq} for this conversation")
             
             self._save_to_sqlite(message, seq)
             self._sync_queue.put_nowait((message, seq))

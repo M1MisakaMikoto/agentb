@@ -25,6 +25,7 @@ from service.agent_service.prompts.graph_prompts import (
     CHAT_SYSTEM_PROMPT,
     THINK_SYSTEM_PROMPT,
     build_special_tool_messages,
+    generate_prompt,
 )
 from service.session_service.canonical import SegmentType
 from core.logging import console
@@ -46,6 +47,65 @@ SPECIAL_TOOLS_CONFIG = {
         "content_field": "chat_content"
     }
 }
+
+
+def _build_child_agent_chat_prompt(
+    task_description: str,
+    previous_results: list,
+    parent_chain_messages: list,
+    current_conversation_messages: list,
+    settings_service=None,
+) -> tuple:
+    """构建子 Agent 的 chat 工具提示词
+
+    使用专用的 CHAT_SYSTEM_PROMPT（用户交互代理），而非决策节点的提示词
+    """
+    from service.agent_service.prompts.graph_prompts import (
+        build_chat_system_prompt,
+        build_context_prompt,
+    )
+    from service.session_service.message_content import get_message_text
+
+    # 使用专用的CHAT_SYSTEM_PROMPT（用户交互代理）
+    system_prompt = build_chat_system_prompt(settings_service)
+
+    # 构建简化的上下文（只包含任务、结果和历史，不含工具schema）
+    context_parts = []
+
+    # 添加任务描述
+    if task_description:
+        context_parts.append(f"## 当前任务\n{task_description}\n")
+
+    # 添加之前任务的执行结果（始终显示，为空时明确标注）
+    context_parts.append("## 之前任务的执行结果")
+    if previous_results:
+        for idx, result in enumerate(previous_results, 1):
+            tool_name = result.get("tool_name", "unknown")
+            tool_result = result.get("result", "")
+            context_parts.append(f"\n任务{idx}结果 ({tool_name}):")
+            if isinstance(tool_result, dict):
+                import json
+                context_parts.append(json.dumps(tool_result, ensure_ascii=False, indent=2))
+            else:
+                context_parts.append(str(tool_result))
+    else:
+        context_parts.append("\n(无之前的执行结果)")
+
+    # 添加历史对话记录（始终显示）
+    context_parts.append("\n## 历史对话记录")
+    if parent_chain_messages or current_conversation_messages:
+        context_prompt = build_context_prompt(
+            parent_chain_messages,
+            current_conversation_messages,
+            task_description or "",
+        )
+        context_parts.append(context_prompt)
+    else:
+        context_parts.append("(无历史对话记录)")
+
+    context_prompt = "\n".join(context_parts) if context_parts else ""
+
+    return system_prompt, context_prompt
 
 
 def _build_tool_failure_result(
@@ -675,66 +735,96 @@ def _execute_chat_tool(
     message_context: dict,
     config: dict,
 ) -> dict:
-    """处理chat工具的特殊逻辑"""
-    previous_results = tool_args.get("previous_results", [])
-    parent_chain_messages = message_context.get("parent_chain_messages", []) if message_context else []
-    
+    """处理chat工具的特殊逻辑
+
+    🔧 关键修复：
+    - 直接使用当前 agent 的完整提示词
+    - 在底部注入：当前任务是向用户回复（主题：...）
+    """
     if not llm_service:
         result = f"回复任务: {task_description} (LLM 服务未配置)"
         console.info(f"结果: {result}")
         return {"result": result, "error": None}
 
-    console.info("调用 LLM 进行对话回复...")
+    # 从 config(state) 获取完整状态
+    state = config if isinstance(config, dict) else {}
+    agent_type = message_context.get("agent_type", "child_agent") if message_context else "child_agent"
+
+    # 获取主题
+    chat_topic = (
+        tool_args.get("description")
+        or tool_args.get("next_task")
+        or tool_args.get("topic")
+        or task_description
+        or "向用户输出回复"
+    )
+
+    # 从 state 获取之前工具的执行结果（ToolExecutionState 字段）
+    previous_results = state.get("previous_results", []) or []
+
+    parent_chain_messages = message_context.get("parent_chain_messages", []) if message_context else []
+    current_conversation_messages = message_context.get("current_conversation_messages", []) if message_context else []
+    settings_service = message_context.get("settings_service") if message_context else None
+
+    # 构建chat专用提示词（使用CHAT_SYSTEM_PROMPT，不含工具schema）
+    system_prompt, context_prompt = _build_child_agent_chat_prompt(
+        task_description=chat_topic,
+        previous_results=previous_results,  # 使用 ToolExecutionState 的 previous_results 字段
+        parent_chain_messages=parent_chain_messages,
+        current_conversation_messages=current_conversation_messages,
+        settings_service=settings_service,
+    )
+
+    # 🔧 关键：在底部注入任务主题
+    task_injection = f"\n\n## 当前任务\n当前任务是向用户回复（主题：{chat_topic}）"
+
+    console.info(f"[chat] 使用完整提示词，注入主题: {chat_topic}")
+    console.info(f"[chat] agent: {agent_type}, previous_results: {len(previous_results)} 条")
+
     send_message = message_context.get("send_message") if message_context else None
 
     if send_message:
         send_message("", config["start_type"], {
-            "task_description": task_description,
+            "task_description": f"输出最终回复: {chat_topic}",
             "is_start": True
         })
 
     try:
         import datetime
-        messages = build_special_tool_messages(
-            task_description=task_description,
-            previous_results=previous_results,
-            final_instruction="请向用户输出回复。",
-            parent_chain_messages=parent_chain_messages,
-        )
 
-        agent_type_for_log = message_context.get("agent_type", "child_agent") if message_context else "child_agent"
+        # 构建消息：使用注入任务主题的 context_prompt
+        messages = [{"role": "user", "content": context_prompt + task_injection}]
+
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        
+
         with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
             f.write(f"\n{'='*80}\n")
-            f.write(f"[{timestamp}] === COMPLETE PROMPT FOR LLM CALL (CHILD AGENT) ===\n")
-            f.write(f"Agent Type: {agent_type_for_log}\n")
-            f.write(f"Tool: chat\n")
-            f.write(f"Task Description: {task_description[:200]}...\n")
-            f.write(f"\n{'='*40} SYSTEM PROMPT {'='*40}\n")
-            f.write(CHAT_SYSTEM_PROMPT)
-            f.write(f"\n\n{'='*40} USER MESSAGE {'='*40}\n")
-            for msg in messages:
-                f.write(f"[{msg.get('role', 'unknown')}]: {str(msg.get('content', ''))[:3000]}\n")
+            f.write(f"[{timestamp}] === CHAT TOOL REQUEST (CHILD AGENT: {agent_type}) ===\n")
+            f.write(f"[{timestamp}] Topic: {chat_topic}\n")
+            f.write(f"[{timestamp}] Previous results: {len(previous_results)} items\n")
+            f.write(f"\n[{'='*40} SYSTEM PROMPT {'='*40}\n")
+            f.write(system_prompt[:2000] if system_prompt else "(empty)")
+            f.write(f"\n[{'='*40} USER MESSAGE + TASK INJECTION {'='*40}\n")
+            f.write(context_prompt + task_injection)
             f.write(f"\n{'='*80}\n")
             f.flush()
 
         def chat_token_callback(token: str):
             if send_message:
                 send_message(token, config["delta_type"], {
-                    "task_description": task_description,
+                    "task_description": f"输出最终回复: {chat_topic}",
                     "is_delta": True
                 })
 
         result = ""
-        for chunk in llm_service.chat_stream(messages, CHAT_SYSTEM_PROMPT, chat_token_callback):
+        for chunk in llm_service.chat_stream(messages, system_prompt, chat_token_callback):
             result += chunk
 
         console.success("对话回复完成")
 
         if send_message:
             send_message("", config["end_type"], {
-                "task_description": task_description,
+                "task_description": f"输出最终回复: {chat_topic}",
                 "is_end": True,
                 "result": result
             })
@@ -745,11 +835,11 @@ def _execute_chat_tool(
         console.error(f"LLM 调用失败: {e}")
         if send_message:
             send_message("", config["end_type"], {
-                "task_description": task_description,
+                "task_description": f"输出最终回复: {chat_topic}",
                 "is_end": True,
                 "error": str(e)
             })
-        return {"result": f"回复失败: {e}", "error": str(e)}
+        return {"result": f"对话回复失败: {e}", "error": str(e)}
 
 
 def _execute_read_file(tool_args: dict) -> dict:
