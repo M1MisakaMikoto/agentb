@@ -317,8 +317,8 @@ class HybridMessageQueue:
 
     def subscribe(
         self, conversation_id: str, last_seq: int = 0
-    ) -> queue.Queue:
-        subscriber_queue: queue.Queue = queue.Queue()
+    ) -> asyncio.Queue:
+        subscriber_queue: asyncio.Queue = asyncio.Queue()
 
         with self._subscribers_lock:
             subscribers = self._subscribers.setdefault(conversation_id, [])
@@ -340,12 +340,12 @@ class HybridMessageQueue:
                     content=msg_data["content"],
                     metadata=msg_data["metadata"]
                 )
-                subscriber_queue.put((message, msg_data["seq"]))
+                subscriber_queue.put_nowait((message, msg_data["seq"]))
 
         return subscriber_queue
 
     def unsubscribe(
-        self, conversation_id: str, subscriber_queue: queue.Queue
+        self, conversation_id: str, subscriber_queue: asyncio.Queue
     ) -> None:
         with self._subscribers_lock:
             subscribers = self._subscribers.get(conversation_id)
@@ -363,7 +363,7 @@ class HybridMessageQueue:
         print(f"[MQ] _publish_to_subscribers: conv={message.conversation_id}, type={message.type.value}, seq={seq}, subscribers_count={len(subscribers)}")
         for subscriber in subscribers:
             try:
-                subscriber.put((message, seq))
+                subscriber.put_nowait((message, seq))
                 print(f"[MQ] Message put into subscriber queue")
             except asyncio.QueueFull:
                 print(f"[MQ] Queue full, skipping subscriber")
@@ -393,10 +393,10 @@ class HybridMessageQueue:
         )
         self._sync_bridge_thread.start()
 
-    def _do_put(self, queue: queue.Queue, message, seq) -> None:
+    def _do_put(self, queue: asyncio.Queue, message, seq) -> None:
         """Helper function to put message into queue, called via call_soon_threadsafe"""
         try:
-            queue.put((message, seq))
+            queue.put_nowait((message, seq))
             print(f"[MQ Bridge] _do_put succeeded")
         except Exception as e:
             print(f"[MQ Bridge] _do_put: error {e}")
@@ -441,6 +441,9 @@ class HybridMessageQueue:
                     try:
                         subscriber.put_nowait((message, seq))
                         print(f"[MQ Bridge] Direct put succeeded")
+                    except asyncio.QueueFull as e:
+                        print(f"[MQ Bridge] Queue full, skipping: {e}")
+                        continue
                     except Exception as e:
                         print(f"[MQ Bridge] Direct put failed: {e}")
                         continue
