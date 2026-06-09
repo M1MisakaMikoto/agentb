@@ -159,6 +159,15 @@ class LLMService:
             
             raise TypeError(error_detail) from oe
         except Exception as exc:
+            # 🔴 强制打印所有异常到控制台
+            print(f"\n{'='*80}")
+            print(f"[LLM-ERROR] ❌ LLM 调用失败!")
+            print(f"[LLM-ERROR] Operation: {operation}")
+            print(f"[LLM-ERROR] Exception Type: {type(exc).__name__}")
+            print(f"[LLM-ERROR] Exception Message: {str(exc)}")
+            print(f"[LLM-ERROR] Full Traceback:\n{traceback.format_exc()}")
+            print(f"{'='*80}\n")
+
             self._log_llm_event(
                 "ERROR",
                 "llm.call.failed",
@@ -380,6 +389,18 @@ class LLMService:
 
         response = self._invoke_with_logging("chat_with_json_mode", lambda: json_llm.invoke(lc_messages))
 
+        # 🔴 强制立即打印 response 对象（调试用，定位阻塞问题）
+        print(f"\n{'='*80}")
+        print(f"[LLM-DEBUG] 收到 response 对象: {type(response)}")
+        print(f"[LLM-DEBUG] response 属性: {dir(response)}")
+        if hasattr(response, 'content'):
+            print(f"[LLM-DEBUG] response.content 类型: {type(response.content)}, 值: {repr(response.content)[:200]}")
+        if hasattr(response, 'response_metadata'):
+            print(f"[LLM-DEBUG] response_metadata: {response.response_metadata}")
+        if hasattr(response, 'id'):
+            print(f"[LLM-DEBUG] id: {response.id}")
+        print(f"{'='*80}\n")
+
         response_text = response.content if isinstance(response.content, str) else str(response.content)
 
         # ✅ 强制输出完整响应内容（无论成功失败，禁止截断）
@@ -387,8 +408,12 @@ class LLMService:
             console.warning("[LLM-ERROR] DashScope API 返回 HTTP 200 但响应体为空!")
             raise AssertionError("DashScope API 返回空响应体，无法继续处理")
 
-        console.info(f"[LLM-RAW] 收到完整响应 ({len(response_text)} 字符):")
-        console.info(response_text)  # 完整输出，不截断
+        # 🔴 直接用 print() 输出，100% 无截断（不经过任何封装层）
+        print(f"\n{'='*80}")
+        print(f"[LLM-RAW-RESPONSE] 完整响应内容 ({len(response_text)} 字符):")
+        print(f"{'='*80}")
+        print(response_text)  # 原生 print()，绝对无截断
+        print(f"{'='*80}\n")
 
         return response_text
 
