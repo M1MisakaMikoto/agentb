@@ -625,7 +625,7 @@ def _handle_decision_error(exception: Exception, response_text: str, state: Agen
             f.write(f"[{timestamp}] === ❌ DIRECTOR AGENT DECISION EXCEPTION ===\n")
             f.write(f"[{timestamp}] Exception Type: {type(exception).__name__}\n")
             f.write(f"[{timestamp}] Exception Message: {str(exception)}\n")
-            f.write(f"[{timestamp}] Response text ({len(response_text)} chars): {response_text[:1000]}...\n")
+            f.write(f"[{timestamp}] Response text ({len(response_text)} chars):\n{response_text}\n")
             f.write(f"{'='*80}\n")
             f.flush()
     except Exception:
@@ -636,14 +636,14 @@ def _handle_decision_error(exception: Exception, response_text: str, state: Agen
 
     console.warning(
         f"[DECISION-RETRY] 决策失败 #{decision_error_count}/3 - "
-        f"{type(exception).__name__}: {str(exception)[:150]}"
+        f"{type(exception).__name__}: {str(exception)}"
     )
 
     if decision_error_count >= 3:
-        # ✅ 超过3次强制终止，必须有明确提示
+        # ✅ 超过3次强制终止，必须有明确提示（完整输出，禁止截断）
         error_msg = (
-            f"LLM决策连续失败3次，最后一次错误: [{type(exception).__name__}] {str(exception)[:200]}\n"
-            f"原始响应: {response_text[:200] if response_text else '(空)'}"
+            f"LLM决策连续失败3次，最后一次错误: [{type(exception).__name__}] {str(exception)}\n"
+            f"原始响应: {response_text if response_text else '(空)'}"
         )
         console.warning(f"[DECISION-FATAL] {error_msg}")
         _emit_final_reply(error_msg, message_context)
@@ -822,7 +822,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         except json.JSONDecodeError as e:
             # ✅ 分类异常：JSON解析错误
             console.warning(f"[LLM-PARSE-ERROR] JSON解析失败 (第{decision_error_count+1}次): {e}")
-            console.warning(f"[LLM-PARSE-ERROR] 原始响应内容: {response_text[:500]}{'...(截断)' if len(response_text) > 500 else ''}")
+            console.warning(f"[LLM-PARSE-ERROR] 原始响应内容:\n{response_text}")
             _handle_decision_error(e, response_text, state, user_message, message_context, iteration_count)
 
         except httpx.TimeoutException as e:
@@ -838,7 +838,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         except Exception as e:
             # ✅ 其他未知异常
             import traceback
-            console.warning(f"[LLM-UNKNOWN-ERROR] {type(e).__name__} (第{decision_error_count+1}次): {str(e)[:200]}")
+            console.warning(f"[LLM-UNKNOWN-ERROR] {type(e).__name__} (第{decision_error_count+1}次): {str(e)}")
             console.warning(f"[LLM-UNKNOWN-ERROR] 完整堆栈:\n{traceback.format_exc()}")
             _handle_decision_error(e, response_text if 'response_text' in dir() else "", state, user_message, message_context, iteration_count)
 

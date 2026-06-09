@@ -382,17 +382,13 @@ class LLMService:
 
         response_text = response.content if isinstance(response.content, str) else str(response.content)
 
-        # ✅ 强制输出完整响应内容（无论成功失败）
+        # ✅ 强制输出完整响应内容（无论成功失败，禁止截断）
         if not response_text or not response_text.strip():
             console.warning("[LLM-ERROR] DashScope API 返回 HTTP 200 但响应体为空!")
             raise AssertionError("DashScope API 返回空响应体，无法继续处理")
 
         console.info(f"[LLM-RAW] 收到完整响应 ({len(response_text)} 字符):")
-        # 打印完整响应（超过3000字符截断但明确提示）
-        if len(response_text) > 3000:
-            console.info(f"{response_text[:3000]}... (已截断，总长度: {len(response_text)})")
-        else:
-            console.info(response_text)
+        console.info(response_text)  # 完整输出，不截断
 
         return response_text
 
