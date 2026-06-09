@@ -18,6 +18,7 @@ class StreamState:
     is_completed: bool = False
     session_id: str = ""
     workspace_id: str = ""
+    silent_mode: bool = False  # 静默模式：过滤流式delta事件，仅保留heartbeat/done/error
 
 
 class HybridMessageQueue:
@@ -169,12 +170,40 @@ class HybridMessageQueue:
         try:
             import datetime as dt
             publish_timestamp = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-            
+
             seq = self._get_next_seq(message.conversation_id)
-            
+
             # 判断是否为流式事件（delta类型）
             is_streaming_delta = message.type.value.endswith("_delta")
             full_content = str(message.content) if message.content else ""
+
+            # ===== 静默模式过滤逻辑（增强版）=====
+            with self._stream_states_lock:
+                stream_state = self._stream_states.get(message.conversation_id)
+                is_silent_mode = stream_state.silent_mode if stream_state else False
+
+            # 定义静默模式下允许通过的事件类型白名单
+            SILENT_MODE_ALLOWED_TYPES = {
+                "done",           # 最终结果（必须）
+                "error",          # 错误信息（必须）
+                "heartbeat",      # 心跳信号（保持连接）
+                "conversation_handoff",  # 会话交接（可选，视业务需求）
+            }
+
+            if is_silent_mode:
+                event_type = message.type.value
+                is_allowed = event_type in SILENT_MODE_ALLOWED_TYPES
+
+                if not is_allowed:
+                    # 静默模式：过滤所有中间过程事件（delta + start/end/state/tool等）
+                    self._log_event(
+                        "DEBUG", "mq.silent_filtered",
+                        f"Silent mode: filtered intermediate event {event_type}",
+                        conversation_id=message.conversation_id,
+                        extra={"seq": seq, "type": event_type}
+                    )
+                    return True  # 返回成功但不实际发布
+            # ====================================
 
             diagnostic_log_lines = []
             diagnostic_log_lines.append(f"\n[{publish_timestamp}] === 🔍 DIAGNOSTIC: MQ PUBLISH_SYNC ===")
@@ -196,10 +225,10 @@ class HybridMessageQueue:
             if is_streaming_delta:
                 diagnostic_log_lines.append(f"[{publish_timestamp}] ⚠️  STREAMING_DELTA DETECTED!")
                 diagnostic_log_lines.append(f"[{publish_timestamp}] 📊 This is streaming token #{seq} for this conversation")
-            
+
             self._save_to_sqlite(message, seq)
             self._sync_queue.put_nowait((message, seq))
-            
+
             print(f"[MQ] publish_sync: conv={message.conversation_id}, type={message.type.value}, seq={seq}, subscribers={len(self._subscribers.get(message.conversation_id, []))}")
 
             if message.type == SegmentType.DONE:
@@ -310,18 +339,20 @@ class HybridMessageQueue:
         }
 
     def register_stream(
-        self, conversation_id: str, session_id: str, workspace_id: str
+        self, conversation_id: str, session_id: str, workspace_id: str, silent_mode: bool = False
     ) -> None:
         with self._stream_states_lock:
             if conversation_id not in self._stream_states:
                 self._stream_states[conversation_id] = StreamState(
                     conversation_id=conversation_id,
                     session_id=session_id,
-                    workspace_id=workspace_id
+                    workspace_id=workspace_id,
+                    silent_mode=silent_mode
                 )
             else:
                 self._stream_states[conversation_id].session_id = session_id
                 self._stream_states[conversation_id].workspace_id = workspace_id
+                self._stream_states[conversation_id].silent_mode = silent_mode
 
     def subscribe(
         self, conversation_id: str, last_seq: int = 0

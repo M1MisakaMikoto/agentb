@@ -245,6 +245,7 @@ class ConversationService:
         self,
         conversation_id: str,
         on_chunk: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        silent_mode: bool = False,  # 静默模式：过滤流式delta事件
     ) -> Dict[str, Any]:
         async with self._lock:
             conv_info = self._conversations.get(conversation_id)
@@ -296,6 +297,16 @@ class ConversationService:
 
         mq = self._get_mq()
         await mq.start_consumer()
+
+        # 如果是静默模式，更新stream_state
+        if silent_mode:
+            mq.register_stream(
+                conversation_id=conv_info.conversation_id,
+                session_id=conv_info.session_id,
+                workspace_id=conv_info.workspace_id,
+                silent_mode=True
+            )
+
         subscriber = mq.subscribe(conv_info.conversation_id)
 
         messages: List[Message] = []

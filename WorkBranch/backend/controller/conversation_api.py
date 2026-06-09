@@ -179,12 +179,14 @@ async def prepare_conversation_message(
 async def stream_conversation_message(
     conversation_id: str,
     last_seq: int = 0,
+    mode: str = "interactive",  # 模式: interactive(完整流式) | silent(仅heartbeat+done)
 ) -> StreamingResponse:
-    """流式发送消息 - 支持断点续传
+    """流式发送消息 - 支持交互式/静默双模式
     
     Args:
         conversation_id: 对话ID
         last_seq: 上次接收的最后消息序号，用于断点续传
+        mode: 运行模式，interactive为默认交互式模式，silent为静默模式（过滤流式中间结果）
     """
     service = get_conversation_service()
     mq = get_message_queue()
@@ -204,21 +206,26 @@ async def stream_conversation_message(
     stream_state = mq.get_stream_state(conversation_id)
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        
+
+        # 验证mode参数
+        if mode not in ("interactive", "silent"):
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Invalid mode: {mode}. Must be interactive or silent'})}\n\n"
+            return
+
         stream_start = time.perf_counter()
         first_chunk_logged = False
         done_received = False
         timeout_counter = 0
         max_timeout = STREAM_MAX_TIMEOUT_TICKS
         subscriber = None
-        
+
         stream_logger = StreamTraceLogger.get(conversation_id)
 
         with bind_ctx(**request_ctx):
             logger.info(
                 event="stream.started",
-                msg="conversation stream started",
-                extra={"conversation_id": conversation_id, "last_seq": last_seq},
+                msg=f"conversation stream started (mode={mode})",
+                extra={"conversation_id": conversation_id, "last_seq": last_seq, "mode": mode},
             )
 
             try:
@@ -253,10 +260,12 @@ async def stream_conversation_message(
                     print(f"[DEBUG] Creating send_message task for conversation {conversation_id}, state={conversation.get('state')}")
                     logger.info(
                         event="send_message_task_creating",
-                        msg="creating send_message task",
-                        extra={"conversation_id": conversation_id, "state": conversation.get("state")},
+                        msg=f"creating send_message task (mode={mode})",
+                        extra={"conversation_id": conversation_id, "state": conversation.get("state"), "mode": mode},
                     )
-                    task = asyncio.create_task(service.send_message(conversation_id))
+                    # 根据模式传递silent_mode参数
+                    is_silent = (mode == "silent")
+                    task = asyncio.create_task(service.send_message(conversation_id, silent_mode=is_silent))
                     def task_callback(t):
                         try:
                             exc = t.exception()
