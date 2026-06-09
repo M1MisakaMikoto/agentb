@@ -601,6 +601,83 @@ def _format_todo_prompt_block(todos: List[str], current_todo_index: int) -> str:
     return _graph_format_todo_prompt_block(todos, current_todo_index)
 
 
+def _handle_decision_error(exception: Exception, response_text: str, state: AgentState,
+                          user_message: str, message_context: dict, iteration_count: int) -> dict:
+    """
+    统一处理决策异常：输出完整错误信息，支持3次重试，超过3次强制终止
+
+    Args:
+        exception: 捕获的异常对象
+        response_text: LLM原始响应文本（可能为空）
+        state: 当前graph状态
+        user_message: 用户原始消息
+        message_context: 消息上下文
+        iteration_count: 当前迭代次数
+
+    Returns:
+        graph状态更新字典（重试或终止）
+    """
+    # 记录到文件日志（保留原有逻辑）
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+    try:
+        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"[{timestamp}] === ❌ DIRECTOR AGENT DECISION EXCEPTION ===\n")
+            f.write(f"[{timestamp}] Exception Type: {type(exception).__name__}\n")
+            f.write(f"[{timestamp}] Exception Message: {str(exception)}\n")
+            f.write(f"[{timestamp}] Response text ({len(response_text)} chars): {response_text[:1000]}...\n")
+            f.write(f"{'='*80}\n")
+            f.flush()
+    except Exception:
+        pass
+
+    # 计算错误次数
+    decision_error_count = (state.get("decision_error_count", 0) or 0) + 1
+
+    console.warning(
+        f"[DECISION-RETRY] 决策失败 #{decision_error_count}/3 - "
+        f"{type(exception).__name__}: {str(exception)[:150]}"
+    )
+
+    if decision_error_count >= 3:
+        # ✅ 超过3次强制终止，必须有明确提示
+        error_msg = (
+            f"LLM决策连续失败3次，最后一次错误: [{type(exception).__name__}] {str(exception)[:200]}\n"
+            f"原始响应: {response_text[:200] if response_text else '(空)'}"
+        )
+        console.warning(f"[DECISION-FATAL] {error_msg}")
+        _emit_final_reply(error_msg, message_context)
+        return {
+            "next_action": {"kind": "reply", "reply": error_msg, "task_description": user_message},
+            "final_reply": error_msg,
+            "has_tool_use": False,
+            "pending_tools": [],
+            "force_error_summary": True,
+            "error_summary_type": "decision_repeated_failure",
+            "decision_error_count": decision_error_count,
+        }
+
+    # ✅ 重试时必须注入详细错误信息到下一次prompt
+    console.warning(
+        f"[DECISION-RETRY] 将使用相同提示词重试 (第{decision_error_count}/3次)，"
+        f"已将错误信息注入prompt上下文"
+    )
+
+    last_error = create_json_format_error(
+        original_json=response_text,
+        parse_error=f"[{type(exception).__name__}] {str(exception)}"
+    )
+    return {
+        "next_action": None,
+        "final_reply": None,
+        "has_tool_use": False,
+        "pending_tools": [],
+        "decision_error_count": decision_error_count,
+        "last_error": last_error,
+        "iteration_count": iteration_count,
+    }
+
+
 def create_decide_tool_action_node(llm_service=None, settings_service=None, message_context=None):
     def decide_tool_action_node(state: AgentState) -> dict:
         user_message = get_last_user_message_text(state)
@@ -742,67 +819,28 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 raise ValueError("LLM 返回了空响应，可能是 API 超时或模型异常")
 
             decision_data = json.loads(response_text)
+        except json.JSONDecodeError as e:
+            # ✅ 分类异常：JSON解析错误
+            console.warning(f"[LLM-PARSE-ERROR] JSON解析失败 (第{decision_error_count+1}次): {e}")
+            console.warning(f"[LLM-PARSE-ERROR] 原始响应内容: {response_text[:500]}{'...(截断)' if len(response_text) > 500 else ''}")
+            _handle_decision_error(e, response_text, state, user_message, message_context, iteration_count)
+
+        except httpx.TimeoutException as e:
+            # ✅ 分类异常：网络超时
+            console.warning(f"[LLM-NETWORK-ERROR] API调用超时 (第{decision_error_count+1}次): {e}")
+            _handle_decision_error(e, "", state, user_message, message_context, iteration_count)
+
+        except ValueError as e:
+            # ✅ 分类异常：空响应/模型异常
+            console.warning(f"[LLM-VALUE-ERROR] 响应验证失败 (第{decision_error_count+1}次): {e}")
+            _handle_decision_error(e, response_text if 'response_text' in dir() else "", state, user_message, message_context, iteration_count)
+
         except Exception as e:
+            # ✅ 其他未知异常
             import traceback
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-            try:
-                with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
-                    f.write(f"\n{'='*80}\n")
-                    f.write(f"[{timestamp}] === ❌ DIRECTOR AGENT DECISION EXCEPTION ===\n")
-                    f.write(f"[{timestamp}] Exception Type: {type(e).__name__}\n")
-                    f.write(f"[{timestamp}] Exception Message: {str(e)}\n")
-                    f.write(f"[{timestamp}] Error Code (errno): {getattr(e, 'errno', 'N/A')}\n")
-                    f.write(f"[{timestamp}] Response object: {response if 'response' in dir() else 'NOT_IN_SCOPE'}\n")
-                    f.write(f"[{timestamp}] Response text: {response_text if 'response_text' in dir() else 'NOT_IN_SCOPE'}\n")
-                    f.write(f"[{timestamp}] Full Traceback:\n{traceback.format_exc()}\n")
-                    f.write(f"{'='*80}\n")
-                    f.flush()
-            except Exception:
-                pass
-
-            # 检查是否是 JSON 解析错误（可能包含空响应）
-            error_str = str(e).lower()
-            is_json_error = 'expecting value' in error_str or 'json' in error_str or 'no response' in error_str or 'empty' in error_str
-
-            # 决策失败时尝试重试
-            decision_error_count = (state.get("decision_error_count", 0) or 0) + 1
-
-            # ===== 重要：所有错误类型都增加计数，超过3次强制终止 =====
-            console.warning(
-                f"[create_decide_tool_action_node] 决策失败 #{decision_error_count}: {type(e).__name__}: {str(e)[:200]}"
-            )
-
-            if decision_error_count >= 3:
-                # 超过3次决策失败，强制终止
-                reply = f"决策多次失败，无法继续执行任务。"
-                _emit_final_reply(reply, message_context)
-                return {
-                    "next_action": {"kind": "reply", "reply": reply, "task_description": user_message},
-                    "final_reply": reply,
-                    "has_tool_use": False,
-                    "pending_tools": [],
-                    "force_error_summary": True,
-                    "error_summary_type": "decision_repeated_failure",
-                    "decision_error_count": decision_error_count,
-                }
-
-            # 决策失败但还在重试范围内，返回空让 graph 继续
-            console.decision_box("decide", f"决策失败，使用相同提示词重试第 {decision_error_count}/3 次")
-
-            # 设置错误信息，让下一次 prompt 注入错误提示
-            last_error = create_json_format_error(
-                original_json=response_text if 'response_text' in dir() else "",
-                parse_error=str(e)
-            )
-            return {
-                "next_action": None,
-                "final_reply": None,
-                "has_tool_use": False,
-                "pending_tools": [],
-                "decision_error_count": decision_error_count,
-                "last_error": last_error,
-                "iteration_count": iteration_count,
-            }
+            console.warning(f"[LLM-UNKNOWN-ERROR] {type(e).__name__} (第{decision_error_count+1}次): {str(e)[:200]}")
+            console.warning(f"[LLM-UNKNOWN-ERROR] 完整堆栈:\n{traceback.format_exc()}")
+            _handle_decision_error(e, response_text if 'response_text' in dir() else "", state, user_message, message_context, iteration_count)
 
         kind = decision_data.get("kind")
         if kind == "step_done":

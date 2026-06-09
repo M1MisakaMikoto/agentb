@@ -381,12 +381,19 @@ class LLMService:
         response = self._invoke_with_logging("chat_with_json_mode", lambda: json_llm.invoke(lc_messages))
 
         response_text = response.content if isinstance(response.content, str) else str(response.content)
-        try:
-            safe_response = response_text[:3000] + "..." if len(response_text) > 3000 else response_text
-            console.success(f"收到 JSON Mode 响应: {len(response_text)} 字符")
-            console.response_box(safe_response, char_count=len(response_text))
-        except Exception:
-            console.success(f"收到 JSON Mode 响应: {len(response_text)} 字符")
+
+        # ✅ 强制输出完整响应内容（无论成功失败）
+        if not response_text or not response_text.strip():
+            console.warning("[LLM-ERROR] DashScope API 返回 HTTP 200 但响应体为空!")
+            raise AssertionError("DashScope API 返回空响应体，无法继续处理")
+
+        console.info(f"[LLM-RAW] 收到完整响应 ({len(response_text)} 字符):")
+        # 打印完整响应（超过3000字符截断但明确提示）
+        if len(response_text) > 3000:
+            console.info(f"{response_text[:3000]}... (已截断，总长度: {len(response_text)})")
+        else:
+            console.info(response_text)
+
         return response_text
 
     def chat_stream(
