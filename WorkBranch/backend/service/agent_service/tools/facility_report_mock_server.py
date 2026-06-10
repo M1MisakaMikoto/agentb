@@ -6,7 +6,7 @@
 默认监听: http://localhost:8001
 
 API 端点:
-1. POST /v1/file - 上传报告文件信息
+1. POST /v1/file - 上传报告文件信息（Header: X-Region-Id）
 2. POST /v1/facility/decision/report - 生成研判报告（需要先调用 file 接口）
 """
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -68,8 +68,13 @@ class FacilityReportMockHandler(BaseHTTPRequestHandler):
             self.send_error_response(400, f"JSON 解析失败: {e}")
             return
 
-        # 验证必需字段
-        required_fields = ["reportName", "userId", "facilityId", "facilityName", "reportFileUrl"]
+        # 验证必需字段（regionId 从请求头 X-Region-Id 获取）
+        region_id = self.headers.get("X-Region-Id")
+        if not region_id:
+            self.send_error_response(400, "缺少请求头: X-Region-Id")
+            return
+
+        required_fields = ["reportName", "facilityId", "facilityName", "reportFileUrl"]
         missing_fields = [f for f in required_fields if f not in data]
         if missing_fields:
             self.send_error_response(400, f"缺少必需字段: {missing_fields}")
@@ -80,7 +85,7 @@ class FacilityReportMockHandler(BaseHTTPRequestHandler):
         self._uploaded_reports[report_id] = {
             "reportId": report_id,
             "reportName": data.get("reportName"),
-            "userId": data.get("userId"),
+            "regionId": region_id,
             "facilityId": data.get("facilityId"),
             "facilityName": data.get("facilityName"),
             "reportFileUrl": data.get("reportFileUrl"),
@@ -198,8 +203,8 @@ def run_mock_server(host: str = "localhost", port: int = 8001):
 |    3. GET  /health                    (健康检查)           |
 +============================================================+
 |  测试步骤:                                                |
-|  1. 先 POST /v1/file 上传报告，获得 reportId               |
-|  2. 再 POST /v1/facility/decision/report 生成研判报告       |
+|  1. 先 POST /v1/file 上传报告（Header: X-Region-Id），获得 reportId |
+|  2. 再 POST /v1/facility/decision/report 生成研判报告            |
 +============================================================+
     """)
 

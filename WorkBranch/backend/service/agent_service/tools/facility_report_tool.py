@@ -17,7 +17,7 @@ API 流程:
     )
 
 注意:
-    - userId 会自动从当前会话上下文获取，不需要手动传入
+    - regionId 由调用方通过工具参数传入，会通过 X-Region-Id 请求头发送
     - 接口地址通过配置项 facility_report_api_url 设置，默认 http://localhost:8001
 """
 import os
@@ -168,7 +168,8 @@ def execute_submit_facility_report(
             - facilityId: 设施ID (必需)
             - facilityName: 设施名称 (必需)
             - reportFileUrl: 报告文件URL (必需)
-        message_context: 消息上下文，用于获取 userId
+            - regionId: 区域ID (必需，通过 X-Region-Id 请求头发送)
+        message_context: 消息上下文（当前未使用，保留兼容）
 
     Returns:
         包含 result 或 error 的字典
@@ -178,6 +179,7 @@ def execute_submit_facility_report(
     facility_id = tool_args.get("facilityId")
     facility_name = tool_args.get("facilityName")
     report_file_url = tool_args.get("reportFileUrl")
+    region_id = tool_args.get("regionId")
 
     # 参数校验
     if not report_name:
@@ -188,26 +190,24 @@ def execute_submit_facility_report(
         return {"result": None, "error": "缺少必需参数: facilityName (设施名称)"}
     if not report_file_url:
         return {"result": None, "error": "缺少必需参数: reportFileUrl (报告文件URL)"}
+    if not region_id:
+        return {"result": None, "error": "缺少必需参数: regionId (区域ID)"}
 
-    # 获取 userId
-    user_id = _get_user_id_from_context(message_context)
-    if not user_id:
-        logger.error("未找到 userId，无法提交设施研判报告")
-        return {"result": None, "error": "缺少 userId：当前会话未关联用户身份，无法提交设施研判报告。请确保会话通过正常登录流程创建。"}
+    # 构建请求头（regionId 通过 X-Region-Id 传递）
+    region_headers = {"X-Region-Id": str(region_id)}
 
     # 获取 API 地址
     api_url = tool_args.get("api_url") or os.environ.get("FACILITY_REPORT_API_URL") or DEFAULT_API_URL
 
     logger.info(f"[设施研判报告] 开始处理报告: {report_name}")
     logger.info(f"[设施研判报告] 设施: {facility_name} (ID: {facility_id})")
-    logger.info(f"[设施研判报告] userId: {user_id}")
+    logger.info(f"[设施研判报告] regionId: {region_id}")
     logger.info(f"[设施研判报告] API地址: {api_url}")
 
     # ========== 步骤1: 上传报告文件信息 ==========
     file_url = f"{api_url}/v1/file"
     file_request_body = {
         "reportName": report_name,
-        "userId": user_id,
         "facilityId": facility_id,
         "facilityName": facility_name,
         "reportFileUrl": report_file_url,
@@ -216,7 +216,7 @@ def execute_submit_facility_report(
     logger.info(f"[设施研判报告] 步骤1/2 - 上传报告文件信息到: {file_url}")
 
     try:
-        file_response = _send_http_request(file_url, "POST", file_request_body)
+        file_response = _send_http_request(file_url, "POST", file_request_body, headers=region_headers)
     except Exception as e:
         error_msg = f"步骤1失败 - 上传报告文件异常: {str(e)}"
         logger.error(f"[设施研判报告] {error_msg}")
@@ -242,7 +242,7 @@ def execute_submit_facility_report(
     logger.info(f"[设施研判报告] 步骤2/2 - 生成研判报告: {decision_url}")
 
     try:
-        decision_response = _send_http_request(decision_url, "POST", decision_request_body)
+        decision_response = _send_http_request(decision_url, "POST", decision_request_body, headers=region_headers)
     except Exception as e:
         error_msg = f"步骤2失败 - 生成研判报告异常: {str(e)}"
         logger.error(f"[设施研判报告] {error_msg}")
@@ -279,7 +279,7 @@ def register_facility_report_tools():
         ToolDefinition(
             name="submit_facility_report",
             description="生成设施研判报告 - 将检测报告上传后自动生成研判报告。串联 /v1/file 和 /v1/facility/decision/report 两个接口。",
-            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFileUrl":"(报告文件URL，必填)","api_url":"(API地址，可选)"}',
+            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFileUrl":"(报告文件URL，必填)","regionId":"(区域ID，必填)","api_url":"(API地址，可选)"}',
             category="facility_report",
             executor=execute_submit_facility_report
         ),
