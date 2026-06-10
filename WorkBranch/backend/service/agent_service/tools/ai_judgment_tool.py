@@ -43,7 +43,12 @@ def _get_user_id_from_context(message_context: Optional[Dict[str, Any]] = None) 
         userId 字符串，如果未找到则返回 None
     """
     if message_context:
-        # 优先从 settings_service 获取 userId
+        # 优先从 message_context 直接获取 user_id（由 agent_service 注入）
+        user_id = message_context.get("user_id")
+        if user_id:
+            return str(user_id)
+
+        # 从 settings_service 获取 userId
         settings_service = message_context.get("settings_service")
         if settings_service:
             try:
@@ -182,8 +187,8 @@ def execute_submit_ai_judgment_issue(
     # 获取 userId
     user_id = _get_user_id_from_context(message_context)
     if not user_id:
-        logger.warning("未找到 userId，使用默认值 'test_user' 进行测试")
-        user_id = "test_user"
+        logger.error("未找到 userId，无法提交 AI 研判问题")
+        return {"result": None, "error": "缺少 userId：当前会话未关联用户身份，无法提交 AI 研判。请确保会话通过正常登录流程创建。"}
 
     # 构建请求
     api_url = tool_args.get("api_url") or os.environ.get("AI_JUDGMENT_API_URL") or DEFAULT_API_URL

@@ -503,6 +503,17 @@ class AgentService:
                 if conv and conv.status == ConversationStatus.CANCELLED:
                     raise asyncio.CancelledError("对话已被取消")
 
+            # 从 Session 获取 user_id 并注入 message_context，供 AI 研判等工具使用
+            _resolved_user_id = None
+            try:
+                from singleton import get_conversation_dao
+                _dao = get_conversation_dao()
+                _session = await _dao.get_session_by_id(int(session_id))
+                if _session:
+                    _resolved_user_id = str(_session.user_id)
+            except Exception:
+                pass
+
             message_context = {
                 "send_message": send_message,
                 "session_id": session_id,
@@ -514,6 +525,7 @@ class AgentService:
                 "parent_chain_messages": parent_chain_messages,
                 "current_conversation_messages": current_conversation_messages,
                 "handoff_metadata": handoff_metadata,
+                "user_id": _resolved_user_id,
             }
 
 
