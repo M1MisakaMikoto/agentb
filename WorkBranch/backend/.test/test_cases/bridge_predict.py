@@ -398,52 +398,32 @@ FACILITY_ID_MAP = {
     "建胜大桥": "BR-JS",
 }
 
-PREDICTION_PROMPT_TEMPLATE = """[W] 重要指令：必须使用 Prediction Sub-Agent 完成任务！
+PREDICTION_PROMPT_TEMPLATE = """[W] 必须使用 call_prediction_agent 子代理完成预测任务！
 
-工作区中已上传{historical_years}历史检测报告。
+工作区已上传 {historical_years} 历史检测报告。
 
-## 🎯 任务目标
-请使用 **call_prediction_agent** 子代理完成桥梁技术状况预测分析任务。
+任务目标：完成桥梁技术状况预测分析
 
-### 必须执行的步骤：
+步骤：
+1. 调用 call_prediction_agent，task_description 要求：
+   - 读取并分析历史报告
+   - calculate_bci 计算每年BCI
+   - predict_trend 预测 {next_year} 年趋势
+   - query_standard 查询 CJJ 99-2017 规范
+   - document(operation=w) 生成 {next_year}年桥梁检测报告预测.docx，包含工程概况、规范依据、检测结果、BCI评定、趋势预测、结论建议
 
-**步骤1 - 调用Prediction Sub-Agent：**
-使用 call_prediction_agent 工具, task_description 应包含以下完整要求:
+2. 等待 Prediction Agent 完成后检查报告文件
 
-基于工作区中的{historical_years}历史检测报告, 完成以下桥梁预测任务:
+3. 调用 submit_facility_forecast 提交记录：
+   facilityId="{facility_id}", facilityName="{bridge_name}", predictYear={next_year},
+   predictedHealthScore=BCI分数, predictedRiskLevel=等级(A/B低/C中/D高), summary=结论摘要
 
-1. 读取并分析历史报告的数据
-2. 使用 calculate_bci 工具计算每年的桥梁技术状况指数(BCI)
-3. 使用 predict_trend 工具基于历史BCI数据预测{next_year}年的技术状况和退化趋势
-4. 使用 query_standard 工具查询 CJJ 99-2017 等相关规范依据
-5. 基于以上分析结果, 使用 document 工具(operation=w)生成完整的{next_year}年预测报告
-
-报告文件名: {next_year}年桥梁检测报告预测.docx
-报告应包含: 工程概况、规范依据、检测结果、BCI评定、趋势预测、结论建议等完整章节
-
-**步骤2 - 等待并验证：**
-等待 Prediction Agent 完成所有分析和报告生成后, 检查生成的预测报告文件。
-
-**步骤3 - 提交预测报告记录（重要！必须执行）：**
-在Prediction Agent完成分析后, **必须调用 submit_facility_forecast 工具提交预测报告记录**。
-调用参数:
-- facilityId: "{facility_id}"
-- facilityName: "{bridge_name}"
-- predictYear: {next_year}
-- predictedHealthScore: 从预测结果中提取的BCI分数
-- predictedRiskLevel: 根据等级确定（A级/B级为"低"，C级为"中"，D/E级为"高"）
-- summary: 预测结论摘要
-
-示例:
-submit_facility_forecast(facilityId="{facility_id}", facilityName="{bridge_name}", predictYear={next_year}, predictedHealthScore=85.5, predictedRiskLevel="低", summary="...")
-
-⛔ 禁止省略此步骤！
-
-## ⛔ 严格禁止:
-- 不要直接使用 read_document 或 document 工具处理这些历史报告
-- 不要自行进行BCI计算或趋势分析
-- 不要跳过子代理直接生成报告
-- 必须将专业分析任务委托给 call_prediction_agent 处理"""
+禁止事项：
+- 不得直接使用 read_document 或 document 处理历史报告
+- 不得自行BCI计算或趋势分析
+- 不得跳过子代理直接生成报告
+- 必须委托给 call_prediction_agent 处理
+- 不得省略 submit_facility_forecast 提交步骤"""
 
 PREDICTION_PROMPT = PREDICTION_PROMPT_TEMPLATE.format(
     next_year=2024,
