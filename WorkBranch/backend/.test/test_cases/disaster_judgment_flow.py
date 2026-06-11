@@ -255,17 +255,16 @@ async def run_decision_test(
     """运行智能决策流程测试"""
     result = TestResult("bridge_decision_test", scenario_config)
 
-    stream_log_dir = get_project_root() / "logs" / "e2e_stream_traces"
+    log_dir = Path(__file__).parent.parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    stream_log_file = str(stream_log_dir / f"decision_test_{timestamp}.log")
+    stream_log_file = str(log_dir / f"decision_test_{timestamp}.log")
 
     print_test_header(scenario_config.get(
         "description",
         "桥梁病害智能决策测试 - 分析 → 研判提交 → 决策报告 → 报告提交"
     ))
 
-    log_dir = Path(__file__).parent.parent / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
     output_log = log_dir / f"disaster_judgment_{timestamp}.md"
 
     print_step(1, "验证数据源文件...", Colors.CYAN)

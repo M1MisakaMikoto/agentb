@@ -450,16 +450,11 @@ def generate_prompt(
     if mode.upper() == "PLAN":
         dynamic_section += "\n\n" + UserTemplateManager.build_plan_mode_suffix()
 
-    # 4. 工具历史
-    history_block = _format_tool_history(tool_history)
-    last_result_block = _format_last_result(last_tool_result)
-
+    # 4. 工具历史（统一区块，含时间标识）
     tool_history_section = ""
-    if history_block or last_tool_result:
-        tool_history_section = (
-            f"\n\n最近工具结果:\n{last_result_block}\n\n"
-            f"最近工具历史:\n{history_block}\n\n"
-        )
+    history_block = _format_tool_history(tool_history)
+    if tool_history:
+        tool_history_section = f"\n\n{history_block}\n"
 
     # 5. 拼接 User Message
     user_message_text = processor.build_full_user_message(
@@ -598,17 +593,15 @@ def _build_user_message(
     )
     
     history_block = _format_tool_history(tool_history)
-    last_result_block = _format_last_result(last_tool_result)
     todo_intro = _format_todo_intro(todos, current_todo_index)
     plan_intro = _format_plan_intro(plan_content)
-    
+
     dynamic_content = (
         f"当前工作区ID: {workspace_id}\n"
         f"已执行轮次: {iteration_count}/{max_iterations}\n"
         f"{plan_intro}"
         f"{todo_intro}"
-        f"最近工具结果:\n{last_result_block}\n\n"
-        f"最近工具历史:\n{history_block}\n\n"
+        f"{history_block}\n"
     )
 
     # 用户原始问题放到倒数第二位（利用头尾效应）
@@ -623,7 +616,7 @@ def _build_user_message(
 
 
 def _format_tool_history(tool_history: List[dict]) -> str:
-    """格式化工具历史 - 使用摘要而非截断"""
+    """格式化工具历史 - 使用时间标识，最新条目显示完整结果"""
     if not tool_history:
         return "(暂无工具执行历史)"
 
@@ -634,13 +627,23 @@ def _format_tool_history(tool_history: List[dict]) -> str:
             return compact
         return compact[: limit - 3] + "..."
 
-    history_lines = []
-    for idx, item in enumerate(tool_history[-5:], 1):
+    recent_items = tool_history[-5:]
+    history_lines = ["工具执行记录 (时间倒序):", ""]
+
+    for idx, item in enumerate(recent_items):
         result_text = str(item.get("result") or "")
-        # 使用摘要，让 LLM 看到足够的信息
-        if len(result_text) > 2000:
-            result_text = _make_summary(result_text)
-        history_lines.append(f"{idx}. tool={item.get('tool_name')} args={item.get('args')} result={result_text}")
+        # 最新一条显示完整结果，其余使用摘要
+        if idx == 0:
+            time_tag = "[最新]"
+        else:
+            time_tag = f"[t-{idx}]"
+            if len(result_text) > 2000:
+                result_text = _make_summary(result_text)
+
+        history_lines.append(f"{time_tag} tool={item.get('tool_name')} args={item.get('args')}")
+        history_lines.append(f"     result={result_text}")
+        history_lines.append("")
+
     return "\n".join(history_lines)
 
 

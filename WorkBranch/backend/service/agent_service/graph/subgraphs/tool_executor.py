@@ -776,8 +776,17 @@ def _execute_chat_tool(
         settings_service=settings_service,
     )
 
-    # 🔧 关键：在底部注入任务主题
-    task_injection = f"\n\n## 当前任务\n当前任务是向用户回复（主题：{chat_topic}）"
+    # 🔧 关键：在底部注入任务主题 + 结构化回答要求
+    task_injection = f"""\
+\n\n## 当前任务
+当前任务是向用户回复（主题：{chat_topic}）
+
+**回答结构要求**：默认采用「总-分」或「总-分-总」结构：
+1. 先用1-2句直接给出核心结论（用户不滚动就能看到重点）
+2. 再按要点分条展开说明，每点一个主题
+3. 复杂任务末尾可加1句总结或下一步指引
+
+**格式要求**：默认使用 Markdown 格式——**加粗**重点、列表分点、`包裹路径`、```代码块```"""
 
     console.info(f"[chat] 使用完整提示词，注入主题: {chat_topic}")
     console.info(f"[chat] agent: {agent_type}, previous_results: {len(previous_results)} 条")

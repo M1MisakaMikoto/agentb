@@ -265,7 +265,12 @@ async def run_tests(
             mock_processes = start_mock_servers()
 
         if start_server:
-            backend_process = start_backend()
+            log_dir = Path(__file__).parent / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backend_log_file = str(log_dir / f"backend_console_{timestamp}.log")
+            backend_process = start_backend(log_file=backend_log_file)
+            print(f"{Colors.DIM}[backend] Console log: {backend_log_file}{Colors.ENDC}")
             api_config = config.get("api", {})
             host = api_config.get("host", "127.0.0.1")
             port = api_config.get("port", 8000)

@@ -97,7 +97,11 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
             return True
 
 
-def start_backend() -> Optional[subprocess.Popen]:
+# 模块级：后端控制台日志文件句柄（供 stop_backend 关闭）
+_backend_log_fh = None
+
+
+def start_backend(log_file: Optional[str] = None) -> Optional[subprocess.Popen]:
     backend_dir = Path(__file__).parent.parent.parent.resolve()
     workspace_root = backend_dir.parent  # WorkBranch/
     project_root = workspace_root.parent  # agentb/
@@ -135,7 +139,19 @@ def start_backend() -> Optional[subprocess.Popen]:
     else:
         kwargs["start_new_session"] = True
 
+    global _backend_log_fh
+
     process = subprocess.Popen(command, **kwargs)
+
+    # 打开后端控制台日志文件
+    if log_file:
+        try:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            _backend_log_fh = open(log_path, "w", encoding="utf-8")
+        except Exception as e:
+            print(f"{Colors.RED}[backend_log] Failed to open log file: {e}{Colors.ENDC}")
+            _backend_log_fh = None
 
     def stream_output():
         assert process.stdout is not None
@@ -143,6 +159,13 @@ def start_backend() -> Optional[subprocess.Popen]:
         for line in process.stdout:
             safe_line = line.rstrip().encode(stdout_encoding, errors="replace").decode(stdout_encoding)
             print(f"{Colors.DIM}[backend] {safe_line}{Colors.ENDC}")
+            # 同时写入日志文件
+            if _backend_log_fh and not _backend_log_fh.closed:
+                try:
+                    _backend_log_fh.write(safe_line + "\n")
+                    _backend_log_fh.flush()
+                except Exception:
+                    pass
 
     thread = threading.Thread(target=stream_output, daemon=True)
     thread.start()
@@ -151,7 +174,16 @@ def start_backend() -> Optional[subprocess.Popen]:
 
 
 def stop_backend(process: subprocess.Popen):
+    global _backend_log_fh
+
     if process.poll() is not None:
+        # 进程已结束也要关闭日志
+        if _backend_log_fh and not _backend_log_fh.closed:
+            try:
+                _backend_log_fh.close()
+            except Exception:
+                pass
+            _backend_log_fh = None
         return
 
     print(f"{Colors.CYAN}Stopping backend...{Colors.ENDC}")
@@ -170,6 +202,14 @@ def stop_backend(process: subprocess.Popen):
         print(f"{Colors.YELLOW}Force killing backend{Colors.ENDC}")
         process.kill()
         process.wait(timeout=5)
+
+    # 关闭后端控制台日志
+    if _backend_log_fh and not _backend_log_fh.closed:
+        try:
+            _backend_log_fh.close()
+        except Exception:
+            pass
+        _backend_log_fh = None
 
     print(f"{Colors.GREEN}Backend stopped{Colors.ENDC}")
 
@@ -614,7 +654,9 @@ async def collect_stream_output(
             
             _write_stream_log(stream_log_fh, header)
         except Exception as e:
-            print(f"{Colors.YELLOW}[stream_log] Failed to open log file: {str(e)}{Colors.ENDC}")
+            import traceback
+            print(f"{Colors.RED}[stream_log] ERROR: Failed to open log file: {str(e)}{Colors.ENDC}")
+            print(f"{Colors.RED}{traceback.format_exc()}{Colors.ENDC}")
             stream_log_fh = None
     
     while retry_count <= max_retries and time.time() < deadline:
