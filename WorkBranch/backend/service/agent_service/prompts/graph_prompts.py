@@ -472,7 +472,11 @@ def generate_prompt(
     if tool_history_section:
         user_message_text += tool_history_section
 
-    # 7. 注入错误信息（如果存在）
+    # 7. 追加用户原始问题（倒数第二位，利用头尾效应）
+    if user_message:
+        user_message_text += format_current_question(user_message)
+
+    # 8. 注入错误信息（最后）
     if last_error:
         error_prompt = format_error_for_prompt(last_error)
         user_message_text += "\n\n" + error_prompt
@@ -599,7 +603,6 @@ def _build_user_message(
     plan_intro = _format_plan_intro(plan_content)
     
     dynamic_content = (
-        f"原始用户请求: {user_message}\n\n"
         f"当前工作区ID: {workspace_id}\n"
         f"已执行轮次: {iteration_count}/{max_iterations}\n"
         f"{plan_intro}"
@@ -607,7 +610,10 @@ def _build_user_message(
         f"最近工具结果:\n{last_result_block}\n\n"
         f"最近工具历史:\n{history_block}\n\n"
     )
-    
+
+    # 用户原始问题放到倒数第二位（利用头尾效应）
+    dynamic_content += format_current_question(user_message)
+
     if mode == "PLAN":
         dynamic_content += (
             "请只决定下一步动作，并以 JSON 形式返回：如果需要继续操作，返回一个 tool 调用；如果计划已完成，返回 kind=step_done；如果需要向用户输出回复，使用 chat 工具；如果无法继续，返回 kind=blocked。"

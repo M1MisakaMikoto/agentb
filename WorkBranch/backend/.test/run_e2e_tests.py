@@ -269,7 +269,7 @@ async def run_tests(
             api_config = config.get("api", {})
             host = api_config.get("host", "127.0.0.1")
             port = api_config.get("port", 8000)
-            if not wait_for_backend(host, port, timeout=30.0):
+            if not wait_for_backend(host, port, timeout=60.0):
                 print(f"{Colors.RED}Failed to start backend{Colors.ENDC}")
                 return results
         else:

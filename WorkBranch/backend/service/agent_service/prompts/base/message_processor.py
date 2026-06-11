@@ -111,7 +111,7 @@ class MessageProcessor:
             include_iteration: 是否包含已执行轮次（默认False）
             max_iterations: 已废弃参数，实际值从 state["max_iterations"] 读取
         """
-        parts = [f"原始用户请求: {user_message}", f"当前工作区ID: {workspace_id}"]
+        parts = [f"当前工作区ID: {workspace_id}"]
         
         # 已执行轮次（可选，默认不显示）
         if include_iteration:

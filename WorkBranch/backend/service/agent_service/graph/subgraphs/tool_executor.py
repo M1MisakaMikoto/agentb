@@ -72,10 +72,6 @@ def _build_child_agent_chat_prompt(
     # 构建简化的上下文（只包含任务、结果和历史，不含工具schema）
     context_parts = []
 
-    # 添加任务描述
-    if task_description:
-        context_parts.append(f"## 当前任务\n{task_description}\n")
-
     # 添加之前任务的执行结果（始终显示，为空时明确标注）
     context_parts.append("## 之前任务的执行结果")
     if previous_results:
@@ -102,6 +98,10 @@ def _build_child_agent_chat_prompt(
         context_parts.append(context_prompt)
     else:
         context_parts.append("(无历史对话记录)")
+
+    # 用户原始问题放到最后（利用头尾效应）
+    if task_description:
+        context_parts.append(f"\n## 当前任务\n{task_description}\n")
 
     context_prompt = "\n".join(context_parts) if context_parts else ""
 

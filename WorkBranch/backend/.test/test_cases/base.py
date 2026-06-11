@@ -66,7 +66,7 @@ def load_config(config_path: Optional[str] = None) -> Dict:
         return yaml.safe_load(f)
 
 
-def wait_for_backend(host: str = "127.0.0.1", port: int = 8000, timeout: float = 30.0) -> bool:
+def wait_for_backend(host: str = "127.0.0.1", port: int = 8000, timeout: float = 60.0) -> bool:
     url = f"http://{host}:{port}/health"
     deadline = time.time() + timeout
 
