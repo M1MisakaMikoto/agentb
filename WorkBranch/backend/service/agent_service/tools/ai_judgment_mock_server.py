@@ -67,14 +67,8 @@ class AIJudgmentMockHandler(BaseHTTPRequestHandler):
             self.send_error_response(400, f"缺少必需字段: {missing_fields}")
             return
 
-        # 模拟服务端处理：根据 userId 查询 TO_Org_User.MarketId -> area_id
-        # 这里我们模拟一个映射
-        mock_user_mapping = {
-            "12345": "area_001",
-            "12346": "area_002",
-            "12347": "area_003",
-        }
-        area_id = mock_user_mapping.get(user_id, f"area_{user_id}")
+        # 模拟服务端处理：userId 现在为 regionId，直接使用
+        area_id = f"area_{user_id}"
 
         # 生成模拟响应
         issue_id = f"issue_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hash(user_id) % 10000}"

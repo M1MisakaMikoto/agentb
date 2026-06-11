@@ -153,6 +153,43 @@ def _send_http_request(
         }
 
 
+def _validate_region_id(
+    agent_region_id: str,
+    message_context: Optional[Dict[str, Any]] = None,
+) -> tuple[bool, str]:
+    """校验 agent 传入的 regionId 是否与原始元数据匹配
+
+    Args:
+        agent_region_id: agent 通过工具参数传入的 regionId
+        message_context: 消息上下文，包含 handoff_metadata
+
+    Returns:
+        (是否通过, 错误信息)
+    """
+    if not message_context:
+        logger.warning("[regionId 校验] 无 message_context，跳过校验")
+        return True, ""
+
+    metadata = message_context.get("handoff_metadata") or {}
+    original_region_id = None
+
+    # 从 handoff_metadata 中提取原始 regionId
+    if isinstance(metadata, dict):
+        original_region_id = metadata.get("regionId") or metadata.get("region_id")
+
+    if not original_region_id:
+        logger.warning("[regionId 校验] handoff_metadata 中无原始 regionId，跳过校验")
+        return True, ""
+
+    if str(agent_region_id).strip() != str(original_region_id).strip():
+        error = f"regionId 不匹配: 期望 '{original_region_id}'，收到 '{agent_region_id}'"
+        logger.error(f"[regionId 校验] {error}")
+        return False, error
+
+    logger.info(f"[regionId 校验] 通过: {agent_region_id}")
+    return True, ""
+
+
 def execute_submit_ai_judgment_issue(
     tool_args: dict,
     message_context: Optional[Dict[str, Any]] = None
@@ -165,7 +202,8 @@ def execute_submit_ai_judgment_issue(
             - facilityName: 设施名称 (必需)
             - title: 问题标题 (必需)
             - description: 问题描述 (可选)
-        message_context: 消息上下文，用于获取 userId
+            - regionId: 区域ID (必需，用于身份校验与接口调用)
+        message_context: 消息上下文，用于获取原始元数据做 regionId 校验
 
     Returns:
         包含 result 或 error 的字典
@@ -175,6 +213,7 @@ def execute_submit_ai_judgment_issue(
     facility_name = tool_args.get("facilityName")
     title = tool_args.get("title")
     description = tool_args.get("description", "")
+    region_id = tool_args.get("regionId")
 
     # 参数校验
     if not facility_id:
@@ -183,14 +222,15 @@ def execute_submit_ai_judgment_issue(
         return {"result": None, "error": "缺少必需参数: facilityName (设施名称)"}
     if not title:
         return {"result": None, "error": "缺少必需参数: title (问题标题)"}
+    if not region_id:
+        return {"result": None, "error": "缺少必需参数: regionId (区域ID)"}
 
-    # 获取 userId
-    user_id = _get_user_id_from_context(message_context)
-    if not user_id:
-        logger.error("未找到 userId，无法提交 AI 研判问题")
-        return {"result": None, "error": "缺少 userId：当前会话未关联用户身份，无法提交 AI 研判。请确保会话通过正常登录流程创建。"}
+    # regionId 校验：与原始元数据比对，防止 agent 错位/漏传
+    passed, err_msg = _validate_region_id(region_id, message_context)
+    if not passed:
+        return {"result": None, "error": err_msg}
 
-    # 构建请求
+    # 构建请求（使用 regionId 作为用户标识）
     api_url = tool_args.get("api_url") or os.environ.get("AI_JUDGMENT_API_URL") or DEFAULT_API_URL
     request_body = {
         "facilityId": facility_id,
@@ -200,12 +240,12 @@ def execute_submit_ai_judgment_issue(
     if description:
         request_body["description"] = description
 
-    # 构建 URL（userId 作为查询参数）
-    url = f"{api_url}/v1/ai-judgment/issues?userId={user_id}"
+    # 构建 URL（regionId 作为查询参数，替代原有 userId）
+    url = f"{api_url}/v1/ai-judgment/issues?userId={region_id}"
 
     logger.info(f"[AI 研判] 提交问题: {title}")
     logger.info(f"[AI 研判] 设施: {facility_name} (ID: {facility_id})")
-    logger.info(f"[AI 研判] userId: {user_id}")
+    logger.info(f"[AI 研判] regionId: {region_id}")
     logger.info(f"[AI 研判] URL: {url}")
 
     # 发送请求
@@ -243,7 +283,7 @@ def register_ai_judgment_tools():
         ToolDefinition(
             name="submit_ai_judgment_issue",
             description="提交 AI 研判问题 - 将设施问题提交到 AI 研判系统进行分析。返回工单ID、区域、状态等信息。",
-            params='submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","api_url":"(API地址，可选，默认使用配置)"}',
+            params='submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","regionId":"(区域ID，必填)","api_url":"(API地址，可选，默认使用配置)"}',
             category="ai_judgment",
             executor=execute_submit_ai_judgment_issue
         ),

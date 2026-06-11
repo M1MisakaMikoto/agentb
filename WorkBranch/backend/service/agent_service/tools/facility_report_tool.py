@@ -156,6 +156,43 @@ def _send_http_request(
         }
 
 
+def _validate_region_id(
+    agent_region_id: str,
+    message_context: Optional[Dict[str, Any]] = None,
+) -> tuple[bool, str]:
+    """校验 agent 传入的 regionId 是否与原始元数据匹配
+
+    Args:
+        agent_region_id: agent 通过工具参数传入的 regionId
+        message_context: 消息上下文，包含 handoff_metadata
+
+    Returns:
+        (是否通过, 错误信息)
+    """
+    if not message_context:
+        logger.warning("[regionId 校验] 无 message_context，跳过校验")
+        return True, ""
+
+    metadata = message_context.get("handoff_metadata") or {}
+    original_region_id = None
+
+    # 从 handoff_metadata 中提取原始 regionId
+    if isinstance(metadata, dict):
+        original_region_id = metadata.get("regionId") or metadata.get("region_id")
+
+    if not original_region_id:
+        logger.warning("[regionId 校验] handoff_metadata 中无原始 regionId，跳过校验")
+        return True, ""
+
+    if str(agent_region_id).strip() != str(original_region_id).strip():
+        error = f"regionId 不匹配: 期望 '{original_region_id}'，收到 '{agent_region_id}'"
+        logger.error(f"[regionId 校验] {error}")
+        return False, error
+
+    logger.info(f"[regionId 校验] 通过: {agent_region_id}")
+    return True, ""
+
+
 def execute_submit_facility_report(
     tool_args: dict,
     message_context: Optional[Dict[str, Any]] = None
@@ -192,6 +229,11 @@ def execute_submit_facility_report(
         return {"result": None, "error": "缺少必需参数: reportFileUrl (报告文件URL)"}
     if not region_id:
         return {"result": None, "error": "缺少必需参数: regionId (区域ID)"}
+
+    # regionId 校验：与原始元数据比对，防止 agent 错位/漏传
+    passed, err_msg = _validate_region_id(region_id, message_context)
+    if not passed:
+        return {"result": None, "error": err_msg}
 
     # 构建请求头（regionId 通过 X-Region-Id 传递）
     region_headers = {"X-Region-Id": str(region_id)}

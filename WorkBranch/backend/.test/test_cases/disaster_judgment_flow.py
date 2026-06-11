@@ -110,6 +110,7 @@ PREDICTION_PROMPT = """## 任务：桥梁病害智能决策与报告生成
   - 病害分析结果
   - 模型检测数据摘要
   - 初步处理建议
+- `regionId`: **从元数据或系统上下文获取区域ID（必填）**
 
 ### 阶段3：生成结构化决策报告
 
@@ -154,6 +155,7 @@ PREDICTION_PROMPT = """## 任务：桥梁病害智能决策与报告生成
 - `facilityId`: 从元数据获取
 - `facilityName`: "花溪河大桥"
 - `reportFileUrl`: "/files/predictions/[基于日期的标识].png"
+- `regionId`: **从元数据或系统上下文获取区域ID（必填）**
 
 ---
 
