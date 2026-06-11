@@ -30,7 +30,7 @@ from service.agent_service.prompts.graph_prompts import (
 from service.session_service.canonical import SegmentType
 from core.logging import console
 
-TOOL_EXECUTION_TIMEOUT_SECONDS = 30
+TOOL_EXECUTION_TIMEOUT_SECONDS = 60
 SPECIAL_TOOL_TIMEOUT_SECONDS = 120
 
 SPECIAL_TOOLS_CONFIG = {
