@@ -154,7 +154,7 @@ class ConvolutionCompressor:
         except json.JSONDecodeError:
             compressed_result = {
                 "role": window.target.get("role"),
-                "summary": compressed_json[:500],
+                "summary": compressed_json,
                 "context_relation": "",
                 "key_points": [],
                 "result": ""
@@ -184,13 +184,13 @@ class ConvolutionCompressor:
         if window.prev:
             prev_role = window.prev.get("role", "unknown")
             prev_content = self._extract_content(window.prev)
-            prev_context = f"[{prev_role}]: {prev_content[:500]}..." if len(prev_content) > 500 else f"[{prev_role}]: {prev_content}"
+            prev_context = f"[{prev_role}]: {prev_content}"
         
         next_context = ""
         if window.next:
             next_role = window.next.get("role", "unknown")
             next_content = self._extract_content(window.next)
-            next_context = f"[{next_role}]: {next_content[:500]}..." if len(next_content) > 500 else f"[{next_role}]: {next_content}"
+            next_context = f"[{next_role}]: {next_content}"
         
         target_content = self._extract_content(window.target)
         target_role = window.target.get("role", "unknown")

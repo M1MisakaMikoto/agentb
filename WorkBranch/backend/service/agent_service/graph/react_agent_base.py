@@ -275,7 +275,7 @@ class ReActAgentBase:
         task_description = state.get('task_description', '')
         
         print(f"[ReActAgentBase] 执行工具: {tool_name}")
-        print(f"[ReActAgentBase] 任务描述: {task_description[:100]}...")
+        print(f"[ReActAgentBase] 任务描述: {task_description}")
         
         enhanced_args = self.memory_manager.inject_memory(
             tool_args=tool_args,
@@ -560,7 +560,7 @@ class ReActAgentBase:
             console.warning(f"  工具历史: {len(tool_history)} 条")
             if last_tool_name:
                 console.warning(f"  最后执行工具: {last_tool_name}")
-                console.warning(f"  最后工具结果: {str(last_tool_result)[:200]}...")
+                console.warning(f"  最后工具结果: {str(last_tool_result)}")
             console.warning("=" * 60)
 
             # 构建详细的状态摘要
@@ -589,7 +589,7 @@ class ReActAgentBase:
 """
             for idx, item in enumerate(tool_history[-15:], 1):
                 tool_name = item.get("tool_name", "unknown")
-                result_preview = str(item.get("result", ""))[:200]
+                result_preview = str(item.get("result", ""))
                 error_info = " [失败]" if item.get("error") else ""
                 summary_prompt += f"\n{idx}. {tool_name}{error_info}: {result_preview}...\n"
 
@@ -616,7 +616,7 @@ class ReActAgentBase:
             else:
                 reply = f"任务因 [{error_type}] 终止，已执行 {iteration_count} 轮，共调用工具 {len(tool_history)} 次。"
 
-            console.warning(f"[error_summary] 生成总结: {reply[:200]}...")
+            console.warning(f"[error_summary] 生成总结: {reply}")
 
             return {
                 "final_reply": reply,
@@ -878,11 +878,11 @@ class ReActAgentBase:
                     if tool_history:
                         for _idx, _item in enumerate(tool_history[-5:], 1):
                             _f.write(f"[{_ts}]   history[{_idx}]: tool={_item.get('tool_name', 'N/A')}, result_len={len(str(_item.get('result', '')))}\n")
-                    _f.write(f"[{_ts}] Last tool result: {str(last_tool_result)[:500] if last_tool_result else 'None'}\n")
-                    _f.write(f"\n[{_ts}] --- SYSTEM PROMPT (first 1000 chars) ---\n")
-                    _f.write(system_prompt[:1000] if system_prompt else "(empty)")
-                    _f.write(f"\n[{_ts}] --- USER MESSAGE (first 1000 chars) ---\n")
-                    _f.write(context_prompt[:1000] if context_prompt else "(empty)")
+                    _f.write(f"[{_ts}] Last tool result: {str(last_tool_result) if last_tool_result else 'None'}\n")
+                    _f.write(f"\n[{_ts}] --- SYSTEM PROMPT ({len(system_prompt)} chars) ---\n")
+                    _f.write(system_prompt if system_prompt else "(empty)")
+                    _f.write(f"\n[{_ts}] --- USER MESSAGE ({len(context_prompt)} chars) ---\n")
+                    _f.write(context_prompt if context_prompt else "(empty)")
                     _f.write(f"\n[{_ts}] === 🔄 LLM REQUEST END ===\n\n")
                     _f.flush()
             except Exception as _log_err:
@@ -1101,7 +1101,7 @@ class ReActAgentBase:
             
             new_current_conv_msgs = list(current_conversation_messages)
             tool_error = tool_result.get("error")
-            content = f"[工具执行: {tool_name}]\n结果: {result_str[:1000]}"
+            content = f"[工具执行: {tool_name}]\n结果: {result_str}"
             if tool_error:
                 content += f"\n错误: {tool_error}"
             new_current_conv_msgs.append({

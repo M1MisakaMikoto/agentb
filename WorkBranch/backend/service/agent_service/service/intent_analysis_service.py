@@ -81,7 +81,7 @@ class IntentAnalysisService:
                     self._get_logger().warning(
                         event="intent.rule_match",
                         msg=f"恶意关键词匹配: {keyword}",
-                        extra={"keyword": keyword, "text_preview": text[:100]},
+                        extra={"keyword": keyword, "text_preview": text},
                     )
                 return True
 
@@ -298,7 +298,7 @@ class IntentAnalysisService:
             logger.warning(
                 event="intent.parse_failed",
                 msg=f"JSON 解析失败，使用原始消息: {str(e)}",
-                extra={"response_preview": response_text[:200]},
+                extra={"response_preview": response_text},
             )
             # 解析失败时使用原始消息
             return IntentAnalysisResult(is_malicious=False, rewritten_query=original_message)

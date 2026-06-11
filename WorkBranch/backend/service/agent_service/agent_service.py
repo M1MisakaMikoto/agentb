@@ -468,7 +468,7 @@ class AgentService:
                     "恶意请求被拦截",
                     conversation_id=conversation_id,
                     workspace_id=workspace_id,
-                    extra={"original_message": message_text[:100]},
+                    extra={"original_message": message_text},
                 )
 
                 send_message("抱歉，我无法处理此请求", SegmentType.ERROR, {"message_id": message_id, "error": "malicious_request"})
@@ -490,7 +490,7 @@ class AgentService:
                     "用户意图已改写",
                     conversation_id=conversation_id,
                     workspace_id=workspace_id,
-                    extra={"original": message_text[:50], "rewritten": intent_result.rewritten_query[:50]},
+                    extra={"original": message_text, "rewritten": intent_result.rewritten_query},
                 )
                 # 更新消息内容
                 message = build_user_message("user", intent_result.rewritten_query)

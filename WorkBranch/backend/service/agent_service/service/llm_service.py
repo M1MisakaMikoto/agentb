@@ -327,10 +327,8 @@ class LLMService:
         try:
             # 限制消息输出行数，避免递归和输出过长问题
             safe_messages = []
-            for msg in lc_messages[:20]:  # 最多20条消息
+            for msg in lc_messages:  # 最多20条消息
                 content = msg.content if hasattr(msg, 'content') else str(msg)
-                if len(content) > 2000:
-                    content = content[:2000] + "...(截断)"
                 safe_messages.append(type(msg)(content=content))
             console.messages_box("LLM 原始提示词", safe_messages)
         except Exception:
@@ -341,9 +339,8 @@ class LLMService:
 
         response_text = response.content if isinstance(response.content, str) else str(response.content)
         try:
-            safe_response = response_text[:3000] + "..." if len(response_text) > 3000 else response_text
             console.success(f"收到响应: {len(response_text)} 字符")
-            console.response_box(safe_response, char_count=len(response_text))
+            console.response_box(response_text, char_count=len(response_text))
         except Exception:
             console.success(f"收到响应: {len(response_text)} 字符")
         return response_text
@@ -377,10 +374,8 @@ class LLMService:
 
         try:
             safe_messages = []
-            for msg in lc_messages[:20]:
+            for msg in lc_messages:
                 content = msg.content if hasattr(msg, 'content') else str(msg)
-                if len(content) > 2000:
-                    content = content[:2000] + "...(截断)"
                 safe_messages.append(type(msg)(content=content))
             console.messages_box("LLM 原始提示词(JSON Mode)", safe_messages)
         except Exception:
@@ -394,7 +389,7 @@ class LLMService:
         print(f"[LLM-DEBUG] 收到 response 对象: {type(response)}")
         print(f"[LLM-DEBUG] response 属性: {dir(response)}")
         if hasattr(response, 'content'):
-            print(f"[LLM-DEBUG] response.content 类型: {type(response.content)}, 值: {repr(response.content)[:200]}")
+            print(f"[LLM-DEBUG] response.content 类型: {type(response.content)}, 值: {repr(response.content)}")
         if hasattr(response, 'response_metadata'):
             print(f"[LLM-DEBUG] response_metadata: {response.response_metadata}")
         if hasattr(response, 'id'):
