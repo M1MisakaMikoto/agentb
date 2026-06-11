@@ -6,8 +6,11 @@
 默认监听: http://localhost:8001
 
 API 端点:
-1. POST /v1/file - 上传报告文件信息（Header: X-Region-Id）
+1. POST /v1/file - 上传报告文件信息（Header: X-Region-Id）【决策报告用】
 2. POST /v1/facility/decision/report - 生成研判报告（需要先调用 file 接口）
+3. POST /v1/file/upload - 上传 PDF 文件（MultipartFile）【预测报告用】
+4. POST /v1/facility/forecast/report - 提交预测报告（需要先调用 upload 接口）
+5. GET  /health - 健康检查
 """
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
@@ -47,65 +50,17 @@ class FacilityReportMockHandler(BaseHTTPRequestHandler):
         """处理 POST 请求"""
         base_path, query_params = self._parse_query_params()
 
-        if base_path == "/v1/file":
-            self._handle_file_upload(query_params)
+        if base_path == "/v1/file/upload":
+            self._handle_file_multipart_upload()
         elif base_path == "/v1/facility/decision/report":
-            self._handle_decision_report(query_params)
+            self._handle_decision_report()
+        elif base_path == "/v1/facility/forecast/report":
+            self._handle_forecast_report()
         else:
             self.send_error_response(404, f"未找到接口: {base_path}")
 
-    def _handle_file_upload(self, query_params):
-        """处理文件上传接口"""
-        content_type = self.headers.get("Content-Type", "")
-        if "application/json" not in content_type:
-            self.send_error_response(400, "Content-Type 必须为 application/json")
-            return
-
-        try:
-            data = self._parse_body()
-            logger.info(f"[File API] 收到请求: {data}")
-        except json.JSONDecodeError as e:
-            self.send_error_response(400, f"JSON 解析失败: {e}")
-            return
-
-        # 验证必需字段（regionId 从请求头 X-Region-Id 获取）
-        region_id = self.headers.get("X-Region-Id")
-        if not region_id:
-            self.send_error_response(400, "缺少请求头: X-Region-Id")
-            return
-
-        required_fields = ["reportName", "facilityId", "facilityName", "reportFileUrl"]
-        missing_fields = [f for f in required_fields if f not in data]
-        if missing_fields:
-            self.send_error_response(400, f"缺少必需字段: {missing_fields}")
-            return
-
-        # 生成报告ID（模拟）
-        report_id = f"report_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        self._uploaded_reports[report_id] = {
-            "reportId": report_id,
-            "reportName": data.get("reportName"),
-            "regionId": region_id,
-            "facilityId": data.get("facilityId"),
-            "facilityName": data.get("facilityName"),
-            "reportFileUrl": data.get("reportFileUrl"),
-            "uploadedAt": datetime.now().isoformat(),
-            "status": "uploaded"
-        }
-
-        response = {
-            "success": True,
-            "data": {
-                "reportId": report_id,
-                "message": f"报告文件信息上传成功，ID: {report_id}"
-            }
-        }
-
-        logger.info(f"[File API] 生成响应: {response}")
-        self.send_json_response(response)
-
-    def _handle_decision_report(self, query_params):
-        """处理研判报告生成接口"""
+    def _handle_decision_report(self):
+        """处理研判报告生成接口（接收 fileUrl + 业务字段）"""
         content_type = self.headers.get("Content-Type", "")
         if "application/json" not in content_type:
             self.send_error_response(400, "Content-Type 必须为 application/json")
@@ -119,17 +74,22 @@ class FacilityReportMockHandler(BaseHTTPRequestHandler):
             return
 
         # 验证必需字段
-        required_fields = ["reportId"]
+        required_fields = ["fileUrl", "reportName", "facilityId", "facilityName"]
         missing_fields = [f for f in required_fields if f not in data]
         if missing_fields:
             self.send_error_response(400, f"缺少必需字段: {missing_fields}")
             return
 
-        report_id = data.get("reportId")
-        report_info = self._uploaded_reports.get(report_id)
+        # 验证 fileUrl 是否来自已上传的文件
+        file_url = data.get("fileUrl")
+        uploaded_file = None
+        for info in self._uploaded_reports.values():
+            if info.get("fileUrl") == file_url:
+                uploaded_file = info
+                break
 
-        if not report_info:
-            self.send_error_response(404, f"未找到报告: {report_id}，请先调用 /v1/file 接口上传报告")
+        if not uploaded_file:
+            self.send_error_response(404, f"未找到上传记录: {file_url}，请先调用 /v1/file/upload 接口上传文件")
             return
 
         # 生成研判报告（模拟）
@@ -138,10 +98,10 @@ class FacilityReportMockHandler(BaseHTTPRequestHandler):
             "success": True,
             "data": {
                 "decisionId": decision_id,
-                "reportId": report_id,
-                "facilityId": report_info.get("facilityId"),
-                "facilityName": report_info.get("facilityName"),
-                "reportName": report_info.get("reportName"),
+                "fileUrl": file_url,
+                "facilityId": data.get("facilityId"),
+                "facilityName": data.get("facilityName"),
+                "reportName": data.get("reportName"),
                 "status": "completed",
                 "generatedAt": datetime.now().isoformat(),
                 "message": f"研判报告生成成功，决策ID: {decision_id}"
@@ -149,6 +109,127 @@ class FacilityReportMockHandler(BaseHTTPRequestHandler):
         }
 
         logger.info(f"[Decision API] 生成响应: {response}")
+        self.send_json_response(response)
+
+    def _handle_file_multipart_upload(self):
+        """处理 PDF 文件上传接口（MultipartFile）- 预测报告用"""
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            self.send_error_response(400, "Content-Type 必须为 multipart/form-data")
+            return
+
+        # 解析 multipart 数据
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        # 提取 boundary
+        boundary = content_type.split("boundary=")[-1].strip() if "boundary=" in content_type else None
+        if not boundary:
+            self.send_error_response(400, "无法解析 boundary")
+            return
+
+        # 简单解析：提取文件数据（模拟，不严格按 RFC 解析）
+        try:
+            parts = body.split(f"--{boundary}".encode())
+            file_data = None
+            filename = None
+
+            for part in parts:
+                if b"filename=" in part:
+                    # 提取 filename
+                    header_end = part.find(b"\r\n\r\n")
+                    header = part[:header_end].decode("utf-8", errors="ignore")
+                    for line in header.split("\r\n"):
+                        if "filename=" in line:
+                            filename = line.split("filename=")[-1].strip('"')
+                            break
+                    # 提取文件内容
+                    file_data = part[header_end + 4:].rstrip(b"\r\n--")
+                    break
+
+            if not file_data or not filename:
+                self.send_error_response(400, "未找到文件数据或文件名")
+                return
+
+            logger.info(f"[Upload API] 收到文件: {filename}, 大小: {len(file_data)} bytes")
+
+            # 模拟存储并返回 fileUrl
+            file_id = f"file_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            file_url = f"/files/forecast/{file_id}_{filename}"
+
+            self._uploaded_reports[file_id] = {
+                "fileId": file_id,
+                "fileName": filename,
+                "fileUrl": file_url,
+                "size": len(file_data),
+                "uploadedAt": datetime.now().isoformat(),
+            }
+
+            response = {
+                "success": True,
+                "data": {
+                    "fileUrl": file_url,
+                    "fileName": filename,
+                    "fileId": file_id,
+                    "message": f"PDF 文件上传成功"
+                }
+            }
+
+            logger.info(f"[Upload API] 生成响应: {response}")
+            self.send_json_response(response)
+
+        except Exception as e:
+            logger.error(f"[Upload API] 解析异常: {e}")
+            self.send_error_response(500, f"文件上传处理失败: {str(e)}")
+
+    def _handle_forecast_report(self):
+        """处理预测报告提交接口"""
+        content_type = self.headers.get("Content-Type", "")
+        if "application/json" not in content_type:
+            self.send_error_response(400, "Content-Type 必须为 application/json")
+            return
+
+        try:
+            data = self._parse_body()
+            logger.info(f"[Forecast API] 收到请求: {data}")
+        except json.JSONDecodeError as e:
+            self.send_error_response(400, f"JSON 解析失败: {e}")
+            return
+
+        # 验证必需字段
+        required_fields = ["facilityId", "predictYear", "reportUrl"]
+        missing_fields = [f for f in required_fields if f not in data]
+        if missing_fields:
+            self.send_error_response(400, f"缺少必需字段: {missing_fields}")
+            return
+
+        # 验证 reportUrl 是否来自已上传的文件
+        report_url = data.get("reportUrl")
+        uploaded_file = None
+        for info in self._uploaded_reports.values():
+            if info.get("fileUrl") == report_url:
+                uploaded_file = info
+                break
+
+        if not uploaded_file:
+            self.send_error_response(404, f"未找到上传记录: {report_url}，请先调用 /v1/file/upload 接口上传文件")
+            return
+
+        # 生成预测报告（模拟）
+        forecast_id = f"forecast_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        response = {
+            "success": True,
+            "data": forecast_id,
+            "forecastId": forecast_id,
+            "facilityId": data.get("facilityId"),
+            "predictYear": data.get("predictYear"),
+            "reportUrl": report_url,
+            "status": "completed",
+            "generatedAt": datetime.now().isoformat(),
+            "message": f"预测报告提交成功，ID: {forecast_id}"
+        }
+
+        logger.info(f"[Forecast API] 生成响应: {response}")
         self.send_json_response(response)
 
     def do_GET(self):
@@ -194,17 +275,17 @@ def run_mock_server(host: str = "localhost", port: int = 8001):
 
     print(f"""
 +============================================================+
-|           设施研判报告接口模拟测试服务器                       |
+|           设施报告接口模拟测试服务器                           |
 +============================================================+
 |  地址: http://{host}:{port}                             |
 |  接口:                                                    |
-|    1. POST /v1/file                   (上传报告文件)        |
+|    1. POST /v1/file/upload           (上传PDF文件)         |
 |    2. POST /v1/facility/decision/report (生成研判报告)      |
-|    3. GET  /health                    (健康检查)           |
+|    3. POST /v1/facility/forecast/report (提交预测报告)      |
+|    4. GET  /health                    (健康检查)           |
 +============================================================+
-|  测试步骤:                                                |
-|  1. 先 POST /v1/file 上传报告（Header: X-Region-Id），获得 reportId |
-|  2. 再 POST /v1/facility/decision/report 生成研判报告            |
+|  测试流程:                                                |
+|  决策/预测报告均为两步: POST /v1/file/upload → 业务接口     |
 +============================================================+
     """)
 

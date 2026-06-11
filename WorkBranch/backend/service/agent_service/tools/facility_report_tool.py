@@ -2,18 +2,26 @@
 设施研判报告工具 - 用于生成设施检测研判报告
 
 工具名称: submit_facility_report
-功能: 将检测报告信息上传到系统，然后生成研判报告
+功能: 上传 PDF 文件后生成研判报告
 
-API 流程:
-1. POST /v1/file - 上传报告文件信息，获得 reportId
-2. POST /v1/facility/decision/report - 根据 reportId 生成研判报告
+API 流程（两步）:
+1. POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+2. POST /v1/facility/decision/report - 用 fileUrl + 业务字段生成研判报告
+
+预测报告工具名称: submit_facility_forecast
+功能: 上传 PDF 文件后提交预测数据
+
+API 流程（两步）:
+1. POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+2. POST /v1/facility/forecast/report - 用 fileUrl 提交预测数据
 
 使用方法:
     submit_facility_report(
         reportName="2026年5月沪渝高速大桥定期检测报告",
         facilityId="BR-001",
         facilityName="沪渝高速大桥",
-        reportFileUrl="/files/2026/05/report_001.pdf"
+        reportFile="/path/to/report.pdf",
+        regionId="region-001"
     )
 
 注意:
@@ -23,9 +31,12 @@ API 流程:
 import os
 import json
 import logging
+import uuid
 from typing import Optional, Dict, Any
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
+from http.client import HTTPConnection
+import mimetypes
 
 from .registry import ToolDefinition, ToolRegistry
 
@@ -156,6 +167,87 @@ def _send_http_request(
         }
 
 
+def _send_multipart_upload(
+    url: str,
+    file_path: str,
+    field_name: str = "file",
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = DEFAULT_TIMEOUT
+) -> Dict[str, Any]:
+    """发送 multipart/form-data 文件上传请求
+
+    Args:
+        url: 请求URL
+        file_path: 本地文件路径
+        field_name: 表单字段名，默认 "file"
+        headers: 额外请求头
+        timeout: 超时时间（秒）
+
+    Returns:
+        响应数据字典
+    """
+    if not os.path.exists(file_path):
+        return {
+            "success": False,
+            "error": {"code": -1, "message": f"文件不存在: {file_path}"}
+        }
+
+    boundary = uuid.uuid4().hex
+    content_type = f"multipart/form-data; boundary={boundary}"
+
+    # 构建 multipart body
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+
+    filename = os.path.basename(file_path)
+    mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+
+    body_parts = []
+    body_parts.append(f"--{boundary}".encode())
+    body_parts.append(
+        f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"'.encode()
+    )
+    body_parts.append(f"Content-Type: {mime_type}".encode())
+    body_parts.append(b"")
+    body_parts.append(file_data)
+    body_parts.append(f"--{boundary}--".encode())
+
+    request_body = b"\r\n".join(body_parts)
+
+    default_headers = {
+        "Content-Type": content_type,
+        "Accept": "application/json",
+    }
+    if headers:
+        default_headers.update(headers)
+
+    request = Request(
+        url,
+        data=request_body,
+        headers=default_headers,
+        method="POST"
+    )
+
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            response_body = response.read().decode("utf-8")
+            return json.loads(response_body)
+    except HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else ""
+        logger.error(f"[Upload] HTTP Error {e.code}: {error_body}")
+        try:
+            error_data = json.loads(error_body)
+            return {"success": False, "error": error_data.get("error", {}), "http_status": e.code}
+        except json.JSONDecodeError:
+            return {"success": False, "error": {"code": e.code, "message": error_body or str(e)}, "http_status": e.code}
+    except URLError as e:
+        logger.error(f"[Upload] URL Error: {e.reason}")
+        return {"success": False, "error": {"code": -1, "message": f"上传失败: {e.reason}"}}
+    except Exception as e:
+        logger.error(f"[Upload] 异常: {e}")
+        return {"success": False, "error": {"code": -1, "message": f"上传异常: {str(e)}"}}
+
+
 def _validate_region_id(
     agent_region_id: str,
     message_context: Optional[Dict[str, Any]] = None,
@@ -197,16 +289,19 @@ def execute_submit_facility_report(
     tool_args: dict,
     message_context: Optional[Dict[str, Any]] = None
 ) -> dict:
-    """执行设施研判报告工具
+    """执行设施研判报告工具（两步流程）
+
+    步骤1: POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+    步骤2: POST /v1/facility/decision/report - 用 fileUrl + 业务字段生成研判报告
 
     Args:
         tool_args: 工具参数，包含:
             - reportName: 报告名称 (必需)
             - facilityId: 设施ID (必需)
             - facilityName: 设施名称 (必需)
-            - reportFileUrl: 报告文件URL (必需)
-            - regionId: 区域ID (必需，通过 X-Region-Id 请求头发送)
-        message_context: 消息上下文（当前未使用，保留兼容）
+            - reportFile: 报告PDF文件本地路径 (必需)
+            - regionId: 区域ID (必需)
+        message_context: 消息上下文
 
     Returns:
         包含 result 或 error 的字典
@@ -215,7 +310,7 @@ def execute_submit_facility_report(
     report_name = tool_args.get("reportName")
     facility_id = tool_args.get("facilityId")
     facility_name = tool_args.get("facilityName")
-    report_file_url = tool_args.get("reportFileUrl")
+    report_file = tool_args.get("reportFile")
     region_id = tool_args.get("regionId")
 
     # 参数校验
@@ -225,8 +320,8 @@ def execute_submit_facility_report(
         return {"result": None, "error": "缺少必需参数: facilityId (设施ID)"}
     if not facility_name:
         return {"result": None, "error": "缺少必需参数: facilityName (设施名称)"}
-    if not report_file_url:
-        return {"result": None, "error": "缺少必需参数: reportFileUrl (报告文件URL)"}
+    if not report_file:
+        return {"result": None, "error": "缺少必需参数: reportFile (报告PDF文件路径)"}
     if not region_id:
         return {"result": None, "error": "缺少必需参数: regionId (区域ID)"}
 
@@ -243,42 +338,37 @@ def execute_submit_facility_report(
 
     logger.info(f"[设施研判报告] 开始处理报告: {report_name}")
     logger.info(f"[设施研判报告] 设施: {facility_name} (ID: {facility_id})")
+    logger.info(f"[设施研判报告] 文件: {report_file}")
     logger.info(f"[设施研判报告] regionId: {region_id}")
     logger.info(f"[设施研判报告] API地址: {api_url}")
 
-    # ========== 步骤1: 上传报告文件信息 ==========
-    file_url = f"{api_url}/v1/file"
-    file_request_body = {
-        "reportName": report_name,
-        "facilityId": facility_id,
-        "facilityName": facility_name,
-        "reportFileUrl": report_file_url,
-    }
+    # ========== 步骤1: 上传 PDF 文件 ==========
+    upload_url = f"{api_url}/v1/file/upload"
 
-    logger.info(f"[设施研判报告] 步骤1/2 - 上传报告文件信息到: {file_url}")
+    logger.info(f"[设施研判报告] 步骤1/2 - 上传PDF文件到: {upload_url}")
 
-    try:
-        file_response = _send_http_request(file_url, "POST", file_request_body, headers=region_headers)
-    except Exception as e:
-        error_msg = f"步骤1失败 - 上传报告文件异常: {str(e)}"
-        logger.error(f"[设施研判报告] {error_msg}")
-        return {"result": None, "error": error_msg}
+    upload_response = _send_multipart_upload(upload_url, report_file, headers=region_headers)
 
-    if not file_response.get("success"):
-        error_info = file_response.get("error", {})
+    if not upload_response.get("success"):
+        error_info = upload_response.get("error", {})
         error_msg = error_info.get("message", "未知错误")
         logger.error(f"[设施研判报告] 步骤1失败: {error_msg}")
-        return {"result": None, "error": f"上传报告文件失败: {error_msg}"}
+        return {"result": None, "error": f"上传PDF失败: {error_msg}"}
 
-    file_data = file_response.get("data", {})
-    report_id = file_data.get("reportId")
+    file_url = upload_response.get("data", {}).get("fileUrl")
+    if not file_url:
+        logger.error("[设施研判报告] 步骤1响应中无 fileUrl")
+        return {"result": None, "error": "上传成功但未返回 fileUrl"}
 
-    logger.info(f"[设施研判报告] 步骤1完成 - 获得 reportId: {report_id}")
+    logger.info(f"[设施研判报告] 步骤1完成 - 获得 fileUrl: {file_url}")
 
     # ========== 步骤2: 生成研判报告 ==========
     decision_url = f"{api_url}/v1/facility/decision/report"
     decision_request_body = {
-        "reportId": report_id,
+        "fileUrl": file_url,
+        "reportName": report_name,
+        "facilityId": facility_id,
+        "facilityName": facility_name,
     }
 
     logger.info(f"[设施研判报告] 步骤2/2 - 生成研判报告: {decision_url}")
@@ -302,7 +392,7 @@ def execute_submit_facility_report(
 
 📋 报告信息:
 - 报告名称: {report_name}
-- 报告ID: {report_id}
+- 文件URL: {file_url}
 - 设施: {facility_name} (ID: {facility_id})
 
 📋 研判决策:
@@ -315,22 +405,30 @@ def execute_submit_facility_report(
     return {"result": result_message, "error": None}
 
 
+# 更新注册函数（统一注册研判+预测）
 def register_facility_report_tools():
-    """注册设施研判报告相关工具"""
+    """注册设施研判报告及预测报告相关工具"""
     tools = [
         ToolDefinition(
             name="submit_facility_report",
-            description="生成设施研判报告 - 将检测报告上传后自动生成研判报告。串联 /v1/file 和 /v1/facility/decision/report 两个接口。",
-            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFileUrl":"(报告文件URL，必填)","regionId":"(区域ID，必填)","api_url":"(API地址，可选)"}',
+            description="生成设施研判报告 - 两步流程：先上传PDF文件获得fileUrl，再提交业务数据生成研判报告。串联 /v1/file/upload 和 /v1/facility/decision/report 两个接口。",
+            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告PDF文件本地路径，必填)","regionId":"(区域ID，必填)","api_url":"(API地址，可选)"}',
             category="facility_report",
             executor=execute_submit_facility_report
+        ),
+        ToolDefinition(
+            name="submit_facility_forecast",
+            description="提交设施预测报告 - 两步流程：先上传PDF文件获得fileUrl，再提交预测数据。串联 /v1/file/upload 和 /v1/facility/forecast/report 两个接口。",
+            params='submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)","api_url":"(API地址，可选)"}',
+            category="facility_report",
+            executor=execute_submit_facility_forecast_report
         ),
     ]
 
     for tool in tools:
         ToolRegistry.register(tool)
 
-    logger.info("设施研判报告工具注册完成")
+    logger.info("设施报告工具注册完成（含研判+预测）")
 
 
 # 导出工具定义常量（方便其他地方引用）
@@ -346,14 +444,17 @@ def execute_submit_facility_forecast_report(
     tool_args: dict,
     message_context: Optional[Dict[str, Any]] = None
 ) -> dict:
-    """执行设施预测报告提交工具
+    """执行设施预测报告提交工具（两步流程）
+
+    步骤1: POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+    步骤2: POST /v1/facility/forecast/report - 用 fileUrl 作为 reportUrl 提交预测数据
 
     Args:
         tool_args: 工具参数，包含:
             - facilityId: 设施ID (必需)
             - predictYear: 预测年份 (必需)
+            - reportFile: 报告PDF文件本地路径 (必需)
             - facilityName: 设施名称 (可选)
-            - reportUrl: 报告文件地址 (可选)
             - predictedHealthScore: 预测健康分数 (可选)
             - predictedRiskLevel: 风险等级 (可选，如高/中/低风险)
             - summary: 预测结论摘要 (可选)
@@ -365,27 +466,60 @@ def execute_submit_facility_forecast_report(
     # 提取必填参数
     facility_id = tool_args.get("facilityId")
     predict_year = tool_args.get("predictYear")
+    report_file = tool_args.get("reportFile")
 
     if not facility_id:
         return {"result": None, "error": "缺少必需参数: facilityId (设施ID)"}
     if not predict_year:
         return {"result": None, "error": "缺少必需参数: predictYear (预测年份)"}
+    if not report_file:
+        return {"result": None, "error": "缺少必需参数: reportFile (报告PDF文件路径)"}
 
     # 获取 userId
     user_id = _get_user_id_from_context(message_context)
     if not user_id:
         return {"result": None, "error": "无法获取用户ID，请确保消息上下文包含用户信息"}
 
-    # 构造请求体（只传业务字段，areaId 由服务端自动写入）
+    # 获取 API 地址
+    api_url = tool_args.get("api_url") or os.environ.get("FACILITY_REPORT_API_URL") or DEFAULT_API_URL
+
+    logger.info(f"[设施预测报告] 开始处理预测报告")
+    logger.info(f"[设施预测报告] 设施ID: {facility_id}, 年份: {predict_year}")
+    logger.info(f"[设施预测报告] 文件: {report_file}")
+    logger.info(f"[设施预测报告] API地址: {api_url}")
+
+    # ========== 步骤1: 上传 PDF 文件 ==========
+    upload_url = f"{api_url}/v1/file/upload"
+    auth_headers = {"X-User-Id": str(user_id)}
+
+    logger.info(f"[设施预测报告] 步骤1/2 - 上传PDF文件到: {upload_url}")
+
+    upload_response = _send_multipart_upload(upload_url, report_file, headers=auth_headers)
+
+    if not upload_response.get("success"):
+        error_info = upload_response.get("error", {})
+        error_msg = error_info.get("message", "未知错误")
+        logger.error(f"[设施预测报告] 步骤1失败: {error_msg}")
+        return {"result": None, "error": f"上传PDF失败: {error_msg}"}
+
+    file_url = upload_response.get("data", {}).get("fileUrl")
+    if not file_url:
+        logger.error("[设施预测报告] 步骤1响应中无 fileUrl")
+        return {"result": None, "error": "上传成功但未返回 fileUrl"}
+
+    logger.info(f"[设施预测报告] 步骤1完成 - 获得 fileUrl: {file_url}")
+
+    # ========== 步骤2: 提交预测报告 ==========
+    forecast_url = f"{api_url}/v1/facility/forecast/report"
     request_body = {
         "facilityId": facility_id,
         "predictYear": int(predict_year),
+        "reportUrl": file_url,  # 步骤1返回的 fileUrl
     }
 
     # 可选字段按需添加
     optional_fields = {
         "facilityName": tool_args.get("facilityName"),
-        "reportUrl": tool_args.get("reportUrl"),
         "predictedHealthScore": tool_args.get("predictedHealthScore"),
         "predictedRiskLevel": tool_args.get("predictedRiskLevel"),
         "summary": tool_args.get("summary"),
@@ -394,21 +528,12 @@ def execute_submit_facility_forecast_report(
         if value is not None:
             request_body[key] = value
 
-    # 获取 API 地址
-    api_url = tool_args.get("api_url") or os.environ.get("FACILITY_REPORT_API_URL") or DEFAULT_API_URL
-    forecast_url = f"{api_url}/v1/facility/forecast/report"
-
-    # 构建认证头
-    auth_headers = {"X-User-Id": str(user_id)}
-
-    logger.info(f"[设施预测报告] 开始提交预测报告")
-    logger.info(f"[设施预测报告] 设施ID: {facility_id}, 年份: {predict_year}")
-    logger.info(f"[设施预测报告] 请求URL: {forecast_url}")
+    logger.info(f"[设施预测报告] 步骤2/2 - 提交预测数据: {forecast_url}")
 
     try:
         response = _send_http_request(forecast_url, "POST", request_body, headers=auth_headers)
     except Exception as e:
-        error_msg = f"提交预测报告异常: {str(e)}"
+        error_msg = f"步骤2失败 - 提交预测报告异常: {str(e)}"
         logger.error(f"[设施预测报告] {error_msg}")
         return {"result": None, "error": error_msg}
 
@@ -416,6 +541,10 @@ def execute_submit_facility_forecast_report(
         return {"result": None, "error": response.get("error", {}).get("message", "请求参数错误或用户未分配区域")}
     elif response.get("http_status") == 401:
         return {"result": None, "error": "未登录或认证失败"}
+    elif not response.get("success") and response.get("error"):
+        error_info = response.get("error", {})
+        error_msg = error_info.get("message", "未知错误")
+        return {"result": None, "error": f"提交预测报告失败: {error_msg}"}
 
     report_id = response.get("data") or response.get("result")
 
@@ -424,33 +553,8 @@ def execute_submit_facility_forecast_report(
 📋 报告信息:
 - 报告ID: {report_id}
 - 设施ID: {facility_id}
-- 预测年份: {predict_year}"""
+- 预测年份: {predict_year}
+- 文件URL: {file_url}"""
 
-    logger.info(f"[设施预测报告] 提交成功 - ID: {report_id}")
+    logger.info(f"[设施预测报告] 全部完成 - ID: {report_id}")
     return {"result": result_message, "error": None}
-
-
-# 更新注册函数
-def register_facility_report_tools():
-    """注册设施研判报告及预测报告相关工具"""
-    tools = [
-        ToolDefinition(
-            name="submit_facility_report",
-            description="生成设施研判报告 - 将检测报告上传后自动生成研判报告。串联 /v1/file 和 /v1/facility/decision/report 两个接口。",
-            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFileUrl":"(报告文件URL，必填)","regionId":"(区域ID，必填)","api_url":"(API地址，可选)"}',
-            category="facility_report",
-            executor=execute_submit_facility_report
-        ),
-        ToolDefinition(
-            name="submit_facility_forecast",
-            description="提交设施预测报告 - 将桥梁预测分析结果上传到系统。调用 POST /v1/facility/forecast/report 接口。",
-            params='submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","facilityName":"(设施名称，可选)","reportUrl":"(报告文件地址，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)","api_url":"(API地址，可选)"}',
-            category="facility_report",
-            executor=execute_submit_facility_forecast_report
-        ),
-    ]
-
-    for tool in tools:
-        ToolRegistry.register(tool)
-
-    logger.info("设施报告工具注册完成（含研判+预测）")
