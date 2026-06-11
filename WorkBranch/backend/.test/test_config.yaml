@@ -93,10 +93,21 @@ scenarios:
     description: "Bridge Inspection Report - Historical Data Prediction Test"
     prediction_timeout: 900.0
     prompt: |
-      基于工作区中的{historical_years}{bridge_name}历史检测报告，使用call_prediction_agent工具预测并生成{next_year}年的完整检测报告（Word文档格式）。
+      任务：基于{historical_years}{bridge_name}历史检测报告，预测{next_year}年状况并提交记录。
 
-      报告文件名: {next_year}年桥梁检测报告预测.docx
-      报告应包含: 工程概况、规范依据、检测结果、BCI评定、趋势预测、结论建议等完整章节
+      执行顺序（必须按此顺序完成）：
+      1. 使用 call_prediction_agent 预测并生成 Word 文档（文件名: {next_year}年桥梁检测报告预测.docx）
+      2. 文档生成后，立即调用 submit_facility_forecast 提交预测记录
+
+      步骤2的调用参数（从你的预测结果中提取）：
+      - facilityId: "{facility_id}"
+      - facilityName: "{bridge_name}"  
+      - predictYear: {next_year}
+      - predictedHealthScore: BCI分数数值
+      - predictedRiskLevel: A/B级→"低", C级→"中", D/E级→"高"
+      - summary: 一句话总结
+
+      完成步骤1后不要结束！必须继续执行步骤2！
 
   bridge_defect_extract:
     description: "Bridge Defect Extraction - 从陈家湾桥2020检测报告中提取病害数据"

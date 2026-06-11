@@ -188,10 +188,15 @@ ALL_TOOLS = {
     },
     # --- 设施研判报告工具 ---
     "submit_facility_report": {
-        "name": "submit_facility_report",
-        "description": "生成设施研判报告 - 将检测报告上传后自动生成研判报告",
-        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFileUrl":"(报告文件URL，必填)","api_url":"(API地址，可选)"}'
-    },
+            "name": "submit_facility_report",
+            "description": "生成设施研判报告 - 将检测报告上传后自动生成研判报告",
+            "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFileUrl":"(报告文件URL，必填)","api_url":"(API地址，可选)"}'
+        },
+        "submit_facility_forecast": {
+            "name": "submit_facility_forecast",
+            "description": "提交设施预测报告 - 将桥梁预测分析结果上传到系统。调用 POST /v1/facility/forecast/report 接口。",
+            "params": 'submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","facilityName":"(设施名称，可选)","reportUrl":"(报告文件地址，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)"}'
+        },
 }
 
 
@@ -205,4 +210,4 @@ DOCUMENT_TOOLS = {"document", "read_document"}
 SQL_TOOLS = {"sql_query"}
 PREDICTION_TOOLS = {"calculate_bci", "predict_trend", "query_standard", "bridge_report_parser"}
 AI_JUDGMENT_TOOLS = {"submit_ai_judgment_issue"}
-FACILITY_REPORT_TOOLS = {"submit_facility_report"}
+FACILITY_REPORT_TOOLS = {"submit_facility_report", "submit_facility_forecast"}

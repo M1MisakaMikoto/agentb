@@ -293,4 +293,122 @@ def register_facility_report_tools():
 
 # 导出工具定义常量（方便其他地方引用）
 FACILITY_REPORT_TOOLS = {"submit_facility_report"}
+FACILITY_FORECAST_TOOLS = {"submit_facility_forecast"}
+ALL_FACILITY_TOOLS = FACILITY_REPORT_TOOLS | FACILITY_FORECAST_TOOLS
 FACILITY_REPORT_CATEGORY = "facility_report"
+
+
+# ==================== 预测报告工具 ====================
+
+def execute_submit_facility_forecast_report(
+    tool_args: dict,
+    message_context: Optional[Dict[str, Any]] = None
+) -> dict:
+    """执行设施预测报告提交工具
+
+    Args:
+        tool_args: 工具参数，包含:
+            - facilityId: 设施ID (必需)
+            - predictYear: 预测年份 (必需)
+            - facilityName: 设施名称 (可选)
+            - reportUrl: 报告文件地址 (可选)
+            - predictedHealthScore: 预测健康分数 (可选)
+            - predictedRiskLevel: 风险等级 (可选，如高/中/低风险)
+            - summary: 预测结论摘要 (可选)
+        message_context: 消息上下文
+
+    Returns:
+        包含 result 或 error 的字典
+    """
+    # 提取必填参数
+    facility_id = tool_args.get("facilityId")
+    predict_year = tool_args.get("predictYear")
+
+    if not facility_id:
+        return {"result": None, "error": "缺少必需参数: facilityId (设施ID)"}
+    if not predict_year:
+        return {"result": None, "error": "缺少必需参数: predictYear (预测年份)"}
+
+    # 获取 userId
+    user_id = _get_user_id_from_context(message_context)
+    if not user_id:
+        return {"result": None, "error": "无法获取用户ID，请确保消息上下文包含用户信息"}
+
+    # 构造请求体（只传业务字段，areaId 由服务端自动写入）
+    request_body = {
+        "facilityId": facility_id,
+        "predictYear": int(predict_year),
+    }
+
+    # 可选字段按需添加
+    optional_fields = {
+        "facilityName": tool_args.get("facilityName"),
+        "reportUrl": tool_args.get("reportUrl"),
+        "predictedHealthScore": tool_args.get("predictedHealthScore"),
+        "predictedRiskLevel": tool_args.get("predictedRiskLevel"),
+        "summary": tool_args.get("summary"),
+    }
+    for key, value in optional_fields.items():
+        if value is not None:
+            request_body[key] = value
+
+    # 获取 API 地址
+    api_url = tool_args.get("api_url") or os.environ.get("FACILITY_REPORT_API_URL") or DEFAULT_API_URL
+    forecast_url = f"{api_url}/v1/facility/forecast/report"
+
+    # 构建认证头
+    auth_headers = {"X-User-Id": str(user_id)}
+
+    logger.info(f"[设施预测报告] 开始提交预测报告")
+    logger.info(f"[设施预测报告] 设施ID: {facility_id}, 年份: {predict_year}")
+    logger.info(f"[设施预测报告] 请求URL: {forecast_url}")
+
+    try:
+        response = _send_http_request(forecast_url, "POST", request_body, headers=auth_headers)
+    except Exception as e:
+        error_msg = f"提交预测报告异常: {str(e)}"
+        logger.error(f"[设施预测报告] {error_msg}")
+        return {"result": None, "error": error_msg}
+
+    if response.get("http_status") == 400:
+        return {"result": None, "error": response.get("error", {}).get("message", "请求参数错误或用户未分配区域")}
+    elif response.get("http_status") == 401:
+        return {"result": None, "error": "未登录或认证失败"}
+
+    report_id = response.get("data") or response.get("result")
+
+    result_message = f"""设施预测报告提交成功！
+
+📋 报告信息:
+- 报告ID: {report_id}
+- 设施ID: {facility_id}
+- 预测年份: {predict_year}"""
+
+    logger.info(f"[设施预测报告] 提交成功 - ID: {report_id}")
+    return {"result": result_message, "error": None}
+
+
+# 更新注册函数
+def register_facility_report_tools():
+    """注册设施研判报告及预测报告相关工具"""
+    tools = [
+        ToolDefinition(
+            name="submit_facility_report",
+            description="生成设施研判报告 - 将检测报告上传后自动生成研判报告。串联 /v1/file 和 /v1/facility/decision/report 两个接口。",
+            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFileUrl":"(报告文件URL，必填)","regionId":"(区域ID，必填)","api_url":"(API地址，可选)"}',
+            category="facility_report",
+            executor=execute_submit_facility_report
+        ),
+        ToolDefinition(
+            name="submit_facility_forecast",
+            description="提交设施预测报告 - 将桥梁预测分析结果上传到系统。调用 POST /v1/facility/forecast/report 接口。",
+            params='submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","facilityName":"(设施名称，可选)","reportUrl":"(报告文件地址，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)","api_url":"(API地址，可选)"}',
+            category="facility_report",
+            executor=execute_submit_facility_forecast_report
+        ),
+    ]
+
+    for tool in tools:
+        ToolRegistry.register(tool)
+
+    logger.info("设施报告工具注册完成（含研判+预测）")

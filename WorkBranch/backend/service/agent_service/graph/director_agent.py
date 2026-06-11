@@ -93,8 +93,8 @@ def _build_loop_check_prompt(
     for idx, item in enumerate(recent_history, 1):
         tool_name = item.get("tool", "unknown")
         args = item.get("args", {})
-        args_str = str(args)[:100] if args else "{}"
-        result_preview = str(item.get("result", ""))[:200]
+        args_str = str(args) if args else "{}"
+        result_preview = str(item.get("result", ""))
         history_lines.append(
             f"第{idx}轮: 工具={tool_name}, 参数={args_str}, 结果摘要={result_preview}..."
         )
@@ -104,7 +104,7 @@ def _build_loop_check_prompt(
     if user_message:
         user_message_block = f"""
 ## 用户原始请求
-{user_message[:500]}
+{user_message}
 """
     
     conversation_block = ""
@@ -112,7 +112,7 @@ def _build_loop_check_prompt(
         conv_lines = []
         for msg in conversation_history[-6:]:
             role = msg.get("role", "unknown")
-            content = str(msg.get("content", ""))[:300]
+            content = str(msg.get("content", ""))
             conv_lines.append(f"[{role}]: {content}")
         if conv_lines:
             conversation_block = f"""
@@ -125,7 +125,7 @@ def _build_loop_check_prompt(
         todo_lines = []
         for idx, todo in enumerate(todos[:10], 1):
             status = todo.get("status", "pending")
-            content = str(todo.get("content", ""))[:100]
+            content = str(todo.get("content", ""))
             todo_lines.append(f"{idx}. [{status}] {content}")
         if todo_lines:
             todos_block = f"""
@@ -545,7 +545,7 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
 
         intent_analysis = {
             "intent_type": "other",
-            "summary": user_message[:100],
+            "summary": user_message,
             "key_points": [user_message] if user_message else [],
             "complexity": "medium",
             "confidence": 0.7,
@@ -785,11 +785,11 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 if tool_history:
                     for idx, item in enumerate(tool_history[-5:], 1):
                         f.write(f"[{timestamp}]   history[{idx}]: tool={item.get('tool_name', 'N/A')}, result_len={len(str(item.get('result', '')))}\n")
-                f.write(f"[{timestamp}] Last tool result: {str(last_tool_result)[:500] if last_tool_result else 'None'}\n")
-                f.write(f"\n[{'='*40} SYSTEM PROMPT (first 1000 chars) {'='*40}\n")
-                f.write(system_prompt[:1000] if system_prompt else "(empty)")
-                f.write(f"\n[{'='*40} USER MESSAGE (first 1000 chars) {'='*40}\n")
-                f.write(context_prompt[:1000] if context_prompt else "(empty)")
+                f.write(f"[{timestamp}] Last tool result: {str(last_tool_result) if last_tool_result else 'None'}\n")
+                f.write(f"\n[{'='*40} SYSTEM PROMPT ({len(system_prompt)} chars) {'='*40}\n")
+                f.write(system_prompt if system_prompt else "(empty)")
+                f.write(f"\n[{'='*40} USER MESSAGE ({len(context_prompt)} chars) {'='*40}\n")
+                f.write(context_prompt if context_prompt else "(empty)")
                 f.write(f"\n[{timestamp}] === 🔄 DIRECTOR LLM REQUEST END ===\n\n")
                 f.flush()
         except Exception as log_err:
@@ -1361,7 +1361,7 @@ def _execute_explore_code(tool_args: dict) -> dict:
                                     "path": rel_path,
                                     "type": "code",
                                     "line": line_num,
-                                    "content": line.strip()[:100]
+                                    "content": line.strip()
                                 })
                                 if len(findings) >= max_results:
                                     break
@@ -1463,8 +1463,7 @@ def _execute_explore_internet(tool_args: dict) -> dict:
             if href:
                 result_lines.append(f"   链接: {href}")
             if body:
-                truncated_body = body[:300] + "..." if len(body) > 300 else body
-                result_lines.append(f"   摘要: {truncated_body}")
+                result_lines.append(f"   摘要: {body}")
             result_lines.append("")
         
         result = "\n".join(result_lines)
@@ -1926,7 +1925,7 @@ def _director_chat_strategy(
             f.write(f"[{timestamp}] Topic: {chat_topic}\n")
             f.write(f"[{timestamp}] Tool history: {len(tool_history)} items\n")
             f.write(f"\n[{'='*40} SYSTEM PROMPT {'='*40}\n")
-            f.write(system_prompt[:2000] if system_prompt else "(empty)")
+            f.write(system_prompt if system_prompt else "(empty)")
             f.write(f"\n[{'='*40} USER MESSAGE + TASK INJECTION {'='*40}\n")
             f.write(context_prompt + task_injection)
             f.write(f"\n{'='*80}\n")
@@ -2025,7 +2024,7 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
             )
 
             result_str = str(tool_result.get("result", "") if tool_result.get("result") is not None else "")
-            console.box("工具执行结果", result_str[:200])
+            console.box("工具执行结果", result_str)
 
             new_tool_history = state.get("tool_history", []) + [{
                 "tool_name": tool_name,

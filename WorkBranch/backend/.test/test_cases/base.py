@@ -777,11 +777,11 @@ async def collect_stream_output(
                     if verbose:
                         safe_print(f"{Colors.GREEN}[chat] {content}{Colors.ENDC}")
                 elif event_type == "chat_end":
-                    result.done = True
+                    result.chat_completed = True
                     _write_stream_log(stream_log_fh, f"  → Chat completed ✓\n")
                     if verbose:
-                        print(f"{Colors.GREEN}[chat_end] Chat completed{Colors.ENDC}")
-                    return
+                        print(f"{Colors.GREEN}[chat_end] Chat completed (waiting for done){Colors.ENDC}")
+                    # 不退出，继续等待真正的 done 事件
                 elif event_type == "thinking_delta":
                     content = data.get("content", "")
                     result.thinking_content += content

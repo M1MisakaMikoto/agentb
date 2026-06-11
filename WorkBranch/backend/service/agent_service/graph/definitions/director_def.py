@@ -48,13 +48,14 @@ class DirectorDefinition(AgentDefinition):
                     "rag_search",
                     "submit_ai_judgment_issue",
                     "submit_facility_report",
+                    "submit_facility_forecast",
                 ],
                 default_tools=[
                     {"tool": "thinking", "args": {"description": ""}},
                     {"tool": "chat", "args": {"description": ""}},
                 ],
                 timeout_seconds=300,
-                max_iterations=8,  # 测试环境用 8，生产环境可改为 15
+                max_iterations=12,  # 需要足够迭代完成预测+提交记录
                 memory_mode="accumulate",
                 agent_type="director_agent",
                 is_subagent=False,

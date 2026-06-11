@@ -41,6 +41,7 @@ class PredictionDefinition(AgentDefinition):
                     "read_file",
                     "submit_ai_judgment_issue",
                     "submit_facility_report",
+                    "submit_facility_forecast",
                 ],
                 default_tools=[
                     {"tool": "thinking", "args": {"description": ""}},

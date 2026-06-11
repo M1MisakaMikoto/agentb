@@ -388,6 +388,16 @@ BRIDGE_CONFIGS_DIR2 = {
 HISTORICAL_FILES = BRIDGE_CONFIGS["陈家阁大桥"]["historical"]
 GROUND_TRUTH_2024 = BRIDGE_CONFIGS["陈家阁大桥"]["ground_truth"]
 
+# 设施ID映射表（用于 submit_facility_forecast 工具）
+FACILITY_ID_MAP = {
+    "陈家阁大桥": "BR-CJG",
+    "朝阳寺立交桥": "BR-CYS",
+    "陈家湾桥": "BR-CJW",
+    "九中立交桥": "BR-JZL",
+    "金家湾立交桥": "BR-JJW",
+    "建胜大桥": "BR-JS",
+}
+
 PREDICTION_PROMPT_TEMPLATE = """[W] 重要指令：必须使用 Prediction Sub-Agent 完成任务！
 
 工作区中已上传{historical_years}历史检测报告。
@@ -414,6 +424,21 @@ PREDICTION_PROMPT_TEMPLATE = """[W] 重要指令：必须使用 Prediction Sub-A
 **步骤2 - 等待并验证：**
 等待 Prediction Agent 完成所有分析和报告生成后, 检查生成的预测报告文件。
 
+**步骤3 - 提交预测报告记录（重要！必须执行）：**
+在Prediction Agent完成分析后, **必须调用 submit_facility_forecast 工具提交预测报告记录**。
+调用参数:
+- facilityId: "{facility_id}"
+- facilityName: "{bridge_name}"
+- predictYear: {next_year}
+- predictedHealthScore: 从预测结果中提取的BCI分数
+- predictedRiskLevel: 根据等级确定（A级/B级为"低"，C级为"中"，D/E级为"高"）
+- summary: 预测结论摘要
+
+示例:
+submit_facility_forecast(facilityId="{facility_id}", facilityName="{bridge_name}", predictYear={next_year}, predictedHealthScore=85.5, predictedRiskLevel="低", summary="...")
+
+⛔ 禁止省略此步骤！
+
 ## ⛔ 严格禁止:
 - 不要直接使用 read_document 或 document 工具处理这些历史报告
 - 不要自行进行BCI计算或趋势分析
@@ -422,7 +447,9 @@ PREDICTION_PROMPT_TEMPLATE = """[W] 重要指令：必须使用 Prediction Sub-A
 
 PREDICTION_PROMPT = PREDICTION_PROMPT_TEMPLATE.format(
     next_year=2024,
-    historical_years="2018/2020/2022年"  # 默认值，数据集1
+    historical_years="2018/2020/2022年",  # 默认值，数据集1
+    facility_id="BR-CJG",
+    bridge_name="陈家阁大桥",
 )
 
 
@@ -655,13 +682,26 @@ async def run_bridge_predict_test(
         "bridge_name": bridge_name,
         "next_year": ground_truth_year,
         "historical_years": prompt_years_desc,
+        "facility_id": FACILITY_ID_MAP.get(bridge_name, "BR-UNKNOWN"),
     }
 
     try:
         prompt = prompt_template.format(**format_args)
-    except KeyError:
+    except KeyError as e:
         # 如果模板不包含某些占位符，使用默认PREDICTION_PROMPT
+        print_warning(f"Prompt format KeyError: {e}, using default PREDICTION_PROMPT")
         prompt = PREDICTION_PROMPT
+
+    # DEBUG: 打印实际发送的提示词（确认步骤3和facility_id）
+    print_step(4.5, f"Formatted prompt length: {len(prompt)} chars", Colors.YELLOW)
+    if "submit_facility_forecast" in prompt:
+        print_success("✅ Prompt contains submit_facility_forecast instruction")
+    else:
+        print_warning("⚠️ Prompt does NOT contain submit_facility_forecast!")
+    if "BR-CJG" in prompt or format_args.get("facility_id") in prompt:
+        print_success(f"✅ Prompt contains facility_id: {format_args.get('facility_id')}")
+    else:
+        print_warning(f"⚠️ Prompt facility_id missing! args: {list(format_args.keys())}")
 
     conv_result = await api.create_conversation(session_id, prompt)
 
@@ -976,6 +1016,15 @@ async def run_bridge_predict_test(
         f.write(f"- **Historical Files Used**:\n")
         for year, path in historical_files.items():
             f.write(f"  - {year}: {path.name}\n")
+
+        # DEBUG: 写入完整提示词调试信息
+        f.write(f"\n---\n\n## Prompt Debug Info\n\n")
+        f.write(f"- **Prompt Length**: {len(prompt)} chars\n")
+        f.write(f"- **Has submit_facility_forecast**: {'✅ Yes' if 'submit_facility_forecast' in prompt else '❌ No'}\n")
+        f.write(f"- **Facility ID in prompt**: {'✅ ' + format_args.get('facility_id', '') if format_args.get('facility_id') and format_args.get('facility_id') in prompt else '❌ Not found'}\n")
+        f.write(f"- **Format Args Keys**: {list(format_args.keys())}\n")
+        f.write(f"\n### 完整提示词（{len(prompt)}字符）\n\n```\n{prompt}\n```\n")
+
         f.write(f"\n---\n\n")
         
         f.write("## AI Predicted 2024 Report\n\n")
