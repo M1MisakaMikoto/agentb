@@ -92,7 +92,7 @@ ALL_TOOLS = {
     "thinking": {
         "name": "thinking",
         "description": "思考工具，用于分析问题、梳理思路",
-        "params": 'thinking:{"next_task":"(思考任务描述，例如：分析xxx的实现方案)"}'
+        "params": 'thinking:{"task_description":"(思考任务描述，例如：分析xxx的实现方案)"}'
     },
     "chat": {
         "name": "chat",
@@ -156,8 +156,8 @@ ALL_TOOLS = {
     },
     "sql_query": {
         "name": "sql_query",
-        "description": "执行只读 SQL 查询或结构探查；支持 query(SELECT)、show_databases(列出数据库)、show_tables(列出表)、describe(查看表结构)、show_create(查看建表语句)",
-        "params": 'sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create，必填)","query":"(query 模式必填；其他模式忽略)","database":"(数据库名称，可选；show_databases 模式忽略，show_tables/describe/show_create 使用该库或默认库)","table":"(表名；describe/show_create 模式必填，其他模式忽略)","limit":"(仅 query 模式生效，默认100，最大1000)"}'
+        "description": "执行只读 SQL 查询或结构探查；支持 query(SELECT)、show_databases(列出数据库)、show_tables(列出表)、describe(查看表结构)、show_create(查看建表语句)，以及面向facility_detail索引查询的 facility_trend/facility_report",
+        "params": 'sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create|facility_trend|facility_report，必填)","query":"(query 模式必填；其他模式忽略)","database":"(数据库名称，可选；show_databases 模式忽略，show_tables/describe/show_create 使用该库或默认库)","table":"(表名；describe/show_create 模式必填，其他模式忽略)","limit":"(仅 query/facility_* 模式生效，默认100，最大1000)","table_name":"(facility_* 模式可选，默认 facility_detail)","start_time":"(facility_* 可选，例 2026-05-01 00:00:00)","end_time":"(facility_* 可选，建议与start_time一起传)","device_type_name":"(facility_* 可选，等值过滤)","device_id":"(facility_* 可选，等值过滤)","content_keyword":"(facility_* 可选，LIKE过滤)","group_by":"(facility_trend 可选: hour|day|device_type|device)"}'
     },
     # --- Prediction Tools ---
     "calculate_bci": {
@@ -184,19 +184,19 @@ ALL_TOOLS = {
     "submit_ai_judgment_issue": {
         "name": "submit_ai_judgment_issue",
         "description": "提交 AI 研判问题 - 将设施问题提交到 AI 研判系统，等待 AI 分析并返回研判结果",
-        "params": 'submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","api_url":"(API地址，可选)"}'
+        "params": 'submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","regionId":"(区域ID，必填，从元数据中获取)","api_url":"(API地址，可选)"}'
     },
     # --- 设施研判报告工具 ---
     "submit_facility_report": {
-            "name": "submit_facility_report",
-            "description": "生成设施研判报告 - 将检测报告上传后自动生成研判报告",
-            "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFileUrl":"(报告文件URL，必填)","api_url":"(API地址，可选)"}'
-        },
-        "submit_facility_forecast": {
-            "name": "submit_facility_forecast",
-            "description": "提交设施预测报告 - 将桥梁预测分析结果上传到系统。调用 POST /v1/facility/forecast/report 接口。",
-            "params": 'submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","facilityName":"(设施名称，可选)","reportUrl":"(报告文件地址，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)"}'
-        },
+        "name": "submit_facility_report",
+        "description": "生成设施研判报告 - 将检测报告(PDF)上传后自动生成研判报告",
+        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告PDF文件本地路径，必填)","regionId":"(区域ID，必填，从元数据中获取)","api_url":"(API地址，可选)"}'
+    },
+    "submit_facility_forecast": {
+        "name": "submit_facility_forecast",
+        "description": "提交设施预测报告 - 将桥梁预测分析结果(PDF)上传到系统。调用 POST /v1/facility/forecast/report 接口。",
+        "params": 'submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)","api_url":"(API地址，可选)"}'
+    },
 }
 
 
