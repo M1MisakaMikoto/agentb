@@ -218,7 +218,7 @@ class HybridMessageQueue:
             else:
                 # 非流式事件：保持原有格式
                 diagnostic_log_lines.append(f"  - content length: {len(full_content)} chars")
-                diagnostic_log_lines.append(f"  - content preview: {full_content[:100] if full_content else '(empty)'}")
+                diagnostic_log_lines.append(f"  - content: {full_content if full_content else '(empty)'}")
 
             diagnostic_log_lines.append(f"  - subscribers count: {len(self._subscribers.get(message.conversation_id, []))}")
 

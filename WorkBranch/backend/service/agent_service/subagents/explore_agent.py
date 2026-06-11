@@ -23,7 +23,7 @@ class ExploreAgent(BaseSubAgent):
     
     def execute(self, task_description: str, context: Optional[Dict[str, Any]] = None) -> dict:
         """执行探索任务"""
-        print(f"[ExploreAgent] 执行任务: {task_description[:50]}...")
+        print(f"[ExploreAgent] 执行任务: {task_description}")
         
         try:
             messages = [{"role": "user", "content": task_description}]

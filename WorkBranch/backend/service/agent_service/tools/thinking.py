@@ -7,7 +7,7 @@ def execute_thinking(tool_args: dict, llm_service=None, token_callback: Optional
     """执行 thinking 工具"""
     task_description = tool_args.get("task_description", tool_args.get("description", ""))
     
-    print(f"[Tool] thinking: {task_description[:50]}...")
+    print(f"[Tool] thinking: {task_description}")
     
     if llm_service is None:
         result = f"思考任务: {task_description} (LLM 服务未配置)"

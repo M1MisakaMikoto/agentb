@@ -415,11 +415,11 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             try:
                 result = calculate_bci(**tool_args)
                 tool_result = {"result": result, "error": None}
-                success_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✓ BCI计算成功: {str(result)[:200]}\n"
+                success_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✓ BCI计算成功: {str(result)}\n"
                 with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:
                     f.write(success_msg)
                     f.flush()
-                print(f"[DEBUG-PREDICTION] ✓ BCI计算成功: {str(result)[:200]}")
+                print(f"[DEBUG-PREDICTION] ✓ BCI计算成功: {str(result)}")
             except Exception as e:
                 tool_result = {"result": None, "error": f"BCI计算失败: {str(e)}"}
                 error_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✗ BCI计算失败: {e}\n"
@@ -433,7 +433,7 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             try:
                 result = predict_trend(**tool_args)
                 tool_result = {"result": result, "error": None}
-                print(f"[DEBUG-PREDICTION] ✓ 趋势预测成功: {str(result)[:200]}")
+                print(f"[DEBUG-PREDICTION] ✓ 趋势预测成功: {str(result)}")
             except Exception as e:
                 tool_result = {"result": None, "error": f"趋势预测失败: {str(e)}"}
                 print(f"[DEBUG-PREDICTION] ✗ 趋势预测失败: {e}")
@@ -443,7 +443,7 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             try:
                 result = query_standard(**tool_args)
                 tool_result = {"result": result, "error": None}
-                print(f"[DEBUG-PREDICTION] ✓ 规范查询成功: {str(result)[:200]}")
+                print(f"[DEBUG-PREDICTION] ✓ 规范查询成功: {str(result)}")
             except Exception as e:
                 tool_result = {"result": None, "error": f"规范查询失败: {str(e)}"}
                 print(f"[DEBUG-PREDICTION] ✗ 规范查询失败: {e}")
@@ -494,6 +494,9 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
         elif tool_name == "submit_facility_report":
             from service.agent_service.tools.facility_report_tool import execute_submit_facility_report
             tool_result = execute_submit_facility_report(tool_args, message_context)
+        elif tool_name == "submit_facility_forecast":
+            from service.agent_service.tools.facility_report_tool import execute_submit_facility_forecast_report
+            tool_result = execute_submit_facility_forecast_report(tool_args, message_context)
         elif tool_name in WORKSPACE_TOOLS:
             tool_result = _execute_workspace_tool(tool_name, tool_args, workspace_id, workspace_service)
         else:
@@ -506,8 +509,6 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
                 result_preview = ""
             else:
                 result_preview = str(result_content)
-                if len(result_preview) > 500:
-                    result_preview = result_preview[:500] + "..."
             send_message("", SegmentType.TOOL_RES, {
                 "tool_name": tool_name,
                 "result": result_preview,
@@ -540,7 +541,7 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
         try:
             import datetime
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-            result_preview = str(tool_result.get('result', ''))[:500]
+            result_preview = str(tool_result.get('result', ''))
             error_msg = tool_result.get('error')
             with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
                 f.write(f"[{timestamp}] === TOOL RESULT ===\n")
@@ -644,7 +645,7 @@ def _execute_thinking_tool(
             f.write(f"[{timestamp}] === COMPLETE PROMPT FOR LLM CALL (CHILD AGENT) ===\n")
             f.write(f"Agent Type: {agent_type_for_log}\n")
             f.write(f"Tool: thinking\n")
-            f.write(f"Task Description: {next_task[:200]}...\n")
+            f.write(f"Task Description: {next_task}\n")
             f.write(f"\n{'='*40} SYSTEM PROMPT {'='*40}\n")
             f.write(THINK_SYSTEM_PROMPT)
             f.write(f"\n\n{'='*40} USER MESSAGE {'='*40}\n")
@@ -660,7 +661,7 @@ def _execute_thinking_tool(
         with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
             f.write(f"\n[{timestamp}] === 🔍 DIAGNOSTIC: THINKING TOOL START ===\n")
             f.write(f"[{timestamp}] 🆔 Call ID: {thinking_call_id}\n")
-            f.write(f"[{timestamp}] 📝 Task: {next_task[:150]}...\n")
+            f.write(f"[{timestamp}] 📝 Task: {next_task}\n")
             f.write(f"[{timestamp}] 📊 Context size:\n")
             f.write(f"  - parent_chain_messages: {len(parent_chain_messages)} msgs\n")
             f.write(f"  - current_conversation_messages: {len(current_conversation_messages)} msgs\n")
@@ -683,7 +684,7 @@ def _execute_thinking_tool(
                     with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
                         f.write(f"[{cb_timestamp}] 🔄 THINKING TOKEN CALLBACK [{thinking_call_id}]\n")
                         f.write(f"  - token #{token_count}, chars so far: {total_chars}\n")
-                        f.write(f"  - current token preview: {token[:80]}...\n")
+                        f.write(f"  - current token: {token}\n")
                         f.flush()
 
         result = ""
@@ -704,7 +705,7 @@ def _execute_thinking_tool(
             f.write(f"  - total tokens sent: {token_count}\n")
             f.write(f"  - total characters: {total_chars}\n")
             f.write(f"  - result length: {len(result)} chars\n")
-            f.write(f"[{end_ts}] 📝 Result preview: {result[:200]}\n")
+            f.write(f"[{end_ts}] 📝 Result: {result}\n")
             f.flush()
 
         if send_message:
@@ -803,7 +804,7 @@ def _execute_chat_tool(
             f.write(f"[{timestamp}] Topic: {chat_topic}\n")
             f.write(f"[{timestamp}] Previous results: {len(previous_results)} items\n")
             f.write(f"\n[{'='*40} SYSTEM PROMPT {'='*40}\n")
-            f.write(system_prompt[:2000] if system_prompt else "(empty)")
+            f.write(system_prompt if system_prompt else "(empty)")
             f.write(f"\n[{'='*40} USER MESSAGE + TASK INJECTION {'='*40}\n")
             f.write(context_prompt + task_injection)
             f.write(f"\n{'='*80}\n")
@@ -1102,7 +1103,7 @@ def _execute_explore_code(tool_args: dict) -> dict:
                                     "path": rel_path,
                                     "type": "code",
                                     "line": line_num,
-                                    "content": line.strip()[:100]
+                                    "content": line.strip()
                                 })
                                 if len(findings) >= max_results:
                                     break
@@ -1161,9 +1162,9 @@ def _execute_explore_code(tool_args: dict) -> dict:
             elif "classes" in item:
                 result_lines.append(f"  📁 {item['path']}")
                 if item["classes"]:
-                    result_lines.append(f"     Classes: {', '.join(item['classes'][:5])}")
+                    result_lines.append(f"     Classes: {', '.join(item['classes'])}")
                 if item["functions"]:
-                    result_lines.append(f"     Functions: {', '.join(item['functions'][:5])}")
+                    result_lines.append(f"     Functions: {', '.join(item['functions'])}")
         
         result = "\n".join(result_lines)
         print(f"[ToolExec] explore_code 成功: {len(findings)} 项结果")
@@ -1205,8 +1206,7 @@ def _execute_explore_internet(tool_args: dict) -> dict:
             if href:
                 result_lines.append(f"   链接: {href}")
             if body:
-                truncated_body = body[:300] + "..." if len(body) > 300 else body
-                result_lines.append(f"   摘要: {truncated_body}")
+                result_lines.append(f"   摘要: {body}")
             result_lines.append("")
         
         result = "\n".join(result_lines)
@@ -1459,7 +1459,7 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
             f.write(f"Outcome Kind: {outcome.get('kind')}\n")
             f.write(f"Payload Type: {type(outcome.get('payload')).__name__ if outcome.get('payload') is not None else 'None'}\n")
             f.write(f"Payload Length: {len(str(outcome.get('payload'))) if outcome.get('payload') else 0}\n")
-            f.write(f"Payload Preview: {str(outcome.get('payload'))[:500] if outcome.get('payload') else '(empty)'}\n")
+            f.write(f"Payload: {str(outcome.get('payload')) if outcome.get('payload') else '(empty)'}\n")
             f.write(f"Exit Info: {outcome.get('exit_info')}\n")
             f.write(f"Final State Keys: {list(outcome.get('final_state', {}).keys()) if outcome.get('final_state') else 'N/A'}\n")
 
@@ -1467,7 +1467,7 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
             f.write(f"Final State - has_tool_use: {final_state.get('has_tool_use')}\n")
             f.write(f"Final State - pending_tools: {final_state.get('pending_tools')}\n")
             f.write(f"Final State - tool_history count: {len(final_state.get('tool_history', []))}\n")
-            f.write(f"Final State - final_reply: {str(final_state.get('final_reply'))[:200] if final_state.get('final_reply') else '(empty)'}\n")
+            f.write(f"Final State - final_reply: {str(final_state.get('final_reply')) if final_state.get('final_reply') else '(empty)'}\n")
             f.write(f"{'='*80}\n")
             f.flush()
 

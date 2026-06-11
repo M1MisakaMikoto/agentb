@@ -697,9 +697,9 @@ def build_intent_analysis_messages(
             f.write(f"\n{'='*80}\n")
             f.write(f"[{timestamp}] === INTENT ANALYSIS PROMPT ===\n")
             f.write(f"Agent Type: {agent_type}\n")
-            f.write(f"User Message (first 500 chars): {user_message[:500]}\n")
-            f.write(f"\n--- SYSTEM PROMPT ---\n{system_prompt[:2000]}\n")
-            f.write(f"\n--- USER PROMPT ---\n{prompt[:2000]}\n")
+            f.write(f"User Message ({len(user_message)} chars): {user_message}\n")
+            f.write(f"\n--- SYSTEM PROMPT ({len(system_prompt)} chars) ---\n{system_prompt}\n")
+            f.write(f"\n--- USER PROMPT ({len(prompt)} chars) ---\n{prompt}\n")
             f.write(f"{'='*80}\n")
             f.flush()
     except Exception as e:

@@ -1,4 +1,4 @@
-﻿import re
+import re
 import json
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -616,7 +616,7 @@ def execute_sql_query(tool_args: dict) -> dict:
 
     print(f"[Tool] sql_query: mode={mode}, database={database}, table={table}, limit={limit}")
     if query:
-        print(f"[Tool] SQL: {query[:100]}...")
+        print(f"[Tool] SQL: {query}")
 
     coro = execute_sql_query_async(mode, query, database, table, limit, timeout, tool_args)
 

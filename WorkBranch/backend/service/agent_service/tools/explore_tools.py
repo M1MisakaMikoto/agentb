@@ -93,8 +93,7 @@ def execute_explore_internet(tool_args: dict) -> dict:
             if href:
                 result_lines.append(f"   链接: {href}")
             if body:
-                truncated_body = body[:300] + "..." if len(body) > 300 else body
-                result_lines.append(f"   摘要: {truncated_body}")
+                result_lines.append(f"   摘要: {body}")
             result_lines.append("")
         
         result = "\n".join(result_lines)

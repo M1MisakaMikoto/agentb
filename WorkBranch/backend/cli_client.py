@@ -609,7 +609,7 @@ class CLIClient:
             
             elif event_type == "tool_res":
                 payload = event.get("payload", "")
-                print_dim(f"[工具结果] {payload[:100]}...")
+                print_dim(f"[工具结果] {payload}")
             
             elif event_type == "state_change":
                 state = event.get("meta", {}).get("state", "unknown")

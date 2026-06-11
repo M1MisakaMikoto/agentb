@@ -38,11 +38,11 @@ def compress_messages(messages: List[Any], keep_recent: int = 2) -> tuple:
     summary_parts = []
     for i, msg in enumerate(old_messages):
         if isinstance(msg, str):
-            summary_parts.append(f"[{i+1}] {msg[:100]}...")
+            summary_parts.append(f"[{i+1}] {msg}")
         elif isinstance(msg, dict):
-            summary_parts.append(f"[{i+1}] {msg.get('content', str(msg))[:100]}...")
+            summary_parts.append(f"[{i+1}] {msg.get('content', str(msg))}")
         else:
-            summary_parts.append(f"[{i+1}] {str(msg)[:100]}...")
+            summary_parts.append(f"[{i+1}] {str(msg)}")
     
     summary = f"历史消息摘要 ({len(old_messages)} 条):\n" + "\n".join(summary_parts)
     

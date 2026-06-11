@@ -51,8 +51,7 @@ def execute_rag_search(tool_args: dict) -> dict:
             text = getattr(chunk, "text", "") or ""
             score_str = f"  相关度：{score:.4f}" if score is not None else ""
             lines.append(f"{i}. [{source}]{score_str}")
-            truncated = text[:300] + "..." if len(text) > 300 else text
-            lines.append(f"   {truncated}\n")
+            lines.append(f"   {text}\n")
 
         return {"result": "\n".join(lines), "error": None}
 

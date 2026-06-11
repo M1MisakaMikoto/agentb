@@ -195,7 +195,7 @@ class ConsoleFormatter:
                     elif item_type == "image_url":
                         image_url = item.get("image_url") or {}
                         url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
-                        rendered.append(f"[image_url] {url[:120]}{'...' if len(url) > 120 else ''}")
+                        rendered.append(f"[image_url] {url}")
                     else:
                         rendered.append(str(item))
                 else:
@@ -210,7 +210,7 @@ class ConsoleFormatter:
             print(cls.BOX_CHARS["top_left"] + "─" + f" {title} " + "─" * (width - len(title) - 5) + cls.BOX_CHARS["top_right"])
             print(cls.BOX_CHARS["vertical"])
 
-            max_lines = 100  # 限制最大行数避免递归问题
+            max_lines = 9999  # 禁止截断
             line_count = 0
 
             for msg in messages:
@@ -226,7 +226,7 @@ class ConsoleFormatter:
                     if line_count >= max_lines:
                         break
                     try:
-                        print(cls.BOX_CHARS["vertical"] + "  " + line[:200])  # 限制单行长度
+                        print(cls.BOX_CHARS["vertical"] + "  " + line)
                     except Exception:
                         print(cls.BOX_CHARS["vertical"] + "  [无法显示该行]")
                     line_count += 1
@@ -251,13 +251,13 @@ class ConsoleFormatter:
                 print(cls.BOX_CHARS["vertical"])
 
             lines = content.split("\n")
-            max_lines = 100
+            max_lines = 9999  # 禁止截断
             for i, line in enumerate(lines):
                 if i >= max_lines:
                     print(cls.BOX_CHARS["vertical"] + "  ... (内容已截断)")
                     break
                 try:
-                    print(cls.BOX_CHARS["vertical"] + "  " + line[:200])
+                    print(cls.BOX_CHARS["vertical"] + "  " + line)
                 except Exception:
                     print(cls.BOX_CHARS["vertical"] + "  [无法显示该行]")
 
