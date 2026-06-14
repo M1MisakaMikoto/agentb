@@ -26,6 +26,7 @@ from service.agent_service.prompts.graph_prompts import (
     THINK_SYSTEM_PROMPT,
     build_special_tool_messages,
     generate_prompt,
+    build_direct_chat_messages,
 )
 from service.session_service.canonical import SegmentType
 from core.logging import console
@@ -802,8 +803,18 @@ def _execute_chat_tool(
     try:
         import datetime
 
-        # 构建消息：使用注入任务主题的 context_prompt
-        messages = [{"role": "user", "content": context_prompt + task_injection}]
+        # 检测是否有多模态内容（图片等），有则使用 parts 格式
+        multimodal_parts = tool_args.get("multimodal_parts")
+        if multimodal_parts:
+            messages = build_direct_chat_messages(
+                task_description=context_prompt + task_injection,
+                parent_chain_messages=parent_chain_messages,
+                current_conversation_messages=current_conversation_messages,
+                multimodal_parts=multimodal_parts,
+                message_context=message_context,
+            )
+        else:
+            messages = [{"role": "user", "content": context_prompt + task_injection}]
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
 

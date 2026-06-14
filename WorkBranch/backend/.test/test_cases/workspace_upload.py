@@ -233,20 +233,30 @@ async def run_workspace_upload_image_understanding_test(
         print_error(f"Failed to create session: {session_result.get('message')}")
         result.errors.append(f"create_session: {session_result.get('message')}")
         return result
-    
+
     session_id = session_result.get("data", {}).get("id")
+    workspace_id = session_result.get("data", {}).get("workspace_id")
     result.session_id = session_id
+    result.workspace_id = workspace_id
     print_success(f"Session created: {session_id}")
-    
-    print_step(2, "Creating conversation with image upload...", Colors.CYAN)
+    print_success(f"Workspace ID: {workspace_id}")
+
+    print_step(2, "Uploading image to workspace...", Colors.CYAN)
     source_file = scenario_config.get("source_file", ".dev/table/测试图片.png")
     prompt = scenario_config.get("prompt", "请分析这张图片。")
-    
+
     try:
         file_path = resolve_source_file(source_file)
+        upload_result = await api.upload_workspace_file(workspace_id, file_path)
+        if not upload_result.get("success", True):
+            print_error(f"Failed to upload image: {upload_result.get('message')}")
+            result.errors.append(f"upload_file: {upload_result.get('message')}")
+            return result
+        print_success(f"Uploaded: {file_path.name}")
+
         user_content_parts = [
             {"type": "text", "text": prompt},
-            {"type": "image", "path": str(file_path)}
+            {"type": "image", "file_ref": file_path.name}
         ]
         conv_result = await api.create_conversation(session_id, prompt, user_content_parts=user_content_parts)
     except FileNotFoundError as e:
