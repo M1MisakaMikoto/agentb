@@ -381,126 +381,131 @@ def _mode_name(value) -> Optional[str]:
     return str(value).split(".")[-1].upper()
 
 
-def check_state_v3(state: AgentState) -> Literal["analyze", "decide", "execute", "done", "error_summary"]:
+def check_state_node(state: AgentState) -> dict:
+    """状态检查节点（原 check_state_v3，从 edge 函数改为节点函数）
+
+    作为节点执行时能读到完整的 merged state（包括前一个节点的最新更新），
+    解决了 edge 函数中 LangGraph 状态传播延迟导致 pending_tools 读取旧值的问题。
+
+    返回 dict 中包含 _route_target 字段，由 _route_after_check_state edge 函数读取。
+    """
     # 添加详细日志追踪状态
     _iter = state.get("iteration_count", 0) or 0
     _pending = len(state.get("pending_tools") or [])
     _final = state.get("final_reply")
     _forced_err = state.get("force_error_summary")
     _dec_err = state.get("decision_error_count", 0) or 0
-    print(f"[TRACE check_state_v3] iter={_iter}, pending={_pending}, final_reply={bool(_final)}, force_err={_forced_err}, dec_err={_dec_err}")
+    print(f"[TRACE check_state] iter={_iter}, pending={_pending}, final_reply={bool(_final)}, force_err={_forced_err}, dec_err={_dec_err}")
 
-    # ===== 【关键修复】前置迭代次数检查，防止无限循环 =====
-    # 在检查 pending_tools 之前，先检查迭代次数是否已达上限
-    # 这样可以确保即使有 pending_tools，如果迭代次数过多也会终止
     iteration_count = state.get("iteration_count", 0) or 0
     max_iterations = state.get("max_iterations", 10) or 10
+
+    # ===== 前置迭代次数检查 =====
     if iteration_count >= max_iterations:
-        console.warning(
-            f"[check_state_v3] 迭代次数已达上限 ({iteration_count}/{max_iterations})，强制终止"
-        )
-        return "error_summary"
+        console.warning(f"[check_state] 迭代次数已达上限 ({iteration_count}/{max_iterations})，强制终止")
+        return {"_route_target": "error_summary"}
 
-    # 检查是否有待执行的工具
+    # ===== 检查 pending_tools（此时已是 decide 节点写入后的最新值）=====
     if state.get("pending_tools"):
-        print(f"[TRACE check_state_v3] -> execute (pending_tools exists)")
-        return "execute"
+        print(f"[TRACE check_state] -> execute (pending_tools exists, count={_pending})")
+        return {"_route_target": "execute"}
 
-    # 检查是否有最终回复
     if state.get("final_reply"):
-        return "done"
+        return {"_route_target": "done"}
 
-    # 检查是否强制错误总结
     if state.get("force_error_summary"):
-        return "error_summary"
+        return {"_route_target": "error_summary"}
 
     # ===== 决策错误保护 =====
-    # 当决策连续失败时，防止无限循环重试
     decision_error_count = state.get("decision_error_count", 0) or 0
     if decision_error_count >= 3:
-        console.warning(
-            f"[check_state_v3] 决策连续失败 {decision_error_count} 次，强制终止"
-        )
-        return "error_summary"
+        console.warning(f"[check_state] 决策连续失败 {decision_error_count} 次，强制终止")
+        return {"_route_target": "error_summary"}
 
-    # ===== 【关键修复】检查 todo_status = step_done =====
-    # 当 decide 节点返回 step_done 时，表示任务已完成，应该结束
+    # ===== 检查 todo_status = step_done =====
     todo_status = state.get("todo_status")
     if todo_status == "step_done":
-        console.info(f"[check_state_v3] 检测到 todo_status=step_done，任务完成，结束循环")
-        return "done"
+        console.info("[check_state] 检测到 todo_status=step_done，任务完成")
+        return {"_route_target": "done"}
 
-    # ===== 【关键修复】检测 Agent 忘记调用 chat 工具 =====
-    # 条件：有工具调用历史 + 没有 pending_tools + 没有调用过 chat
-    # 说明：Agent 已完成工作但忘记调用 chat 输出结果，强制注入 chat 工具
-    # 注意：不强制要求 document 工具，因为 explore_agent 可能不需要调用 document
+    # ===== 检测 Agent 忘记调用 chat 工具 =====
     tool_history = state.get("tool_history", []) or []
     has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
-    has_pending = bool(state.get("pending_tools"))
 
-    if tool_history and not has_chat_call and not has_pending:
+    if tool_history and not has_chat_call:
         console.warning(
-            f"[check_state_v3] 检测到 Agent 遗漏了 chat 工具调用，注入最终回复任务"
+            f"[check_state] 检测到 Agent 遗漏了 chat 工具调用，注入最终回复任务"
         )
-        # 【关键修复】返回字符串节点名，而不是字典
-        # 注入 pending_tools 后，让 graph 回到 execute 节点
-        return "execute"
+        # 注入 chat 工具到 pending_tools，让 execute 节点执行
+        previous_results = [
+            {
+                "tool_name": t.get("tool_name"),
+                "result": t.get("result"),
+                "reason": "",
+                "timestamp": t.get("timestamp", ""),
+            }
+            for t in tool_history
+            if t.get("result")
+        ]
+        return {
+            "_route_target": "execute",
+            "pending_tools": [{"tool_name": "chat", "args": {
+                "description": "请汇总已执行的工具结果，输出最终回复。",
+                "previous_results": previous_results,
+            }}],
+            "has_tool_use": True,
+        }
 
-    # ===== 新增：检测工具失败循环 =====
-    # 当工具持续失败且没有进展时，强制结束循环
-    iteration_count = state.get("iteration_count", 0) or 0
+    # ===== 检测工具失败循环 =====
     last_tool_success = state.get("last_tool_success")
     last_tool_name = state.get("last_tool_name")
-    tool_history = state.get("tool_history", []) or []
 
-    # 基础保护：如果迭代次数过多（超过20次）且没有pending_tools，强制终止
-    # 这是一个保守的保护措施，防止任何形式的无限循环
-    if iteration_count > 20 and not state.get("pending_tools"):
-        console.warning(
-            f"[check_state_v3] 迭代次数过多 ({iteration_count})，强制进入错误总结"
-        )
-        return "error_summary"
+    if iteration_count > 20:
+        console.warning(f"[check_state] 迭代次数过多 ({iteration_count})，强制终止")
+        return {"_route_target": "error_summary"}
 
     if last_tool_success is False and last_tool_name:
-        # 检查最近是否有连续失败
         recent_failures = 0
         repeated_same_tool = 0
         last_failed_tool = None
         last_failed_args = None
 
-        for item in reversed(tool_history[-10:]):  # 检查最近10次
+        for item in reversed(tool_history[-10:]):
             if item.get("tool_name") == last_tool_name:
                 if item.get("result") is None or item.get("error"):
                     recent_failures += 1
                     if last_failed_tool == last_tool_name:
-                        # 检查参数是否相同
                         current_args = item.get("args", {})
                         if last_failed_args == current_args:
                             repeated_same_tool += 1
                         last_failed_args = current_args
                     last_failed_tool = last_tool_name
 
-        # 如果同一工具连续失败超过3次，且参数相同，强制报告问题
         if repeated_same_tool >= 3:
             console.warning(
-                f"[check_state_v3] 检测到工具失败循环: "
-                f"{last_tool_name} 连续失败 {repeated_same_tool} 次，参数相同"
+                f"[check_state] 工具失败循环: {last_tool_name} 连续失败 {repeated_same_tool} 次"
             )
-            return "error_summary"
+            return {"_route_target": "error_summary"}
 
-        # 如果最近5次工具有4次以上失败，强制报告问题
         if recent_failures >= 4 and len(tool_history) >= 5:
-            recent_tools = [item.get("tool_name") for item in tool_history[-5:]]
             console.warning(
-                f"[check_state_v3] 检测到工具失败循环: "
-                f"最近5次调用中有 {recent_failures} 次失败，工具列表: {recent_tools}"
+                f"[check_state] 工具失败循环: 最近5次中有 {recent_failures} 次失败"
             )
-            return "error_summary"
-    # ===== 结束新增 =====
+            return {"_route_target": "error_summary"}
 
-    # 如果所有保护都通过，返回 decide
-    print(f"[TRACE check_state_v3] -> decide (last_tool_success={last_tool_success}, tool_history_len={len(tool_history)})")
-    return "decide"
+    # 所有检查通过，回到 decide 让 LLM 继续决策
+    print(f"[TRACE check_state] -> decide (tool_history_len={len(tool_history)})")
+    return {"_route_target": "decide"}
+
+
+def _route_after_check_state(state: AgentState) -> str:
+    """check_state 节点的路由函数 — 只读取节点写入的 _route_target"""
+    target = state.get("_route_target") or "decide"
+    return target
+
+
+# 保留旧函数名作为别名供外部引用（兼容）
+check_state_v3 = check_state_node
 
 
 def route_after_analyze(state: dict) -> str:
@@ -2149,22 +2154,36 @@ def route_after_todo_review(_state: AgentState) -> str:
 
 def route_after_execute(state: AgentState) -> str:
     """路由 after_execute"""
+    # 【调试日志】诊断 execute 后路由路径
+    _pt = state.get("pending_tools")
+    _fr = state.get("final_reply")
+    _ln = state.get("last_tool_name")
+    _na = state.get("next_action") or {}
+    console.debug(f"[route_after_execute] ENTER | tool={_pt is not None and len(_pt) if isinstance(_pt, list) else 'N/A'}, "
+                  f"pending_type={type(_pt).__name__}, pending_val={repr(_pt)[:100]}, "
+                  f"final_reply={_fr is not None}, last_tool={_ln}, next_action_kind={_na.get('kind')}")
+
     # 【修复】优先检查 final_reply，确保 chat 工具执行后直接结束
     if state.get("final_reply"):
+        console.debug("[route_after_execute] → done (final_reply)")
         return "done"
 
     # 检查 pending_tools
     if not state.get("pending_tools"):
+        console.debug(f"[route_after_execute] → decide (pending_tools empty, tool={_ln})")
         return "decide"
 
     next_action = state.get("next_action") or {}
     if next_action.get("kind") == "enter_plan":
+        console.debug("[route_after_execute] → analyze (enter_plan)")
         return "analyze"
 
     if state.get("pending_tools"):
+        console.debug("[route_after_execute] → execute (has pending)")
         return "execute"
 
-    return check_state_v3(state)
+    console.debug("[route_after_execute] → decide (fallback)")
+    return "decide"
 
 
 def _director_post_execute_hook(direct_update: dict, tool_result: dict, state: dict) -> dict:
@@ -2248,7 +2267,9 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         settings_service=settings_service,
         message_context=message_context,
     ))
-    
+
+    graph.add_node("check_state", check_state_node)
+
     graph.add_node("execute", director_base._create_execute_node(
         llm_service=llm_service,
         settings_service=settings_service,
@@ -2266,7 +2287,10 @@ def create_orchestrator_graph_v3(llm_service=None, token_callback=None, memory_m
         message_context=message_context,
     ))
 
-    graph.add_conditional_edges("decide", check_state_v3, {
+    # decide → check_state(节点) → _route_after_check_state(edge) → 目标
+    graph.add_edge("decide", "check_state")
+
+    graph.add_conditional_edges("check_state", _route_after_check_state, {
         "analyze": "analyze",
         "decide": "decide",
         "execute": "execute",

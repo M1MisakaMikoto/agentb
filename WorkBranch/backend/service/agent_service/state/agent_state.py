@@ -126,3 +126,4 @@ class AgentState(TypedDict):
     todo_max_iterations: Optional[int]
     todo_status: Optional[str]
     next_action: Optional[NextAction]
+    _route_target: Optional[str]
