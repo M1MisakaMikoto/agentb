@@ -1,9 +1,10 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
 ENV APP_HOME=/app
+ENV PYTHONPATH=/app/WorkBranch/backend:/app/WorkBranch
 
 WORKDIR ${APP_HOME}
 
@@ -28,7 +29,7 @@ RUN pip install --upgrade pip setuptools wheel \
 
 COPY . .
 
-RUN mkdir -p /app/logs /app/workspaces /app/WorkBranch/backend/data
+RUN mkdir -p /app/logs /app/workspaces /app/WorkBranch/backend/data/db
 
 WORKDIR /app/WorkBranch/backend
 
