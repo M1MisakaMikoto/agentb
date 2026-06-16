@@ -18,7 +18,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./workspaces:/app/workspaces
-      - ./WorkBranch/backend/data:/app/WorkBranch/backend/data
+      - ./db:/app/WorkBranch/backend/data/db
       - ./setting.json:/app/setting.json:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
