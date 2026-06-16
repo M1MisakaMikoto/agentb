@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Iterable, List
 
 from .base_chunk_engine import BaseChunkEngine
+from .doc_chunk_engine import DocChunkEngine
 from .docx_chunk_engine import DocxChunkEngine
 from .file_profile import FileProfile
 from .file_profile_detector import FileProfileDetector
@@ -11,6 +12,8 @@ from .hybrid_pdf_chunk_engine import HybridPDFChunkEngine
 from .ocr_chunk_engine import OCRChunkEngine
 from .plain_text_chunk_engine import PlainTextChunkEngine
 from .pypdf_chunk_engine import PyPDFChunkEngine
+from .xls_chunk_engine import XlsChunkEngine
+from .xlsx_chunk_engine import XlsxChunkEngine
 
 
 class ChunkEngineRegistry:
@@ -21,6 +24,9 @@ class ChunkEngineRegistry:
             PyPDFChunkEngine(),
             OCRChunkEngine(),
             DocxChunkEngine(),
+            DocChunkEngine(),
+            XlsxChunkEngine(),
+            XlsChunkEngine(),
             PlainTextChunkEngine(),
         ])
 
