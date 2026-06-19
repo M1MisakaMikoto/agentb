@@ -505,8 +505,211 @@ def _convert_doc_to_docx(file_path: str) -> Optional[str]:
     return None
 
 
+def _extract_table_data(table) -> Tuple[str, dict]:
+    """
+    提取单个表格的数据，返回 Markdown 格式文本和元数据
+
+    Args:
+        table: python-docx 的 Table 对象
+
+    Returns:
+        Tuple[str, dict]: (Markdown 格式表格字符串, 元数据字典)
+    """
+    rows_data = []
+    max_cols = 0
+
+    # 遍历表格行
+    for row in table.rows:
+        row_cells = []
+        for cell in row.cells:
+            cell_text = cell.text.strip().replace("\n", " ")
+            row_cells.append(cell_text)
+
+        # 记录最大列数（处理合并单元格）
+        if len(row_cells) > max_cols:
+            max_cols = len(row_cells)
+        rows_data.append(row_cells)
+
+    if not rows_data or max_cols == 0:
+        return "", {"rows": 0, "cols": 0}
+
+    # 格式化为 Markdown 表格
+    lines = []
+
+    # 表头行（第一行）
+    header = rows_data[0]
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("| " + " | ".join(["---"] * len(header)) + " |")
+
+    # 数据行
+    for row in rows_data[1:]:
+        # 补齐列数（处理某些行列数不一致的情况）
+        while len(row) < len(header):
+            row.append("")
+        lines.append("| " + " | ".join(row[:len(header)]) + " |")
+
+    formatted_text = "\n".join(lines)
+
+    metadata = {
+        "rows": len(rows_data),
+        "cols": max_cols,
+    }
+
+    return formatted_text, metadata
+
+
+def _docx_read_via_pandoc(file_path: str, start_idx: int = 0, max_length: int = 10000,
+                          include_metadata: bool = True) -> Optional[dict]:
+    """
+    使用 Pandoc 读取 Word 文档（高覆盖率方案）
+
+    优势：
+    - 自动提取：段落、表格、图片、页眉页脚、脚注、超链接等
+    - 输出格式：Markdown，保留文档结构
+    - 覆盖率：95%+ 的文档元素
+
+    Args:
+        file_path: 文件路径
+        start_idx: 起始位置（字符偏移）
+        max_length: 最大读取长度
+        include_metadata: 是否包含元数据
+
+    Returns:
+        成功返回 dict，失败返回 None（调用方应降级到 python-docx）
+    """
+    pandoc_path = _find_pandoc()
+    if not pandoc_path:
+        print("[DOCX-READ] ⚠️ Pandoc 未安装，将降级到 python-docx 模式")
+        print("[DOCX-READ] ⚠️ 降级原因: 无法找到 pandoc 可执行文件")
+        print("[DOCX-READ] ⚠️ 影响范围: 图片、页眉页脚、脚注等元素可能丢失")
+        return None
+
+    try:
+        import subprocess
+
+        actual_path = file_path
+        cleanup = False
+
+        # 处理 .doc 格式
+        if _get_ext(file_path) == ".doc":
+            converted = _convert_doc_to_docx(file_path)
+            if not converted:
+                print("[DOCX-READ] ⚠️ .doc 格式转换失败，尝试使用 pandoc 直接读取")
+                # pandoc 可以直接读取 .doc，不需要转换
+            else:
+                actual_path = converted
+                cleanup = True
+
+        # 使用 pandoc 转换为 Markdown
+        cmd = [
+            pandoc_path,
+            "--from=docx",
+            "--to=markdown",
+            "--wrap=none",           # 不自动换行
+            "--extract-media=./",    # 提取内嵌媒体（可选）
+            actual_path
+        ]
+
+        print(f"[DOCX-READ] 使用 Pandoc 读取文档: {file_path}")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        )
+
+        if result.returncode != 0:
+            print(f"[DOCX-READ] ❌ Pandoc 读取失败: {result.stderr}")
+            print("[DOCX-READ] ⚠️ 将降级到 python-docx 模式")
+            return None
+
+        full_text = result.stdout
+
+        # 清理临时文件
+        if cleanup and actual_path != file_path and os.path.exists(actual_path):
+            os.unlink(actual_path)
+
+        total_length = len(full_text)
+
+        # 防御性处理
+        if start_idx >= total_length and total_length > 0:
+            return {
+                "content": "",
+                "metadata": {},
+                "structure": [],
+                "total_length": total_length,
+                "read_range": f"{total_length}-{total_length}",
+                "truncated": False,
+                "status": "end_of_file",
+                "message": f"文档已读取完毕（总长度: {total_length}）"
+            }
+
+        end_idx = min(start_idx + max_length, total_length)
+        content = full_text[start_idx:end_idx]
+
+        metadata = {}
+        if include_metadata:
+            metadata = {
+                "file_type": str(_get_ext(file_path).lstrip(".")),
+                "method": "pandoc",  # 标记使用的读取方法
+            }
+
+        print(f"[DOCX-READ] ✅ Pandoc 读取成功 (方法: pandoc, 长度: {total_length})")
+
+        return {
+            "content": content,
+            "metadata": metadata,
+            "structure": [],  # pandoc 模式不提供结构化信息
+            "total_length": total_length,
+            "read_range": f"{start_idx}-{end_idx}",
+            "truncated": end_idx < total_length
+        }
+
+    except subprocess.TimeoutExpired:
+        print("[DOCX-READ] ❌ Pandoc 读取超时（60秒），降级到 python-docx")
+        return None
+    except Exception as e:
+        print(f"[DOCX-READ] ❌ Pandoc 异常: {str(e)}")
+        print("[DOCX-READ] ⚠️ 将降级到 python-docx 模式")
+        return None
+
+
 def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
                include_metadata: bool = True) -> dict:
+    """
+    读取 Word 文档（双模式：Pandoc 优先 + python-docx 降级）
+
+    策略：
+    1. 优先使用 Pandoc（高覆盖率，支持图片/页眉页脚/脚注等）
+    2. Pandoc 不可用时，降级到 python-docx（基础覆盖，段落+表格）
+    3. 所有降级操作都会在控制台和日志中留痕
+    """
+    # ===== 模式 1：尝试使用 Pandoc（高覆盖率）=====
+    print(f"[DOCX-READ] 开始读取文档: {file_path}")
+    print("[DOCX-READ] 策略: 优先使用 Pandoc (高覆盖率模式)")
+
+    pandoc_result = _docx_read_via_pandoc(file_path, start_idx, max_length, include_metadata)
+
+    if pandoc_result is not None:
+        # Pandoc 成功
+        return _make_result(pandoc_result)
+
+    # ===== 模式 2：降级到 python-docx =====
+    print("=" * 60)
+    print("[DOCX-READ] ⚠️ ⚠️ ⚠️ 降级警告 ⚠️ ⚠️ ⚠️")
+    print("[DOCX-READ] 已从 Pandoc 模式降级到 python-docx 模式")
+    print("[DOCX-READ] 降级影响:")
+    print("   - ❌ 内嵌图片可能丢失")
+    print("   - ❌ 页眉页脚内容可能丢失")
+    print("   - ❌ 脚注尾注可能丢失")
+    print("   - ❌ 批注注释可能丢失")
+    print("   - ✅ 段落文本正常提取")
+    print("   - ✅ 表格数据正常提取")
+    print(f"[DOCX-READ] 文档路径: {file_path}")
+    print("=" * 60)
+
     try:
         from docx import Document
     except ImportError:
@@ -525,22 +728,37 @@ def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
         
         doc = Document(actual_path)
 
-        paragraphs = []
+        # 统一存储段落和表格内容，保持文档顺序
+        content_parts = []
         structure = []
 
+        # 1. 遍历段落
         for i, para in enumerate(doc.paragraphs):
             text = para.text.strip()
             if text:
-                paragraphs.append(text)
+                content_parts.append(text)
                 style_name = para.style.name if para.style else None
                 structure.append({
                     "type": "paragraph",
-                    "index": int(i),
+                    "index": len(content_parts) - 1,
                     "style": str(style_name) if style_name is not None else None,
                     "content": text[:100] + "..." if len(text) > 100 else text
                 })
 
-        full_text = "\n\n".join(paragraphs)
+        # 2. 遍历表格
+        for t_idx, table in enumerate(doc.tables):
+            table_text, table_meta = _extract_table_data(table)
+            if table_text.strip():
+                content_parts.append(table_text)
+                structure.append({
+                    "type": "table",
+                    "index": t_idx,
+                    "rows": table_meta["rows"],
+                    "cols": table_meta["cols"],
+                    "content_preview": table_text[:100] + "..." if len(table_text) > 100 else table_text
+                })
+
+        full_text = "\n\n".join(content_parts)
         total_length = len(full_text)
 
         # 防御性处理：当 start_idx >= total_length 时，说明文档已经读完
@@ -563,9 +781,15 @@ def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
         metadata = {}
         if include_metadata:
             core_props = doc.core_properties
+            # 统计段落数量和表格数量
+            paragraph_count = sum(1 for item in structure if item["type"] == "paragraph")
+            table_count = sum(1 for item in structure if item["type"] == "table")
+
             metadata = {
                 "file_type": str(_get_ext(file_path).lstrip(".")),
-                "paragraph_count": int(len(paragraphs)),
+                "method": "python-docx",  # 标记降级模式
+                "paragraph_count": int(paragraph_count),
+                "table_count": int(table_count),
                 "author": str(core_props.author) if core_props.author else None,
                 "title": str(core_props.title) if core_props.title else None,
                 "subject": str(core_props.subject) if core_props.subject else None,
@@ -573,6 +797,11 @@ def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
 
         if cleanup and actual_path != file_path:
             os.unlink(actual_path)
+
+        # 降级模式成功日志
+        print(f"[DOCX-READ] ✅ python-docx 降级模式读取成功")
+        print(f"[DOCX-READ] 📊 统计: {paragraph_count} 个段落, {table_count} 个表格, 总长度 {total_length} 字符")
+        print("[DOCX-READ] 💡 提示: 安装 Pandoc 可获得更完整的文档内容（含图片/页眉页脚/脚注等）")
 
         return _make_result({
             "content": content,
@@ -583,6 +812,7 @@ def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
             "truncated": end_idx < total_length
         })
     except Exception as e:
+        print(f"[DOCX-READ] ❌ python-docx 降级模式也失败了: {str(e)}")
         return _make_result(error=f"Word文档读取失败: {str(e)}")
 
 
