@@ -36,6 +36,7 @@ from test_cases.workspace_upload import (
     run_workspace_upload_extract_write_test,
     run_workspace_upload_read_document_test,
     run_workspace_upload_image_understanding_test,
+    run_workspace_upload_read_table_document_test,
 )
 from test_cases.rag_search import run_rag_search_test
 from test_cases.sql_query import run_sql_query_test, run_sql_agent_bridge_test
@@ -59,6 +60,7 @@ SCENARIO_RUNNERS = {
     "workspace_upload_extract_write": run_workspace_upload_extract_write_test,
     "workspace_upload_read_document": run_workspace_upload_read_document_test,
     "workspace_upload_image_understanding": run_workspace_upload_image_understanding_test,
+    "workspace_upload_read_table_document": run_workspace_upload_read_table_document_test,
     "rag_search": run_rag_search_test,
     "sql_query": run_sql_query_test,
     "sql_agent_bridge": run_sql_agent_bridge_test,

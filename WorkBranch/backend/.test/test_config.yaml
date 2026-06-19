@@ -89,6 +89,28 @@ scenarios:
       - ".dev/table/桥梁检测报告/2020/07 朝阳寺立交桥.doc"
     prompt: "请仔细分析工作区中的桥梁检测报告文档，提取所有病害信息。需要提取的病害数据包括：1) 上部结构病害: 梁体裂缝、破损、露筋等 2) 下部结构病害: 桥墩裂缝、破损等 3) 桥面系病害: 桥面铺装裂缝、破损等 4) 支座病害。请以结构化格式输出，最后给出病害统计。"
 
+  workspace_upload_read_table_document:
+    description: "Workspace Upload - Table Content Extraction Test (表格内容提取)"
+    source_file: ".test/test_data/table_test_document.docx"
+    prompt: |
+      请仔细读取文档中的所有表格数据，完整提取每个表格的内容。
+
+      要求：
+      1. 提取全部4个表格的完整数据（包括表头和所有行）
+      2. 保持表格的结构和格式
+      3. 列出每个表格的名称、行列数、以及关键数据项
+      4. 特别验证以下数据点：
+         - 桥梁名称是否为'朝阳寺立交桥'
+         - 病害编号 D005 的处置建议是什么
+         - 2023 年的综合 BCI 分数是多少
+         - 紧急维修项目的预估费用
+
+      验证标准：
+      - 表格1（基本信息）应包含：桥梁名称、全长1250.5米、建成年份2008
+      - 表格2（病害统计）应包含：6条病害记录、D005支座变形超标
+      - 表格3（BCI评分）应包含：5年数据、2023年综合BCI为78.5
+      - 表格4（维修建议）应包含：紧急项目费用45.0万元
+
   bridge_predict:
     description: "Bridge Inspection Report - Historical Data Prediction Test"
     prediction_timeout: 900.0

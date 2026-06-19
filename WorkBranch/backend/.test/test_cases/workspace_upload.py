@@ -305,3 +305,206 @@ async def run_workspace_upload_image_understanding_test(
     print(f"{Colors.GREEN}{'='*60}{Colors.ENDC}\n")
     
     return result
+
+
+async def run_workspace_upload_read_table_document_test(
+    api: APIClient,
+    scenario_config: dict,
+    verbose: bool = True
+) -> TestResult:
+    """
+    表格内容提取 E2E 测试
+
+    验证 document 工具能否正确从 Word 文档中提取表格数据
+    """
+    result = TestResult("workspace_upload_read_table_document", scenario_config)
+    
+    print_test_header(scenario_config.get(
+        "description",
+        "Workspace Upload - Read Table Document Test (表格内容提取)"
+    ))
+    
+    # 定义预期的表格数据（用于验证）
+    expected_tables = {
+        "table1": {
+            "name": "桥梁基本信息",
+            "headers": ["项目", "数值", "单位", "备注"],
+            "expected_rows": 5,
+            "expected_cols": 4,
+            "keywords": ["朝阳寺立交桥", "1250.5", "2008"],
+        },
+        "table2": {
+            "name": "病害统计明细",
+            "headers": ["编号", "位置", "病害类型", "严重程度", "尺寸(cm)", "处置建议"],
+            "expected_rows": 7,
+            "expected_cols": 6,
+            "keywords": ["D001", "纵向裂缝", "D005", "支座更换"],
+        },
+        "table3": {
+            "name": "BCI评分记录",
+            "headers": ["检测年份", "上部结构", "下部结构", "桥面系", "综合BCI"],
+            "expected_rows": 6,
+            "expected_cols": 5,
+            "keywords": ["2019", "85.3", "78.5"],
+        },
+        "table4": {
+            "name": "维修建议清单",
+            "headers": ["优先级", "工作内容", "预估费用(万元)", "计划工期"],
+            "expected_rows": 5,
+            "expected_cols": 4,
+            "keywords": ["紧急", "45.0", "2024Q1"],
+        },
+    }
+    
+    print_step(1, "Creating session...", Colors.CYAN)
+    session_result = await api.create_session(title="Table Document Extraction Test")
+    if not session_result.get("success", True):
+        print_error(f"Failed to create session: {session_result.get('message')}")
+        result.errors.append(f"create_session: {session_result.get('message')}")
+        return result
+    
+    session_id = session_result.get("data", {}).get("id")
+    workspace_id = session_result.get("data", {}).get("workspace_id")
+    result.session_id = session_id
+    print_success(f"Session created: {session_id}")
+    print_success(f"Workspace ID: {workspace_id}")
+    
+    print_step(2, "Uploading table test document...", Colors.CYAN)
+    source_file = scenario_config.get(
+        "source_file",
+        ".test/test_data/table_test_document.docx"
+    )
+    prompt = scenario_config.get(
+        "prompt",
+        (
+            "请仔细读取文档中的所有表格数据，完整提取每个表格的内容。"
+            "要求："
+            "\n1. 提取全部4个表格的完整数据（包括表头和所有行）"
+            "\n2. 保持表格的结构和格式"
+            "\n3. 列出每个表格的名称、行列数、以及关键数据项"
+            "\n4. 特别验证以下数据点："
+            "   - 桥梁名称是否为'朝阳寺立交桥'"
+            "   - 病害编号 D005 的处置建议是什么"
+            "   - 2023 年的综合 BCI 分数是多少"
+            "   - 紧急维修项目的预估费用"
+        )
+    )
+    
+    try:
+        file_path = resolve_source_file(source_file)
+        upload_result = await api.upload_workspace_file(workspace_id, file_path)
+        if not upload_result.get("success", True):
+            print_error(f"Failed to upload file: {upload_result.get('message')}")
+            result.errors.append(f"upload_file: {upload_result.get('message')}")
+            return result
+        print_success(f"Uploaded: {file_path.name}")
+    except FileNotFoundError as e:
+        print_error(str(e))
+        result.errors.append(str(e))
+        return result
+    
+    print_step(3, "Creating conversation with table extraction prompt...", Colors.CYAN)
+    conv_result = await api.create_conversation(session_id, prompt)
+    
+    if not conv_result.get("success", True):
+        print_error(f"Failed to create conversation: {conv_result.get('message')}")
+        result.errors.append(f"create_conversation: {conv_result.get('message')}")
+        return result
+    
+    conversation_id = conv_result.get("data", {}).get("conversation_id")
+    result.conversation_id = conversation_id
+    print_success(f"Conversation created: {conversation_id}")
+    
+    print_step(4, "Waiting for conversation to be processing...", Colors.CYAN)
+    await wait_for_conversation_state(api, conversation_id, "processing", timeout=10.0)
+    
+    print_step(5, "Streaming response (table extraction)...", Colors.CYAN)
+    await collect_stream_output(api, conversation_id, result, verbose=verbose)
+    
+    print_step(6, "Waiting for conversation to complete...", Colors.CYAN)
+    final_result = await wait_for_conversation_state(
+        api, conversation_id, "completed", timeout=300.0
+    )
+    result.response_text = extract_response_text(final_result)
+    
+    print_step(7, "Validating table extraction results...", Colors.CYAN)
+    
+    # 验证结果
+    validation_passed = True
+    
+    if not result.response_text:
+        print_error("No response text found")
+        result.errors.append("No response text in response")
+        validation_passed = False
+    else:
+        print_success(f"Response length: {len(result.response_text)} chars")
+        
+        # 检查 document 工具是否被调用
+        if "document" in result.tool_calls:
+            print_success("✓ document tool was called")
+        else:
+            print_warning("⚠ document tool was NOT called (may have used other method)")
+        
+        # 验证表格数据提取
+        print(f"\n{Colors.CYAN}[Table Validation]{Colors.ENDC}")
+        
+        all_keywords_found = []
+        missing_keywords = []
+        
+        for table_key, table_info in expected_tables.items():
+            table_name = table_info["name"]
+            keywords = table_info["keywords"]
+            
+            found_count = sum(1 for kw in keywords if kw in result.response_text)
+            total_count = len(keywords)
+            
+            if found_count == total_count:
+                print_success(
+                    f"✓ {table_name}: "
+                    f"{found_count}/{total_count} keywords found"
+                )
+                all_keywords_found.extend(keywords)
+            else:
+                found_kws = [kw for kw in keywords if kw in result.response_text]
+                missing_kws = [kw for kw in keywords if kw not in result.response_text]
+                
+                print_error(
+                    f"✗ {table_name}: "
+                    f"Only {found_count}/{total_count} keywords found"
+                )
+                print_dim(f"  Found: {found_kws}")
+                print_dim(f"  Missing: {missing_kws}")
+                missing_keywords.extend(missing_kws)
+                validation_passed = False
+        
+        # 检查 Markdown 表格格式
+        markdown_table_indicators = ["| --- |", "| ---|", "--- |"]
+        has_markdown_format = any(
+            indicator in result.response_text
+            for indicator in markdown_table_indicators
+        )
+        
+        if has_markdown_format:
+            print_success("✓ Response contains Markdown table format")
+        else:
+            print_warning("⚠ Response may not use standard Markdown table format")
+        
+        # 统计表格数量提及
+        table_mentions = result.response_text.lower().count("表格") + \
+                        result.response_text.lower().count("table")
+        print_dim(f"Table mentions in response: {table_mentions}")
+    
+    # 设置验证结果
+    result.table_extraction_passed = validation_passed
+    result.missing_keywords = missing_keywords if 'missing_keywords' in dir() else []
+    
+    print(f"\n{Colors.GREEN}{'='*60}{Colors.ENDC}")
+    if validation_passed:
+        print(f"{Colors.GREEN}  ✓ Table Extraction Test PASSED{Colors.ENDC}")
+    else:
+        print(f"{Colors.RED}  ✗ Table Extraction Test FAILED{Colors.ENDC}")
+        if result.missing_keywords:
+            print(f"{Colors.RED}     Missing keywords: {result.missing_keywords}{Colors.ENDC}")
+    print(f"{Colors.GREEN}{'='*60}{Colors.ENDC}\n")
+    
+    return result
