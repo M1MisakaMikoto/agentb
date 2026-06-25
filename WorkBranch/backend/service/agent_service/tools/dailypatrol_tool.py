@@ -5,7 +5,8 @@
 功能: 提交日常巡查记录数据到后端接口
 
 API 流程:
-POST /v1/dailypatrol/no-auth/add - 直接提交巡查记录
+POST /dailypatrol/agent/add - Agent 回写巡查记录
+认证: agent-secret-key: daily-patrol-agent
 
 使用方法:
     submit_dailypatrol_record(
@@ -19,10 +20,9 @@ POST /v1/dailypatrol/no-auth/add - 直接提交巡查记录
         dq=310101,
         isdjrw=0,
         isyhby=1,
-        realName="张三",
-        mobile="13800138000",
-        orgId=2001,
-        orgName="市政养护公司",
+        xcperson="张三",
+        xcphone="13800138000",
+        xcunitid=2001,
         dtoList=[{
             "testingitemid": "桥面系",
             "testingsubitem": "铺装层",
@@ -36,6 +36,7 @@ POST /v1/dailypatrol/no-auth/add - 直接提交巡查记录
 
 import json
 import logging
+import os
 from typing import Optional, Dict, Any, List
 
 from .registry import ToolDefinition, ToolRegistry
@@ -45,6 +46,9 @@ logger = logging.getLogger(__name__)
 # 默认配置
 DEFAULT_API_URL = "http://localhost:8002"
 DEFAULT_TIMEOUT = 30  # 超时时间（秒）
+
+# Agent 认证密钥
+AGENT_SECRET_KEY = "daily-patrol-agent"
 
 
 def _send_http_request(
@@ -108,7 +112,8 @@ def execute_submit_dailypatrol_record(
 ) -> dict:
     """执行日常巡查记录提交工具
 
-    POST /v1/dailypatrol/no-auth/add 提交巡查记录
+    POST /dailypatrol/agent/add 提交巡查记录
+    认证: agent-secret-key: daily-patrol-agent
 
     Args:
         tool_args: 工具参数，包含 DailypatrolNoAuthModel 所有字段
@@ -128,10 +133,9 @@ def execute_submit_dailypatrol_record(
     dq = tool_args.get("dq")
     isdjrw = tool_args.get("isdjrw")
     isyhby = tool_args.get("isyhby")
-    real_name = tool_args.get("realName")
-    mobile = tool_args.get("mobile")
-    org_id = tool_args.get("orgId")
-    org_name = tool_args.get("orgName")
+    xcperson = tool_args.get("xcperson") or tool_args.get("realName")  # 兼容旧参数名
+    xcphone = tool_args.get("xcphone") or tool_args.get("mobile")  # 兼容旧参数名
+    xcunitid = tool_args.get("xcunitid") or tool_args.get("orgId")  # 兼容旧参数名
 
     # ========== 参数校验 ==========
     required_fields = {
@@ -145,10 +149,9 @@ def execute_submit_dailypatrol_record(
         "dq (地区)": dq,
         "isdjrw (是否定检任务)": isdjrw,
         "isyhby (是否需要养护保养)": isyhby,
-        "realName (巡查人姓名)": real_name,
-        "mobile (巡查人手机号)": mobile,
-        "orgId (巡查单位ID)": org_id,
-        "orgName (巡查单位名称)": org_name,
+        "xcperson (巡查人姓名)": xcperson,
+        "xcphone (巡查人电话)": xcphone,
+        "xcunitid (巡查单位ID)": xcunitid,
     }
 
     for field_name, value in required_fields.items():
@@ -157,7 +160,7 @@ def execute_submit_dailypatrol_record(
 
     # ========== 构建请求体 ==========
     request_body = {
-        # 必填字段
+        # 必填字段 - 使用 Java DTO 字段名
         "title": title,
         "xcdate": xcdate,
         "typeid": typeid,
@@ -168,18 +171,16 @@ def execute_submit_dailypatrol_record(
         "dq": dq,
         "isdjrw": isdjrw,
         "isyhby": isyhby,
-        "realName": real_name,
-        "mobile": mobile,
-        "orgId": org_id,
-        "orgName": org_name,
-        # 可选字段（从参数中提取，如果存在）
+        "xcperson": xcperson,
+        "xcphone": xcphone,
+        "xcunitid": xcunitid,
     }
 
     # 可选字段映射
     optional_fields = [
-        "xcunitid", "xcperson", "xcphone", "status", "remark",
-        "source", "dzdtisvalid", "dzdt", "xcbegintime", "xcendtime",
-        "checktodate", "photoannex", "qrdzdt", "reveal", "videoModel"
+        "userId", "status", "remark", "source", "dzdtisvalid", "dzdt",
+        "xcbegintime", "xcendtime", "checktodate", "photoannex",
+        "qrdzdt", "reveal", "videoModel"
     ]
 
     for field in optional_fields:
@@ -189,11 +190,13 @@ def execute_submit_dailypatrol_record(
     # 处理检测指标明细列表
     if "dtoList" in tool_args and tool_args["dtoList"]:
         dto_list = tool_args["dtoList"]
-        assert isinstance(dto_list, list), "dolist 必须是列表类型"
+        if not isinstance(dto_list, list):
+            return {"result": None, "error": "dtoList 必须是列表类型"}
 
         processed_dto_list = []
         for idx, dto in enumerate(dto_list):
-            assert isinstance(dto, dict), f"dolist[{idx}] 必须是字典类型"
+            if not isinstance(dto, dict):
+                return {"result": None, "error": f"dtoList[{idx}] 必须是字典类型"}
 
             processed_dto = {}
             # DailypatrolDetailDTO 字段
@@ -210,20 +213,25 @@ def execute_submit_dailypatrol_record(
         request_body["dtoList"] = processed_dto_list
 
     # ========== 获取 API 地址 ==========
-    api_url = tool_args.get("api_url") or __import__("os").environ.get("DAILYPATROL_API_URL") or DEFAULT_API_URL
+    api_url = tool_args.get("api_url") or os.environ.get("DAILYPATROL_API_URL") or DEFAULT_API_URL
+
+    # ========== 构建请求头 ==========
+    request_headers = {
+        "agent-secret-key": AGENT_SECRET_KEY
+    }
 
     logger.info(f"[日常巡查记录] 开始提交巡查记录")
     logger.info(f"[日常巡查记录] 标题: {title}, 设施: {ssname}")
-    logger.info(f"[日常巡查记录] 巡查人: {real_name} ({mobile})")
+    logger.info(f"[日常巡查记录] 巡查人: {xcperson} ({xcphone})")
     logger.info(f"[日常巡查记录] API地址: {api_url}")
 
     # ========== 发送请求 ==========
-    endpoint = "/v1/dailypatrol/no-auth/add"
+    endpoint = "/dailypatrol/agent/add"
     full_url = f"{api_url}{endpoint}"
 
     logger.info(f"[日常巡查记录] POST {full_url}")
 
-    response = _send_http_request(full_url, "POST", request_body)
+    response = _send_http_request(full_url, "POST", request_body, headers=request_headers)
 
     # ========== 处理响应 ==========
     if not response.get("success"):
@@ -243,8 +251,8 @@ def execute_submit_dailypatrol_record(
 - 标题: {title}
 - 设施: {ssname} ({typename})
 - 巡查日期: {xcdate}
-- 巡查人: {real_name} ({mobile})
-- 巡查单位: {orgName}
+- 巡查人: {xcperson} ({xcphone})
+- 巡查单位: {xcunitname}
 
 📋 系统返回:
 - 记录ID: {record_id}
@@ -259,7 +267,7 @@ def register_dailypatrol_tools():
     tools = [
         ToolDefinition(
             name="submit_dailypatrol_record",
-            description="提交日常巡查记录 - 将日常巡查任务记录（无需token版本）提交到后端系统。支持主表信息+检测指标明细(dtoList)一并提交。",
+            description="提交日常巡查记录 - 将日常巡查任务记录（Agent回写版本）提交到后端系统。支持主表信息+检测指标明细(dtoList)一并提交。",
             params='submit_dailypatrol_record:{'
                    '"title":"(巡查标题，必填，max100)",'
                    '"xcdate":"(巡查日期-时间戳毫秒，必填)",'
@@ -271,13 +279,10 @@ def register_dailypatrol_tools():
                    '"dq":"(地区，必填)",'
                    '"isdjrw":"(是否定检任务，必填)",'
                    '"isyhby":"(是否需要养护保养，必填)",'
-                   '"realName":"(巡查人姓名，必填)",'
-                   '"mobile":"(巡查人手机号，必填)",'
-                   '"orgId":"(巡查单位ID，必填)",'
-                   '"orgName":"(巡查单位名称，必填)",'
-                   '"xcunitid":"(巡查单位ID，可选)",'
-                   '"xcperson":"(巡查人，可选)",'
-                   '"xcphone":"(联系电话，可选)",'
+                   '"xcperson":"(巡查人姓名，必填)",'
+                   '"xcphone":"(巡查人电话，必填)",'
+                   '"xcunitid":"(巡查单位ID，必填)",'
+                   '"userId":"(用户ID，可选)",'
                    '"status":"(保养状态，可选)",'
                    '"remark":"(说明，可选)",'
                    '"source":"(数据来源，可选)",'
@@ -290,7 +295,7 @@ def register_dailypatrol_tools():
                    '"qrdzdt":"(二维码巡查坐标，可选)",'
                    '"reveal":"(是否展示0/1，可选)",'
                    '"videoModel":"(是否视频巡查1/0，可选)",'
-                   '"dtoList":"(检测指标明细列表，可选，格式:[{testingitemid,testingsubitem,testingstatus,opinion,estimate,dw,...}])",'
+                   '"dtoList":"(检测指标明细列表，可选)",'
                    '"api_url":"(API地址，可选)"'
                    '}',
             category="dailypatrol",

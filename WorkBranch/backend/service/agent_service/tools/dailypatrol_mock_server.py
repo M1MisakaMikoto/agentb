@@ -6,9 +6,13 @@
 默认监听: http://localhost:8002
 
 API 端点:
-1. POST /v1/dailypatrol/no-auth/add - 提交日常巡查记录（无需token）
+1. POST /dailypatrol/agent/add - Agent回写巡查记录（需认证）
 2. GET  /health - 健康检查
+
+认证:
+- Header: agent-secret-key: daily-patrol-agent
 """
+
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 import logging
@@ -20,6 +24,9 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Agent 认证密钥
+AGENT_SECRET_KEY = "daily-patrol-agent"
 
 
 class DailypatrolMockHandler(BaseHTTPRequestHandler):
@@ -44,17 +51,31 @@ class DailypatrolMockHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         return parsed.path, parse_qs(parsed.query)
 
+    def _verify_agent_key(self) -> bool:
+        """验证 Agent 认证密钥"""
+        secret_key = self.headers.get("agent-secret-key", "")
+        return secret_key == AGENT_SECRET_KEY
+
     def do_POST(self):
         """处理 POST 请求"""
         base_path, query_params = self._parse_query_params()
 
-        if base_path == "/v1/dailypatrol/no-auth/add":
+        if base_path == "/dailypatrol/agent/add":
+            self._handle_dailypatrol_add()
+        elif base_path == "/v1/dailypatrol/no-auth/add":
+            # 兼容旧端点
             self._handle_dailypatrol_add()
         else:
             self.send_error_response(404, f"未找到接口: {base_path}")
 
     def _handle_dailypatrol_add(self):
         """处理日常巡查记录新增接口"""
+        # 验证认证
+        if not self._verify_agent_key():
+            logger.warning(f"[Dailypatrol API] 认证失败: secret_key={self.headers.get('agent-secret-key', '未提供')}")
+            self.send_error_response(401, "Agent回写认证失败")
+            return
+
         content_type = self.headers.get("Content-Type", "")
         if "application/json" not in content_type:
             self.send_error_response(400, "Content-Type 必须为 application/json")
@@ -79,10 +100,9 @@ class DailypatrolMockHandler(BaseHTTPRequestHandler):
             "dq",              # 地区
             "isdjrw",          # 是否定检任务
             "isyhby",          # 是否需要养护保养
-            "realName",        # 巡查人姓名
-            "mobile",          # 巡查人手机号
-            "orgId",           # 巡查单位ID
-            "orgName",         # 巡查单位名称
+            "xcperson",        # 巡查人姓名
+            "xcphone",         # 巡查人电话
+            "xcunitid",        # 巡查单位ID
         ]
 
         missing_fields = [f for f in required_fields if f not in data or data[f] is None]
@@ -94,12 +114,12 @@ class DailypatrolMockHandler(BaseHTTPRequestHandler):
         dto_list = data.get("dtoList")
         if dto_list is not None:
             if not isinstance(dto_list, list):
-                self.send_error_response(400, "dolist 必须是列表类型")
+                self.send_error_response(400, "dtoList 必须是列表类型")
                 return
 
             for idx, dto in enumerate(dto_list):
                 if not isinstance(dto, dict):
-                    self.send_error_response(400, f"dolist[{idx}] 必须是字典类型")
+                    self.send_error_response(400, f"dtoList[{idx}] 必须是字典类型")
                     return
 
                 # 验证 DailypatrolDetailDTO 关键字段
@@ -117,8 +137,10 @@ class DailypatrolMockHandler(BaseHTTPRequestHandler):
             "facilityName": data.get("ssname"),
             "facilityType": data.get("typename"),
             "patrolDate": data.get("xcdate"),
-            "patrolPerson": data.get("realName"),
-            "orgName": data.get("orgName"),
+            "patrolPerson": data.get("xcperson"),
+            "patrolPhone": data.get("xcphone"),
+            "orgName": data.get("xcunitname"),
+            "orgId": data.get("xcunitid"),
             "isYHBY": data.get("isyhby"),
             "isdjrw": data.get("isdjrw"),
             "detailCount": len(dto_list) if dto_list else 0,
@@ -135,7 +157,7 @@ class DailypatrolMockHandler(BaseHTTPRequestHandler):
 
         response = {
             "success": True,
-            "data": record,
+            "data": {"id": record_id},
             "code": 200,
             "message": "操作成功"
         }
@@ -209,15 +231,18 @@ def run_mock_server(host: str = "localhost", port: int = 8002):
 +============================================================+
 |  地址: http://{host}:{port}                             |
 |  接口:                                                    |
-|    1. POST /v1/dailypatrol/no-auth/add (提交巡查记录)       |
-|    2. GET  /v1/dailypatrol/records     (查询已提交记录)     |
-|    3. GET  /health                   (健康检查)            |
+|    1. POST /dailypatrol/agent/add   (Agent回写，需认证)     |
+|    2. GET  /v1/dailypatrol/records  (查询已提交记录)        |
+|    3. GET  /health                 (健康检查)              |
 +============================================================+
-|  支持字段:                                                |
+|  认证:                                                    |
+|    Header: agent-secret-key: daily-patrol-agent            |
++============================================================+
+|  支持字段 (Java DTO 对应):                                 |
 |  主表: title, xcdate, typeid, typename, nameid, ssname,   |
-|        xcunitname, dq, isdjrw, isyhby, realName, mobile,  |
-|        orgId, orgName + 可选字段                           |
-|  明细: dolist (List<DailypatrolDetailDTO>)                 |
+|        xcunitname, dq, isdjrw, isyhby, xcperson, xcphone,|
+|        xcunitid + 可选字段                                  |
+|  明细: dtoList (List<DailypatrolDetailDTO>)               |
 +============================================================+
     """)
 

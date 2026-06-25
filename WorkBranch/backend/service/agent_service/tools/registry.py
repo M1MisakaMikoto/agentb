@@ -200,7 +200,7 @@ ALL_TOOLS = {
     # --- 日常巡查记录工具 ---
     "submit_dailypatrol_record": {
         "name": "submit_dailypatrol_record",
-        "description": "提交日常巡查记录 - 将日常巡查任务记录（无需token版本）提交到后端系统。支持主表信息+检测指标明细(dtoList)一并提交。",
+        "description": "提交日常巡查记录 - 将日常巡查任务记录（Agent回写版本）提交到后端系统。支持主表信息+检测指标明细(dtoList)一并提交。",
         "params": 'submit_dailypatrol_record:{'
                    '"title":"(巡查标题，必填，max100)",'
                    '"xcdate":"(巡查日期-时间戳毫秒，必填)",'
@@ -212,11 +212,24 @@ ALL_TOOLS = {
                    '"dq":"(地区，必填)",'
                    '"isdjrw":"(是否定检任务，必填)",'
                    '"isyhby":"(是否需要养护保养，必填)",'
-                   '"realName":"(巡查人姓名，必填)",'
-                   '"mobile":"(巡查人手机号，必填)",'
-                   '"orgId":"(巡查单位ID，必填)",'
-                   '"orgName":"(巡查单位名称，必填)",'
-                   '"dtoList":"(检测指标明细列表，可选)"'
+                   '"xcperson":"(巡查人姓名，必填)",'
+                   '"xcphone":"(巡查人电话，必填)",'
+                   '"xcunitid":"(巡查单位ID，必填)",'
+                   '"userId":"(用户ID，可选)",'
+                   '"status":"(保养状态，可选)",'
+                   '"remark":"(说明，可选)",'
+                   '"source":"(数据来源，可选)",'
+                   '"dzdtisvalid":"(坐标是否有效距离，可选)",'
+                   '"dzdt":"(电子地图坐标，可选)",'
+                   '"xcbegintime":"(开始时间戳，可选)",'
+                   '"xcendtime":"(结束时间戳，可选)",'
+                   '"checktodate":"(截止日期时间戳，可选)",'
+                   '"photoannex":"(照片附件，可选)",'
+                   '"qrdzdt":"(二维码巡查坐标，可选)",'
+                   '"reveal":"(是否展示0/1，可选)",'
+                   '"videoModel":"(是否视频巡查1/0，可选)",'
+                   '"dtoList":"(检测指标明细列表，可选)",'
+                   '"api_url":"(API地址，可选)"'
                    '}'
     },
 }
