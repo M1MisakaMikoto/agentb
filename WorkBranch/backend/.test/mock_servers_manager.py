@@ -96,6 +96,43 @@ class MockServerManager:
         print(f"[Facility Report] Server started (PID: {proc.pid})")
         return proc
 
+    def start_dailypatrol_server(self, host: str = "localhost", port: int = 8002):
+        """启动日常巡查记录 mock 服务器"""
+        script = self.tools_dir / "dailypatrol_mock_server.py"
+        if not script.exists():
+            print(f"[ERROR] Dailypatrol mock server not found: {script}")
+            return None
+
+        cmd = [sys.executable, str(script), "--host", host, "--port", str(port)]
+        print(f"[Dailypatrol] Starting server at {host}:{port}...")
+
+        kwargs = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
+
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+
+        proc = subprocess.Popen(cmd, **kwargs)
+
+        def stream_output():
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                print(f"[DAILYPATROL] {line.rstrip()}")
+
+        thread = threading.Thread(target=stream_output, daemon=True)
+        thread.start()
+
+        self.processes.append(("Dailypatrol", proc))
+        print(f"[Dailypatrol] Server started (PID: {proc.pid})")
+        return proc
+
     def start_all(self):
         """启动所有 mock 服务器"""
         print("\n" + "=" * 60)
@@ -105,6 +142,8 @@ class MockServerManager:
         self.start_ai_judgment_server()
         time.sleep(0.5)
         self.start_facility_report_server()
+        time.sleep(0.5)
+        self.start_dailypatrol_server()
 
         print("\n" + "=" * 60)
         print("  All Mock Servers Started")
@@ -113,6 +152,7 @@ class MockServerManager:
         print("Mock Servers:")
         print(f"  - AI Judgment:       http://localhost:8080")
         print(f"  - Facility Report:   http://localhost:8001")
+        print(f"  - Dailypatrol:       http://localhost:8002")
         print("\nPress Ctrl+C to stop all servers\n")
 
     def stop_all(self):

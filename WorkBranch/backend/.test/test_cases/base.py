@@ -222,6 +222,7 @@ def start_mock_servers() -> List[subprocess.Popen]:
     mock_servers = [
         ("ai_judgment_mock_server.py", 8080),
         ("facility_report_mock_server.py", 8001),
+        ("dailypatrol_mock_server.py", 8002),
     ]
 
     print(f"\n{Colors.CYAN}Starting mock servers...{Colors.ENDC}")

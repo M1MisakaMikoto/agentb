@@ -6,6 +6,7 @@ from .document_tools import register_document_tools, DOCUMENT_TOOLS as DOC_TOOLS
 from .sql_tools import register_sql_tools, SQL_TOOLS as SQL_TOOLS_DEF
 from .prediction_tools import register_prediction_tools, PREDICTION_TOOLS_META, BRIDGE_REPORT_PARSER_META, execute_bridge_report_parser
 from .ai_judgment_tool import register_ai_judgment_tools, AI_JUDGMENT_TOOLS, AI_JUDGMENT_CATEGORY
+from .dailypatrol_tool import register_dailypatrol_tools, DAILYPATROL_TOOLS, DAILYPATROL_CATEGORY
 from .executors import ToolExecutor
 
 __all__ = [
@@ -27,6 +28,8 @@ __all__ = [
     "BRIDGE_REPORT_PARSER_META",
     "AI_JUDGMENT_TOOLS",
     "AI_JUDGMENT_CATEGORY",
+    "DAILYPATROL_TOOLS",
+    "DAILYPATROL_CATEGORY",
     "register_plan_tools",
     "register_agent_tools",
     "register_rag_tools",
@@ -34,6 +37,7 @@ __all__ = [
     "register_sql_tools",
     "register_prediction_tools",
     "register_ai_judgment_tools",
+    "register_dailypatrol_tools",
 ]
 
 def register_all_tools():
@@ -45,4 +49,5 @@ def register_all_tools():
     register_sql_tools()
     register_prediction_tools()
     register_ai_judgment_tools()
+    register_dailypatrol_tools()
 

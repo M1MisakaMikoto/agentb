@@ -197,6 +197,28 @@ ALL_TOOLS = {
         "description": "提交设施预测报告 - 将桥梁预测分析结果(PDF)上传到系统。调用 POST /v1/facility/forecast/report 接口。",
         "params": 'submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)","api_url":"(API地址，可选)"}'
     },
+    # --- 日常巡查记录工具 ---
+    "submit_dailypatrol_record": {
+        "name": "submit_dailypatrol_record",
+        "description": "提交日常巡查记录 - 将日常巡查任务记录（无需token版本）提交到后端系统。支持主表信息+检测指标明细(dtoList)一并提交。",
+        "params": 'submit_dailypatrol_record:{'
+                   '"title":"(巡查标题，必填，max100)",'
+                   '"xcdate":"(巡查日期-时间戳毫秒，必填)",'
+                   '"typeid":"(设施类型，必填)",'
+                   '"typename":"(设施类型名称，必填，max100)",'
+                   '"nameid":"(设施名称ID，必填)",'
+                   '"ssname":"(设施名称，必填，max100)",'
+                   '"xcunitname":"(巡查单位名称，必填，max100)",'
+                   '"dq":"(地区，必填)",'
+                   '"isdjrw":"(是否定检任务，必填)",'
+                   '"isyhby":"(是否需要养护保养，必填)",'
+                   '"realName":"(巡查人姓名，必填)",'
+                   '"mobile":"(巡查人手机号，必填)",'
+                   '"orgId":"(巡查单位ID，必填)",'
+                   '"orgName":"(巡查单位名称，必填)",'
+                   '"dtoList":"(检测指标明细列表，可选)"'
+                   '}'
+    },
 }
 
 
@@ -211,3 +233,4 @@ SQL_TOOLS = {"sql_query"}
 PREDICTION_TOOLS = {"calculate_bci", "predict_trend", "query_standard", "bridge_report_parser"}
 AI_JUDGMENT_TOOLS = {"submit_ai_judgment_issue"}
 FACILITY_REPORT_TOOLS = {"submit_facility_report", "submit_facility_forecast"}
+DAILYPATROL_TOOLS = {"submit_dailypatrol_record"}

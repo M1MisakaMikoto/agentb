@@ -50,6 +50,7 @@ from test_cases.disaster_judgment_flow import run_disaster_judgment_test
 from test_cases.silent_disaster_judgment import run_silent_disaster_judgment_test
 from test_cases.persistent_disease_predict import run_persistent_disease_predict_test
 from test_cases.update_todo_route import run_update_todo_route_test
+from test_cases.dailypatrol_test import run_dailypatrol_test
 
 
 SCENARIO_RUNNERS = {
@@ -74,6 +75,7 @@ SCENARIO_RUNNERS = {
     "silent_disaster_judgment": run_silent_disaster_judgment_test,
     "persistent_disease_predict": run_persistent_disease_predict_test,
     "update_todo_route": run_update_todo_route_test,
+    "dailypatrol_submit": run_dailypatrol_test,
 }
 
 

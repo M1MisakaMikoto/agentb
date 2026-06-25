@@ -498,6 +498,9 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
         elif tool_name == "submit_facility_forecast":
             from service.agent_service.tools.facility_report_tool import execute_submit_facility_forecast_report
             tool_result = execute_submit_facility_forecast_report(tool_args, message_context)
+        elif tool_name == "submit_dailypatrol_record":
+            from service.agent_service.tools.dailypatrol_tool import execute_submit_dailypatrol_record
+            tool_result = execute_submit_dailypatrol_record(tool_args, message_context)
         elif tool_name in WORKSPACE_TOOLS:
             tool_result = _execute_workspace_tool(tool_name, tool_args, workspace_id, workspace_service)
         else:

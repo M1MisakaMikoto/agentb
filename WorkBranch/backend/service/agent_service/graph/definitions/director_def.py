@@ -49,6 +49,7 @@ class DirectorDefinition(AgentDefinition):
                     "submit_ai_judgment_issue",
                     "submit_facility_report",
                     "submit_facility_forecast",
+                    "submit_dailypatrol_record",
                 ],
                 default_tools=[
                     {"tool": "thinking", "args": {"description": ""}},

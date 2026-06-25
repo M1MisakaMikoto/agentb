@@ -23,6 +23,7 @@ MODE_TOOLS = {"switch_execution_mode"}
 SQL_TOOLS = {"sql_query"}
 AI_JUDGMENT_TOOLS = {"submit_ai_judgment_issue"}
 FACILITY_REPORT_TOOLS = {"submit_facility_report", "submit_facility_forecast"}
+DAILYPATROL_TOOLS = {"submit_dailypatrol_record"}
 
 SPECIAL_TOOLS = {
     "thinking": {
@@ -126,12 +127,12 @@ def get_allowed_tools(agent_type: str, settings_service=None, use_settings_overr
         console.warning(f"[tool_registry] ⚠️ 未找到 {agent_type} 的定义: {e}，使用默认权限")
 
     default_permissions = {
-        "director_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "list_workspace_files", "get_workspace_info", "search_files", "update_todo", "switch_execution_mode", "rag_search", "document", "sql_query", "submit_ai_judgment_issue"],
-        "sub_agent": ["read_file", "write_file", "list_dir", "thinking", "chat", "document", "bridge_report_parser", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "submit_ai_judgment_issue", "submit_facility_report", "submit_facility_forecast", "rag_search"],
+        "director_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "list_workspace_files", "get_workspace_info", "search_files", "update_todo", "switch_execution_mode", "rag_search", "document", "sql_query", "submit_ai_judgment_issue", "submit_facility_report", "submit_facility_forecast", "submit_dailypatrol_record"],
+        "sub_agent": ["read_file", "write_file", "list_dir", "thinking", "chat", "document", "bridge_report_parser", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "submit_ai_judgment_issue", "submit_facility_report", "submit_facility_forecast", "submit_dailypatrol_record", "rag_search"],
         "plan_agent": ["read_file", "write_file", "list_dir", "explore_code", "thinking", "chat", "rag_search", "document", "sql_query", "switch_execution_mode"],
         "review_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat", "sql_query", "rag_search"],
         "explore_agent": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files", "sql_query", "rag_search"],
-        "prediction_agent": ["document", "read_file", "thinking", "chat", "bridge_report_parser", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "update_todo", "submit_ai_judgment_issue", "submit_facility_report", "submit_facility_forecast", "rag_search"],
+        "prediction_agent": ["document", "read_file", "thinking", "chat", "bridge_report_parser", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "update_todo", "submit_ai_judgment_issue", "submit_facility_report", "submit_facility_forecast", "submit_dailypatrol_record", "rag_search"],
         "admin_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files", "sql_query", "submit_ai_judgment_issue", "rag_search"]
     }
     return default_permissions.get(agent_type, default_permissions["director_agent"])

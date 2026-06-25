@@ -48,6 +48,12 @@ suites:
       - bridge_predict
       - bridge_defect_extract
       - disaster_judgment_flow
+      - dailypatrol_submit
+
+  dailypatrol:
+    description: "Dailypatrol tests"
+    scenarios:
+      - dailypatrol_submit
 
 scenarios:
   direct_mode:
@@ -202,6 +208,10 @@ scenarios:
   bridge_decision_test:
     description: "桥梁病害智能决策测试 - 分析 → 研判提交 → 决策报告 → 报告提交"
     judgment_timeout: 900.0
+
+  dailypatrol_submit:
+    description: "日常巡查记录提交测试 - Agent调用submit_dailypatrol_record工具提交巡查记录（含dolist明细）"
+    dailypatrol_timeout: 300.0
 
   disaster_judgment:
     description: "Disaster Judgment Flow - AI识别 → 发现问题 → 决策 → 报告推送"
