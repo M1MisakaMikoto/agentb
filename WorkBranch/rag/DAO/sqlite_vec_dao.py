@@ -80,6 +80,12 @@ class SqliteVecDAO:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(document_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_kb_id ON chunks(kb_id)")
+            # 复合索引：加速预过滤子查询
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_kb_doc ON chunks(kb_id, document_id)")
+            # 覆盖索引：包含常用查询字段，避免回表
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chunks_cover ON chunks(kb_id, document_id, id)"
+            )
 
     def add_chunks_batch(
         self,
@@ -150,15 +156,20 @@ class SqliteVecDAO:
         top_k: int = 5,
         where_filter: Optional[Dict[str, Any]] = None,
         document_id: Optional[str] = None,
+        use_prefilter: bool = True,
     ) -> Dict[str, Any]:
         """
         KNN 暴力向量检索，同时支持普通的 SQL Where 过滤条件（kb_id, document_id）。
+
+        Args:
+            use_prefilter: 启用SQL预过滤优化，先筛选候选ID再做KNN，
+                          减少暴力搜索范围。适用于有明确过滤条件的场景。
         """
         query_blob = serialize_float32(query_vector)
-        
+
         sql_clauses: List[str] = []
         sql_params: List[Any] = []
-        
+
         # 处理过滤条件
         if kb_id is not None:
             sql_clauses.append("c.kb_id = ?")
@@ -166,7 +177,7 @@ class SqliteVecDAO:
         else:
             # 向后兼容：旧存量无 kb_id，搜 default
             sql_clauses.append("c.kb_id IS NULL")
-            
+
         if document_id is not None:
             sql_clauses.append("c.document_id = ?")
             sql_params.append(document_id)
@@ -175,27 +186,39 @@ class SqliteVecDAO:
         if extra_clauses:
             sql_clauses.extend(extra_clauses)
             sql_params.extend(extra_params)
-            
+
         where_sql = ""
         if sql_clauses:
             where_sql = "AND " + " AND ".join(sql_clauses)
-            
-        # sqlite-vec knn search: 
-        # MATCH queries should look like:
-        # SELECT rowid, distance FROM vec_table WHERE embedding MATCH ? ORDER BY distance LIMIT ?
-        # We join with with chunks table to filter metadata and get texts
-        
-        query = f"""
-            SELECT 
-                c.chunk_id, c.document_id, c.kb_id, c.text, c.metadata, v.distance
-            FROM chunks_vec v
-            JOIN chunks c ON c.id = v.id
-            WHERE v.embedding MATCH ? AND v.k = ? {where_sql}
-            ORDER BY v.distance 
-        """
-        
-        search_params = [query_blob, top_k] + sql_params
-        
+
+        # 优化策略：当有过滤条件时，先用子查询筛选候选ID，再做KNN
+        # 这样 sqlite-vec 只需在候选集上做暴力搜索，而非全表
+        if use_prefilter and sql_clauses:
+            # 子查询：先过滤出符合条件的 chunk IDs
+            query = f"""
+                SELECT
+                    c.chunk_id, c.document_id, c.kb_id, c.text, c.metadata, v.distance
+                FROM chunks_vec v
+                JOIN chunks c ON c.id = v.id
+                WHERE v.embedding MATCH ? AND v.k = ?
+                  AND c.id IN (
+                      SELECT id FROM chunks c2 WHERE {" AND ".join(sql_clauses)}
+                  )
+                ORDER BY v.distance
+            """
+            search_params = [query_blob, top_k] + sql_params
+        else:
+            # 无过滤条件或禁用预过滤，使用原始查询
+            query = f"""
+                SELECT
+                    c.chunk_id, c.document_id, c.kb_id, c.text, c.metadata, v.distance
+                FROM chunks_vec v
+                JOIN chunks c ON c.id = v.id
+                WHERE v.embedding MATCH ? AND v.k = ? {where_sql}
+                ORDER BY v.distance
+            """
+            search_params = [query_blob, top_k] + sql_params
+
         with self._conn() as conn:
             rows = conn.execute(query, tuple(search_params)).fetchall()
             
@@ -297,6 +320,35 @@ class SqliteVecDAO:
             # 删除普通记录
             cur = conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
             return cur.rowcount
+
+    def get_stats(self) -> Dict[str, Any]:
+        """获取数据库统计信息，用于性能分析和索引优化决策。"""
+        with self._conn() as conn:
+            chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            vec_count = conn.execute("SELECT COUNT(*) FROM chunks_vec").fetchone()[0]
+            kb_count = conn.execute("SELECT COUNT(DISTINCT kb_id) FROM chunks").fetchone()[0]
+            doc_count = conn.execute("SELECT COUNT(DISTINCT document_id) FROM chunks").fetchone()[0]
+
+            # 获取索引信息
+            indexes = conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type='index' AND name LIKE 'idx_chunks%'"
+            ).fetchall()
+
+        return {
+            "chunk_count": chunk_count,
+            "vector_count": vec_count,
+            "knowledge_base_count": kb_count,
+            "document_count": doc_count,
+            "indexes": [{"name": r[0], "sql": r[1]} for r in indexes],
+            "avg_chunks_per_doc": round(chunk_count / max(doc_count, 1), 1),
+        }
+
+    def optimize(self) -> Dict[str, Any]:
+        """执行数据库优化操作（ANALYZE + PRAGMA optimize）。"""
+        with self._conn() as conn:
+            conn.execute("ANALYZE")
+            conn.execute("PRAGMA optimize")
+        return {"ok": True, "message": "Database optimized"}
 
     def get_doc_chunks(self, document_id: str) -> List[Dict[str, Any]]:
         with self._conn() as conn:

@@ -1,12 +1,16 @@
+import os
 import re
 import json
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Any, List, Literal, Callable, Awaitable
+from typing import Dict, Any, List, Literal, Callable, Awaitable, Optional, Tuple
 from dataclasses import dataclass
 
 from .registry import ToolDefinition, ToolRegistry
 from singleton import get_settings_service
+
+logger = logging.getLogger(__name__)
 
 
 QueryMode = Literal["query", "show_databases", "show_tables", "describe", "show_create", "facility_trend", "facility_report"]
@@ -108,6 +112,321 @@ DESCRIBE_PATTERN = re.compile(r"^\s*(DESCRIBE|DESC)\s+\S+\s*$", re.IGNORECASE)
 SHOW_CREATE_TABLE_PATTERN = re.compile(r"^\s*SHOW\s+CREATE\s+TABLE\s+\S+\s*$", re.IGNORECASE)
 SAFE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# ==================== 权限校验模块 ====================
+
+@dataclass
+class PermissionResult:
+    """权限解析结果
+
+    Attributes:
+        permitted: 是否通过校验
+        error: 错误信息（permitted=False 时有值）
+        is_super: 是否为超级用户（市级，可查看全部区域数据）
+        user_region_id: 用户自身所属的区域ID（TB_Market.Id）
+        user_region_name: 用户所属区域名称（TB_Market.AdminAreaName）
+        allowed_region_ids: 允许访问的区域ID列表（区县级时仅含自身；市级为空表示全部）
+    """
+    permitted: bool
+    error: str
+    is_super: bool = False
+    user_region_id: str = ""
+    user_region_name: str = ""
+    allowed_region_ids: List[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.allowed_region_ids is None:
+            self.allowed_region_ids = []
+
+
+def _get_user_id_from_context(message_context: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """从消息上下文中获取 userId
+
+    复用 ai_judgment_tool / facility_report_tool 的统一获取模式：
+    1. 优先从 message_context.user_id 获取（由 agent_service 注入）
+    2. 其次从 settings_service 获取
+    3. 最后从环境变量兜底
+
+    Args:
+        message_context: 消息上下文
+
+    Returns:
+        userId 字符串，未找到返回 None
+    """
+    if message_context:
+        # 1. 优先从 message_context 直接获取（agent_service.py L528 注入）
+        user_id = message_context.get("user_id")
+        if user_id:
+            return str(user_id)
+
+        # 2. 从 settings_service 获取
+        settings_service = message_context.get("settings_service")
+        if settings_service:
+            try:
+                user_id = settings_service.get("user:id")
+                if user_id:
+                    return str(user_id)
+            except Exception:
+                pass
+
+        # 3. 从 workspace_info 获取
+        workspace_id = message_context.get("workspace_id")
+        if workspace_id:
+            workspace_service = message_context.get("workspace_service")
+            if workspace_service:
+                try:
+                    info = workspace_service.get_workspace_info(workspace_id)
+                    user_id = info.get("user_id") or info.get("userId")
+                    if user_id:
+                        return str(user_id)
+                except Exception:
+                    pass
+
+    # 4. 环境变量兜底
+    env_user_id = os.environ.get("SQL_TOOLS_USER_ID")
+    if env_user_id:
+        return env_user_id
+
+    return None
+
+
+async def _verify_user_exists(
+    user_id: str,
+    db_config: "DatabaseConfig",
+) -> Tuple[bool, str]:
+    """第一步：验证用户是否存在于系统中（TO_Org_User 表）
+
+    SQL:
+        SELECT COUNT(*) AS cnt FROM TO_Org_User WHERE MarketId = %s
+
+    Args:
+        user_id: 用户ID（对应 TO_Org_User.MarketId 字段）
+        db_config: 数据库连接配置
+
+    Returns:
+        (是否存在, 错误信息)
+    """
+    import aiomysql
+
+    conn = await aiomysql.connect(
+        host=db_config.host,
+        port=db_config.port,
+        user=db_config.user,
+        password=db_config.password,
+        db="BTManager",
+        charset=db_config.charset,
+        connect_timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        autocommit=True,
+    )
+    try:
+        async with conn.cursor(aiomysql.cursors.DictCursor) as cursor:
+            await cursor.execute(
+                "SELECT COUNT(*) AS cnt FROM TO_Org_User WHERE MarketId = %s",
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+            exists = row["cnt"] > 0 if row else False
+            if exists:
+                logger.info(f"[SQL权限] 用户身份验证通过: {user_id}")
+                return True, ""
+            else:
+                logger.warning(f"[SQL权限] 用户不存在: {user_id}")
+                return False, f"用户 {user_id} 不在系统中，拒绝访问"
+    except Exception as e:
+        logger.error(f"[SQL权限] 用户身份验证异常: {e}")
+        return False, f"用户身份验证失败: {e}"
+    finally:
+        conn.close()
+
+
+async def _resolve_user_permission(
+    user_id: str,
+    db_config: "DatabaseConfig",
+) -> PermissionResult:
+    """第二步：解析用户权限范围（用户身份已验证通过后调用）
+
+    查询流程：
+        1. TO_Org_User WHERE MarketId = user_id  → 确认用户记录存在
+        2. JOIN TB_Market ON ou.MarketId = m.Id → 获取区域级别信息
+        3. 判断：
+           - TB_Market.Region = 1 （市直属/重庆市）→ is_super=True，可看全部
+           - 其他（区县级等）→ is_super=False，只能看自己区域
+
+    业务规则：
+        - 重庆市级用户（Region=1）：可查看所有区域数据，不注入区域过滤
+        - 区县级用户（Region=2 等）：只能查询本区域的数据，自动注入 WHERE region_id = xxx
+
+    SQL:
+        SELECT m.Id, m.AdminAreaName, m.Region
+        FROM TO_Org_User ou
+        INNER JOIN TB_Market m ON ou.MarketId = m.Id
+        WHERE ou.MarketId = %s
+        LIMIT 1
+
+    Args:
+        user_id: 用户ID
+        db_config: 数据库连接配置
+
+    Returns:
+        PermissionResult 完整权限结果
+    """
+    import aiomysql
+
+    conn = await aiomysql.connect(
+        host=db_config.host,
+        port=db_config.port,
+        user=db_config.user,
+        password=db_config.password,
+        db="BTManager",
+        charset=db_config.charset,
+        connect_timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        autocommit=True,
+    )
+    try:
+        async with conn.cursor(aiomysql.cursors.DictCursor) as cursor:
+            await cursor.execute(
+                """
+                SELECT m.Id, m.AdminAreaName, m.Region
+                FROM TO_Org_User ou
+                INNER JOIN TB_Market m ON ou.MarketId = m.Id
+                WHERE ou.MarketId = %s
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+
+            if not row:
+                logger.warning(f"[SQL权限] 用户 {user_id} 未关联到任何有效区域")
+                return PermissionResult(
+                    permitted=False,
+                    error=f"用户 {user_id} 未关联到有效区域，无法确定权限范围",
+                )
+
+            region_id = str(row["Id"])
+            region_name = str(row["AdminAreaName"] or "")
+            region_level = int(row["Region"] or 0)
+
+            # 判断是否为市级/超级用户
+            # Region=1 表示市直属（如重庆市），可查看全部区域数据
+            is_super = (region_level == 1)
+
+            if is_super:
+                logger.info(
+                    f"[SQL权限] 市级用户: {user_id} | "
+                    f"区域: {region_name}(Level={region_level}) | 可访问全部数据"
+                )
+                return PermissionResult(
+                    permitted=True,
+                    error="",
+                    is_super=True,
+                    user_region_id=region_id,
+                    user_region_name=region_name,
+                    allowed_region_ids=[],  # 空列表表示全部
+                )
+            else:
+                logger.info(
+                    f"[SQL权限] 区县级用户: {user_id} | "
+                    f"区域: {region_name}(Level={region_level}) | 仅限本区域"
+                )
+                return PermissionResult(
+                    permitted=True,
+                    error="",
+                    is_super=False,
+                    user_region_id=region_id,
+                    user_region_name=region_name,
+                    allowed_region_ids=[region_id],
+                )
+
+    except Exception as e:
+        logger.error(f"[SQL权限] 权限解析异常: {e}")
+        return PermissionResult(
+            permitted=False,
+            error=f"权限解析失败: {e}",
+        )
+    finally:
+        conn.close()
+
+
+async def _check_region_permission(
+    user_id: str,
+    target_region_id: Optional[str],
+    db_config: "DatabaseConfig",
+) -> PermissionResult:
+    """两步权限校验：先验用户身份 → 再解析权限范围
+
+    流程:
+        1. 验证 user_id 是否为合法系统用户
+           └─ 失败 → 直接拒绝
+        2. 解析用户的区域权限范围（市级 vs 区县）
+           └─ 失败 → 直接拒绝
+        3. 如指定了目标区域且用户非市级 → 校验是否匹配
+           └─ 不匹配 → 拒绝
+
+    Args:
+        user_id: 用户ID
+        target_region_id: 目标区域ID（可选）
+        db_config: 数据库配置
+
+    Returns:
+        PermissionResult 完整权限结果
+    """
+
+    # ===== 第一步：验证用户身份 =====
+    user_exists, user_error = await _verify_user_exists(user_id, db_config)
+    if not user_exists:
+        return PermissionResult(permitted=False, error=user_error)
+
+    # ===== 第二步：解析权限范围 =====
+    perm_result = await _resolve_user_permission(user_id, db_config)
+    if not perm_result.permitted:
+        return perm_result
+
+    # ===== 第三步：目标区域校验（仅对非市级用户）=====
+    if target_region_id and not perm_result.is_super:
+        target_str = str(target_region_id).strip()
+        if target_str not in perm_result.allowed_region_ids:
+            logger.warning(
+                f"[SQL权限] 区域越权: user={user_id}, "
+                f"allowed={perm_result.allowed_region_ids}, requested={target_str}"
+            )
+            return PermissionResult(
+                permitted=False,
+                error=(
+                    f"用户({perm_result.user_region_name})无权访问区域 {target_str}。"
+                    f"仅限访问本区域数据。"
+                ),
+            )
+
+    return perm_result
+
+
+def _build_region_filter(
+    perm_result: PermissionResult,
+    region_column: str = "region_id",
+) -> tuple[list[str], list[Any]]:
+    """根据权限结果构建区域过滤条件
+
+    区县级用户自动注入 WHERE region_id IN (...) 条件，
+    市级用户不添加任何限制。
+
+    Args:
+        perm_result: 权限解析结果
+        region_column: 业务表中的区域字段名，默认 region_id
+
+    Returns:
+        (where_conditions_list, params_list)，可直接拼接到 SQL WHERE 中
+    """
+    if perm_result.is_super or not perm_result.allowed_region_ids:
+        return [], []  # 市级用户或无限制，不加过滤
+
+    # 区县级：仅允许查自己的区域
+    placeholders = ", ".join(["%s"] * len(perm_result.allowed_region_ids))
+    where = [f"`{region_column}` IN ({placeholders})"]
+    params = list(perm_result.allowed_region_ids)
+    return where, params
+
+
+# ==================== SQL安全验证 ====================
 
 def validate_sql(query: str, mode: QueryMode = "query") -> tuple[bool, str]:
     """
@@ -326,10 +645,17 @@ async def _execute_facility_report_async(
     database: str,
     timeout: int,
     tool_args: dict,
+    perm_result: Optional[PermissionResult] = None,
 ) -> dict:
     where, params, err = _build_facility_common_filters(tool_args)
     if err:
         return {"result": None, "error": err}
+
+    # 注入区域权限过滤：区县级用户自动限制为本区域
+    if perm_result and perm_result.permitted:
+        region_where, region_params = _build_region_filter(perm_result)
+        where.extend(region_where)
+        params.extend(region_params)
 
     limit = _parse_limit(tool_args.get("limit", 200))
     select_cols = "add_time, device_type_name, device_id, content"
@@ -363,6 +689,7 @@ async def _execute_facility_trend_async(
     database: str,
     timeout: int,
     tool_args: dict,
+    perm_result: Optional[PermissionResult] = None,
 ) -> dict:
     group_by = str(tool_args.get("group_by", "day")).lower()
     if group_by not in GROUP_BY_SET:
@@ -371,6 +698,12 @@ async def _execute_facility_trend_async(
     where, params, err = _build_facility_common_filters(tool_args)
     if err:
         return {"result": None, "error": err}
+
+    # 注入区域权限过滤：区县级用户自动限制为本区域
+    if perm_result and perm_result.permitted:
+        region_where, region_params = _build_region_filter(perm_result)
+        where.extend(region_where)
+        params.extend(region_params)
 
     bucket_expr = {
         "hour": "DATE_FORMAT(add_time, '%Y-%m-%d %H:00:00')",
@@ -520,6 +853,7 @@ async def execute_sql_query_async(
     limit: int,
     timeout: int,
     tool_args: dict | None = None,
+    perm_result: Optional[PermissionResult] = None,
 ) -> dict:
     """
     异步执行SQL查询
@@ -531,6 +865,8 @@ async def execute_sql_query_async(
         table: 表名（describe/show_create模式使用）
         limit: 返回行数限制
         timeout: 查询超时时间（秒）
+        tool_args: 工具原始参数
+        perm_result: 权限校验结果（含区域过滤信息）
 
     Returns:
         {"result": str, "error": str or None}
@@ -547,7 +883,16 @@ async def execute_sql_query_async(
         is_valid, error_msg = validate_sql(query, mode)
         if not is_valid:
             return {"result": None, "error": error_msg}
-        return await _execute_query_async(query, db_name, db_config, limit, timeout)
+        # query 模式：自定义 SQL，不做自动区域过滤（用户自己控制）
+        # 但在结果中标注权限范围供参考
+        result = await _execute_query_async(query, db_name, db_config, limit, timeout)
+        if perm_result and not perm_result.is_super and result.get("result"):
+            scope_note = (
+                f"\n\n[权限范围] 当前用户({perm_result.user_region_name})"
+                f"仅可访问本区域数据，请确认查询结果未越权。"
+            )
+            result["result"] = result["result"] + scope_note
+        return result
 
     if mode == "show_databases":
         return await _execute_show_databases_async(db_config, timeout)
@@ -579,24 +924,29 @@ async def execute_sql_query_async(
         if not is_valid:
             return {"result": None, "error": error_msg}
         if mode == "facility_trend":
-            return await _execute_facility_trend_async(table_name, db_config, db_name, timeout, tool_args)
-        return await _execute_facility_report_async(table_name, db_config, db_name, timeout, tool_args)
+            return await _execute_facility_trend_async(table_name, db_config, db_name, timeout, tool_args, perm_result)
+        return await _execute_facility_report_async(table_name, db_config, db_name, timeout, tool_args, perm_result)
 
     return {"result": None, "error": f"未知的查询模式: {mode}"}
 
 
-def execute_sql_query(tool_args: dict) -> dict:
+def execute_sql_query(
+    tool_args: dict,
+    message_context: Optional[Dict[str, Any]] = None,
+) -> dict:
     """
     执行SQL查询工具（统一入口）
 
     Args:
         tool_args: {
-            "mode": "query|show_databases|show_tables|describe|show_create",
+            "mode": "query|show_databases|show_tables|describe|show_create|facility_trend|facility_report",
             "query": "SQL语句（query模式必填）",
             "database": "数据库名称（可选）",
             "table": "表名（describe/show_create模式必填）",
-            "limit": "返回行数限制（query模式可选，默认100）"
+            "limit": "返回行数限制（query模式可选，默认100）",
+            "region_id": "目标区域ID（可选，用于权限校验）"
         }
+        message_context: 消息上下文（包含 user_id 等），由 tool_executor 注入
 
     Returns:
         {"result": str, "error": str or None}
@@ -607,6 +957,7 @@ def execute_sql_query(tool_args: dict) -> dict:
     table = tool_args.get("table")
     limit = _parse_limit(tool_args.get("limit", 100))
     timeout = DEFAULT_TIMEOUT_SECONDS
+    target_region_id = tool_args.get("region_id") or tool_args.get("regionId")
 
     if mode not in MODE_SET:
         return {"result": None, "error": f"无效的 mode 参数: {mode}，有效值: {', '.join(sorted(MODE_SET))}"}
@@ -614,11 +965,42 @@ def execute_sql_query(tool_args: dict) -> dict:
     if mode == "query" and not query:
         return {"result": None, "error": "query模式需要 query 参数"}
 
-    print(f"[Tool] sql_query: mode={mode}, database={database}, table={table}, limit={limit}")
+    # ==================== 权限校验 ====================
+    perm_result: Optional[PermissionResult] = None
+    user_id = _get_user_id_from_context(message_context)
+    if not user_id:
+        logger.warning("[SQL权限] 无法获取用户ID，跳过权限校验（开发模式）")
+    else:
+        logger.info(f"[SQL权限] 开始权限校验: user_id={user_id}, target_region={target_region_id}")
+        try:
+            config_manager = SQLToolsConfig()
+            _, db_config = config_manager.get_config(database)
+
+            # 在独立协程中执行权限检查，返回完整 PermissionResult
+            async def _do_permission_check():
+                return await _check_region_permission(user_id, target_region_id, db_config)
+
+            check_coro = _do_permission_check()
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                perm_result = asyncio.run(check_coro)
+            else:
+                perm_result = _run_async_in_thread(check_coro)
+
+            if not perm_result.permitted:
+                return {"result": None, "error": f"[权限拒绝] {perm_result.error}"}
+
+        except Exception as e:
+            logger.error(f"[SQL权限] 权限校验异常: {e}")
+            return {"result": None, "error": f"权限校验异常: {e}"}
+    # ==================== 权限校验结束 ====================
+
+    print(f"[Tool] sql_query: mode={mode}, database={database}, table={table}, limit={limit}, user={user_id}")
     if query:
         print(f"[Tool] SQL: {query}")
 
-    coro = execute_sql_query_async(mode, query, database, table, limit, timeout, tool_args)
+    coro = execute_sql_query_async(mode, query, database, table, limit, timeout, tool_args, perm_result)
 
     try:
         asyncio.get_running_loop()

@@ -470,7 +470,7 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
         elif tool_name == "document":
             tool_result = execute_document(tool_args)
         elif tool_name == "sql_query":
-            tool_result = execute_sql_query(tool_args)
+            tool_result = execute_sql_query(tool_args, message_context)
         elif tool_name == "update_todo":
             tool_result = update_todo(
                 workspace_id=workspace_id,
