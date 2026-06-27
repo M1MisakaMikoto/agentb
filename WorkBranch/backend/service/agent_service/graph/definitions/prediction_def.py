@@ -46,9 +46,6 @@ class PredictionDefinition(AgentDefinition):
                 default_tools=[
                     {"tool": "thinking", "args": {"description": ""}},
                     {"tool": "chat", "args": {"description": ""}},
-                    {"tool": "list_workspace_files", "args": {"previous_results": []}},
-                    {"tool": "bridge_report_parser", "args": {"file_paths": [], "include_format_template": True}},
-                    {"tool": "document", "args": {}},
                 ],
                 timeout_seconds=300,
                 max_iterations=10,
