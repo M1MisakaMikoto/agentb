@@ -450,22 +450,26 @@ def validate_sql(query: str, mode: QueryMode = "query") -> tuple[bool, str]:
     elif mode == "show_databases":
         if not SHOW_DATABASES_PATTERN.match(query):
             return False, "show_databases模式仅支持 SHOW DATABASES 语句"
+        return True, ""
     elif mode == "show_tables":
         if not SHOW_TABLES_PATTERN.match(query):
             return False, "show_tables模式仅支持 SHOW TABLES [FROM db] 语句"
+        return True, ""
     elif mode == "describe":
         if not DESCRIBE_PATTERN.match(query):
             return False, "describe模式仅支持 DESCRIBE/DESC table 语句"
+        return True, ""
     elif mode == "show_create":
         if not SHOW_CREATE_TABLE_PATTERN.match(query):
             return False, "show_create模式仅支持 SHOW CREATE TABLE 语句"
+        return True, ""
+
+    if ";" in query.rstrip(";"):
+        return False, "SQL语句不能包含分号（多语句执行）"
 
     for keyword in DANGEROUS_KEYWORDS:
         if re.search(rf"\b{keyword}\b", query_upper):
             return False, f"SQL语句包含危险关键字: {keyword}"
-
-    if ";" in query.rstrip(";"):
-        return False, "SQL语句不能包含分号（多语句执行）"
 
     return True, ""
 

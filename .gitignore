@@ -30,6 +30,7 @@ WorkBranch/models--BAAI--bge-m3/
 workspaces/
 WorkBranch/backend/service/agent_service/tools/sql_tools_config.json
 data/
+WorkBranch/backend/.test/media/
 
 # Server logs (uvicorn/gunicorn)
 server*.log
@@ -40,6 +41,7 @@ test_*.py
 test_*.bat
 run_server*.py
 !run_server.py
+!WorkBranch/backend/.test/unit_tests/test_*.py
 
 # Nginx temporary files
 nginx.conf

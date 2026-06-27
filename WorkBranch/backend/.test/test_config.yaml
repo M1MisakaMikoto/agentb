@@ -35,6 +35,8 @@ suites:
     scenarios:
       - rag_search
       - sql_query
+      - sql_agent_bridge
+      - sql_silent_behavior
   
   all:
     description: "All tests"
@@ -45,6 +47,8 @@ suites:
       - serial_mode
       - rag_search
       - sql_query
+      - sql_agent_bridge
+      - sql_silent_behavior
       - bridge_predict
       - bridge_defect_extract
       - disaster_judgment_flow
@@ -83,6 +87,14 @@ scenarios:
   
   sql_query:
     description: "SQL query test"
+
+  sql_agent_bridge:
+    description: "SQL Agent Bridge test"
+    prompt: "我需要统计智慧管养系统中桥梁基础数据的总数，需要调用工具查数据库"
+
+  sql_silent_behavior:
+    description: "SQL tool silent/implicit behavior validation"
+    timeout: 180.0
 
   sql_tool_test:
     description: "SQL Tool Call Test"

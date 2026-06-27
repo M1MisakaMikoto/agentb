@@ -40,6 +40,7 @@ from test_cases.workspace_upload import (
 )
 from test_cases.rag_search import run_rag_search_test
 from test_cases.sql_query import run_sql_query_test, run_sql_agent_bridge_test
+from test_cases.sql_silent_behavior import run_sql_silent_behavior_test
 from test_cases.cross_lifecycle import run_cross_lifecycle_test
 from test_cases.mq_resume import run_mq_resume_test
 from test_cases.parallel import run_parallel_test
@@ -65,6 +66,7 @@ SCENARIO_RUNNERS = {
     "rag_search": run_rag_search_test,
     "sql_query": run_sql_query_test,
     "sql_agent_bridge": run_sql_agent_bridge_test,
+    "sql_silent_behavior": run_sql_silent_behavior_test,
     "cross_lifecycle": run_cross_lifecycle_test,
     "mq_resume": run_mq_resume_test,
     "parallel": run_parallel_test,
