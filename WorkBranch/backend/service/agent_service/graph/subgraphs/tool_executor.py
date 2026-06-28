@@ -55,6 +55,7 @@ def _build_child_agent_chat_prompt(
     previous_results: list,
     parent_chain_messages: list,
     current_conversation_messages: list,
+    user_message: str = "",
     settings_service=None,
 ) -> tuple:
     """构建子 Agent 的 chat 工具提示词
@@ -72,6 +73,12 @@ def _build_child_agent_chat_prompt(
 
     # 构建简化的上下文（只包含任务、结果和历史，不含工具schema）
     context_parts = []
+
+    # 添加用户原始请求（业务上下文）
+    if user_message:
+        context_parts.append("## 用户原始请求/业务上下文")
+        context_parts.append(user_message)
+        context_parts.append("")
 
     # 添加之前任务的执行结果（始终显示，为空时明确标注）
     context_parts.append("## 之前任务的执行结果")
@@ -764,8 +771,32 @@ def _execute_chat_tool(
         or "向用户输出回复"
     )
 
-    # 从 state 获取之前工具的执行结果（ToolExecutionState 字段）
+    # 🔧 修复：自动从state获取工具执行结果，不依赖LLM手动传previous_results
+    # 优先用传入的previous_results，为空则从tool_history中提取最近的工具结果（包含失败结果）
     previous_results = state.get("previous_results", []) or []
+    if not previous_results:
+        tool_history = state.get("tool_history", []) or []
+        if tool_history:
+            previous_results = []
+            for item in tool_history:
+                result_entry = {"tool_name": item.get("tool_name", "unknown")}
+                if item.get("error"):
+                    result_entry["result"] = f"执行失败: {item.get('error')}"
+                    if item.get("result"):
+                        result_entry["result"] += f"\n结果: {item.get('result')}"
+                else:
+                    result_entry["result"] = item.get("result", "")
+                previous_results.append(result_entry)
+
+    # 获取原始用户请求/业务上下文
+    user_message = state.get("user_message", "") or ""
+    # 如果当前是director agent直接调用chat，还需要把last_tool_result（最近一次工具错误/结果）带上
+    last_tool_result = state.get("last_tool_result", "")
+    if last_tool_result and not any(str(last_tool_result) in str(r.get("result", "")) for r in previous_results):
+        previous_results.append({
+            "tool_name": state.get("last_tool_name", "last_tool"),
+            "result": last_tool_result
+        })
 
     parent_chain_messages = message_context.get("parent_chain_messages", []) if message_context else []
     current_conversation_messages = message_context.get("current_conversation_messages", []) if message_context else []
@@ -774,9 +805,10 @@ def _execute_chat_tool(
     # 构建chat专用提示词（使用CHAT_SYSTEM_PROMPT，不含工具schema）
     system_prompt, context_prompt = _build_child_agent_chat_prompt(
         task_description=chat_topic,
-        previous_results=previous_results,  # 使用 ToolExecutionState 的 previous_results 字段
+        previous_results=previous_results,
         parent_chain_messages=parent_chain_messages,
         current_conversation_messages=current_conversation_messages,
+        user_message=user_message,
         settings_service=settings_service,
     )
 
