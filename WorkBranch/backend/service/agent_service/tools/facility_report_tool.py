@@ -93,6 +93,64 @@ def _get_user_id_from_context(message_context: Optional[Dict[str, Any]] = None) 
     return None
 
 
+def _resolve_report_file_path(
+    report_file: str,
+    message_context: Optional[Dict[str, Any]] = None,
+) -> str:
+    """将 reportFile 相对路径解析为工作区内的绝对路径
+
+    Args:
+        report_file: agent 传入的报告文件路径
+        message_context: 消息上下文，含 workspace_id / workspace_service
+
+    Returns:
+        解析后的绝对路径（原始路径若为绝对路径且存在则原样返回；
+        若无法解析则返回原始路径，由后续校验处理）
+    """
+    if not report_file:
+        return report_file
+
+    # 已是绝对路径：不再解析，仅记录
+    if os.path.isabs(report_file):
+        exists = os.path.exists(report_file)
+        logger.info(
+            f"[路径解析] 输入=绝对路径, 值={report_file}, "
+            f"解析=否, 存在={exists}"
+        )
+        return report_file
+
+    # 相对路径：尝试拼接工作区目录
+    workspace_id = message_context.get("workspace_id") if message_context else None
+    workspace_service = message_context.get("workspace_service") if message_context else None
+
+    if workspace_id and workspace_service:
+        try:
+            allowed, resolved = workspace_service.resolve_path(workspace_id, report_file)
+            if allowed:
+                logger.info(
+                    f"[路径解析] 输入=相对路径, 值={report_file}, "
+                    f"解析=是, 结果={resolved}, 存在={os.path.exists(resolved)}"
+                )
+                return resolved
+            else:
+                logger.warning(
+                    f"[路径解析] 输入=相对路径, 值={report_file}, "
+                    f"解析=失败({resolved})"
+                )
+        except Exception as e:
+            logger.warning(
+                f"[路径解析] 输入=相对路径, 值={report_file}, "
+                f"解析=异常({e})"
+            )
+    else:
+        logger.info(
+            f"[路径解析] 输入=相对路径, 值={report_file}, "
+            f"解析=否(无 workspace 上下文)"
+        )
+
+    return report_file
+
+
 def _send_http_request(
     url: str,
     method: str,
@@ -325,6 +383,9 @@ def execute_submit_facility_report(
     if not region_id:
         return {"result": None, "error": "缺少必需参数: regionId (区域ID)"}
 
+    # 解析 reportFile 相对路径到工作区绝对路径
+    report_file = _resolve_report_file_path(report_file, message_context)
+
     # regionId 校验：与原始元数据比对，防止 agent 错位/漏传
     passed, err_msg = _validate_region_id(region_id, message_context)
     if not passed:
@@ -484,6 +545,9 @@ def execute_submit_facility_forecast_report(
         return {"result": None, "error": "缺少必需参数: predictYear (预测年份)"}
     if not report_file:
         return {"result": None, "error": "缺少必需参数: reportFile (报告PDF文件路径)"}
+
+    # 解析 reportFile 相对路径到工作区绝对路径
+    report_file = _resolve_report_file_path(report_file, message_context)
 
     # 获取 userId
     user_id = _get_user_id_from_context(message_context)
