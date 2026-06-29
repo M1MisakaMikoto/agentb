@@ -29,7 +29,7 @@ from .registry import ToolDefinition, ToolRegistry
 logger = logging.getLogger(__name__)
 
 # 默认配置
-DEFAULT_API_URL = os.environ.get("AI_JUDGMENT_API_URL", "http://localhost:8080")
+DEFAULT_API_URL = "http://localhost:8080"
 DEFAULT_TIMEOUT = 30  # 超时时间（秒）
 
 
@@ -231,7 +231,19 @@ def execute_submit_ai_judgment_issue(
         return {"result": None, "error": err_msg}
 
     # 构建请求（使用 regionId 作为用户标识）
-    api_url = tool_args.get("api_url") or os.environ.get("AI_JUDGMENT_API_URL") or DEFAULT_API_URL
+    # 获取 API 地址（settings_service配置 > 硬编码默认值）
+    api_url = DEFAULT_API_URL
+    config_source = "硬编码默认值"
+    settings_service = message_context.get("settings_service") if message_context else None
+    if settings_service:
+        try:
+            api_url = settings_service.get("agent_tools:ai_judgment_api_url")
+            config_source = "settings.json > agent_tools.ai_judgment_api_url"
+        except KeyError:
+            pass
+    if api_url == DEFAULT_API_URL and settings_service:
+        logger.info(f"[AI 研判] ⚠️ 使用默认地址，如需修改请在settings.json的agent_tools.ai_judgment_api_url配置")
+
     request_body = {
         "facilityId": facility_id,
         "facilityName": facility_name,
@@ -246,7 +258,7 @@ def execute_submit_ai_judgment_issue(
     logger.info(f"[AI 研判] 提交问题: {title}")
     logger.info(f"[AI 研判] 设施: {facility_name} (ID: {facility_id})")
     logger.info(f"[AI 研判] regionId: {region_id}")
-    logger.info(f"[AI 研判] URL: {url}")
+    logger.info(f"[AI 研判] URL: {url} (来源: {config_source})")
 
     # 发送请求
     try:
@@ -283,7 +295,7 @@ def register_ai_judgment_tools():
         ToolDefinition(
             name="submit_ai_judgment_issue",
             description="提交 AI 研判问题 - 将设施问题提交到 AI 研判系统进行分析。返回工单ID、区域、状态等信息。",
-            params='submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","regionId":"(区域ID，必填)","api_url":"(API地址，可选，默认使用配置)"}',
+            params='submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","regionId":"(区域ID，必填)"}',
             category="ai_judgment",
             executor=execute_submit_ai_judgment_issue
         ),

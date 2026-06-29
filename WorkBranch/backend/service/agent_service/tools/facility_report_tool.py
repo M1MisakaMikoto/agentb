@@ -43,7 +43,7 @@ from .registry import ToolDefinition, ToolRegistry
 logger = logging.getLogger(__name__)
 
 # 默认配置
-DEFAULT_API_URL = os.environ.get("FACILITY_REPORT_API_URL", "http://localhost:8001")
+DEFAULT_API_URL = "http://localhost:8001"
 DEFAULT_TIMEOUT = 30  # 超时时间（秒）
 
 
@@ -333,14 +333,24 @@ def execute_submit_facility_report(
     # 构建请求头（regionId 通过 X-Region-Id 传递）
     region_headers = {"X-Region-Id": str(region_id)}
 
-    # 获取 API 地址
-    api_url = tool_args.get("api_url") or os.environ.get("FACILITY_REPORT_API_URL") or DEFAULT_API_URL
+    # 获取 API 地址（settings_service配置 > 硬编码默认值）
+    api_url = DEFAULT_API_URL
+    config_source = "硬编码默认值"
+    settings_service = message_context.get("settings_service") if message_context else None
+    if settings_service:
+        try:
+            api_url = settings_service.get("agent_tools:facility_report_api_url")
+            config_source = "settings.json > agent_tools.facility_report_api_url"
+        except KeyError:
+            pass
+    if api_url == DEFAULT_API_URL and settings_service:
+        logger.info(f"[设施研判报告] ⚠️ 使用默认地址，如需修改请在settings.json的agent_tools.facility_report_api_url配置")
 
     logger.info(f"[设施研判报告] 开始处理报告: {report_name}")
     logger.info(f"[设施研判报告] 设施: {facility_name} (ID: {facility_id})")
     logger.info(f"[设施研判报告] 文件: {report_file}")
     logger.info(f"[设施研判报告] regionId: {region_id}")
-    logger.info(f"[设施研判报告] API地址: {api_url}")
+    logger.info(f"[设施研判报告] API地址: {api_url} (来源: {config_source})")
 
     # ========== 步骤1: 上传 PDF 文件 ==========
     upload_url = f"{api_url}/v1/file/upload"
@@ -412,14 +422,14 @@ def register_facility_report_tools():
         ToolDefinition(
             name="submit_facility_report",
             description="生成设施研判报告 - 两步流程：先上传PDF文件获得fileUrl，再提交业务数据生成研判报告。串联 /v1/file/upload 和 /v1/facility/decision/report 两个接口。",
-            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告PDF文件本地路径，必填)","regionId":"(区域ID，必填)","api_url":"(API地址，可选)"}',
+            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告PDF文件本地路径，必填)","regionId":"(区域ID，必填)"}',
             category="facility_report",
             executor=execute_submit_facility_report
         ),
         ToolDefinition(
             name="submit_facility_forecast",
             description="提交设施预测报告 - 两步流程：先上传PDF文件获得fileUrl，再提交预测数据。串联 /v1/file/upload 和 /v1/facility/forecast/report 两个接口。",
-            params='submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)","api_url":"(API地址，可选)"}',
+            params='submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)"}',
             category="facility_report",
             executor=execute_submit_facility_forecast_report
         ),
@@ -480,13 +490,23 @@ def execute_submit_facility_forecast_report(
     if not user_id:
         return {"result": None, "error": "无法获取用户ID，请确保消息上下文包含用户信息"}
 
-    # 获取 API 地址
-    api_url = tool_args.get("api_url") or os.environ.get("FACILITY_REPORT_API_URL") or DEFAULT_API_URL
+    # 获取 API 地址（settings_service配置 > 硬编码默认值）
+    api_url = DEFAULT_API_URL
+    config_source = "硬编码默认值"
+    settings_service = message_context.get("settings_service") if message_context else None
+    if settings_service:
+        try:
+            api_url = settings_service.get("agent_tools:facility_report_api_url")
+            config_source = "settings.json > agent_tools.facility_report_api_url"
+        except KeyError:
+            pass
+    if api_url == DEFAULT_API_URL and settings_service:
+        logger.info(f"[设施预测报告] ⚠️ 使用默认地址，如需修改请在settings.json的agent_tools.facility_report_api_url配置")
 
     logger.info(f"[设施预测报告] 开始处理预测报告")
     logger.info(f"[设施预测报告] 设施ID: {facility_id}, 年份: {predict_year}")
     logger.info(f"[设施预测报告] 文件: {report_file}")
-    logger.info(f"[设施预测报告] API地址: {api_url}")
+    logger.info(f"[设施预测报告] API地址: {api_url} (来源: {config_source})")
 
     # ========== 步骤1: 上传 PDF 文件 ==========
     upload_url = f"{api_url}/v1/file/upload"

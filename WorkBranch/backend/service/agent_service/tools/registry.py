@@ -184,18 +184,18 @@ ALL_TOOLS = {
     "submit_ai_judgment_issue": {
         "name": "submit_ai_judgment_issue",
         "description": "提交 AI 研判问题 - 将设施问题提交到 AI 研判系统，等待 AI 分析并返回研判结果",
-        "params": 'submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","regionId":"(区域ID，必填，从元数据中获取)","api_url":"(API地址，可选)"}'
+        "params": 'submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","regionId":"(区域ID，必填，从元数据中获取)"}'
     },
     # --- 设施研判报告工具 ---
     "submit_facility_report": {
         "name": "submit_facility_report",
         "description": "生成设施研判报告 - 将检测报告(PDF)上传后自动生成研判报告",
-        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告PDF文件本地路径，必填)","regionId":"(区域ID，必填，从元数据中获取)","api_url":"(API地址，可选)"}'
+        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告PDF文件本地路径，必填)","regionId":"(区域ID，必填，从元数据中获取)"}'
     },
     "submit_facility_forecast": {
         "name": "submit_facility_forecast",
         "description": "提交设施预测报告 - 将桥梁预测分析结果(PDF)上传到系统。调用 POST /v1/facility/forecast/report 接口。",
-        "params": 'submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)","api_url":"(API地址，可选)"}'
+        "params": 'submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)"}'
     },
     # --- 日常巡查记录工具 ---
     "submit_dailypatrol_record": {
@@ -228,8 +228,7 @@ ALL_TOOLS = {
                    '"qrdzdt":"(二维码巡查坐标，可选)",'
                    '"reveal":"(是否展示0/1，可选)",'
                    '"videoModel":"(是否视频巡查1/0，可选)",'
-                   '"dtoList":"(检测指标明细列表，可选)",'
-                   '"api_url":"(API地址，可选)"'
+                   '"dtoList":"(检测指标明细列表，可选)"'
                    '}'
     },
 }

@@ -212,8 +212,18 @@ def execute_submit_dailypatrol_record(
 
         request_body["dtoList"] = processed_dto_list
 
-    # ========== 获取 API 地址 ==========
-    api_url = tool_args.get("api_url") or os.environ.get("DAILYPATROL_API_URL") or DEFAULT_API_URL
+    # ========== 获取 API 地址（settings_service配置 > 硬编码默认值）==========
+    api_url = DEFAULT_API_URL
+    config_source = "硬编码默认值"
+    settings_service = message_context.get("settings_service") if message_context else None
+    if settings_service:
+        try:
+            api_url = settings_service.get("agent_tools:dailypatrol_api_url")
+            config_source = "settings.json > agent_tools.dailypatrol_api_url"
+        except KeyError:
+            pass
+    if api_url == DEFAULT_API_URL and settings_service:
+        logger.info(f"[日常巡查记录] ⚠️ 使用默认地址，如需修改请在settings.json的agent_tools.dailypatrol_api_url配置")
 
     # ========== 构建请求头 ==========
     request_headers = {
@@ -223,7 +233,7 @@ def execute_submit_dailypatrol_record(
     logger.info(f"[日常巡查记录] 开始提交巡查记录")
     logger.info(f"[日常巡查记录] 标题: {title}, 设施: {ssname}")
     logger.info(f"[日常巡查记录] 巡查人: {xcperson} ({xcphone})")
-    logger.info(f"[日常巡查记录] API地址: {api_url}")
+    logger.info(f"[日常巡查记录] API地址: {api_url} (来源: {config_source})")
 
     # ========== 发送请求 ==========
     endpoint = "/dailypatrol/agent/add"
@@ -295,8 +305,7 @@ def register_dailypatrol_tools():
                    '"qrdzdt":"(二维码巡查坐标，可选)",'
                    '"reveal":"(是否展示0/1，可选)",'
                    '"videoModel":"(是否视频巡查1/0，可选)",'
-                   '"dtoList":"(检测指标明细列表，可选)",'
-                   '"api_url":"(API地址，可选)"'
+                   '"dtoList":"(检测指标明细列表，可选)"'
                    '}',
             category="dailypatrol",
             executor=execute_submit_dailypatrol_record

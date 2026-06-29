@@ -76,6 +76,11 @@ DEFAULT_SETTINGS = {
         "tool_timeout_seconds": 300,
         "special_tool_timeout_seconds": 600
     },
+    "agent_tools": {
+        "facility_report_api_url": "http://localhost:8001",
+        "dailypatrol_api_url": "http://localhost:8002",
+        "ai_judgment_api_url": "http://localhost:8080"
+    },
     "logging": {
         "enabled": True,
         "level": "INFO",
