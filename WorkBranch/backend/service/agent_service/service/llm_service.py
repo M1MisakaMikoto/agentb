@@ -259,7 +259,7 @@ class LLMService:
 
         capabilities = self._get_capabilities()
         if not allow_multimodal:
-            raise ValueError("当前调用场景不支持图片输入")
+            return parts_to_plain_text(parts)
         if not capabilities.get("supports_vision"):
             if capabilities.get("reject_image_when_unsupported"):
                 raise ValueError("当前模型不支持图像理解")
@@ -306,6 +306,7 @@ class LLMService:
         system_prompt: Optional[str] = None,
         http_client: Any = None,
         http_async_client: Any = None,
+        allow_multimodal: bool = True,
     ) -> str:
         """
         发送聊天请求
@@ -313,6 +314,7 @@ class LLMService:
         Args:
             messages: 消息列表
             system_prompt: 系统提示词
+            allow_multimodal: 是否允许多模态输入（图片），默认True
 
         Returns:
             AI 响应文本
@@ -322,7 +324,7 @@ class LLMService:
         else:
             llm = self._get_llm()
 
-        lc_messages = self._build_lc_messages(messages, system_prompt, allow_multimodal=True)
+        lc_messages = self._build_lc_messages(messages, system_prompt, allow_multimodal=allow_multimodal)
 
         try:
             # 限制消息输出行数，避免递归和输出过长问题

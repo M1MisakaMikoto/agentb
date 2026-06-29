@@ -74,6 +74,7 @@ class SessionHistory:
             raw_result = self._llm.chat(
                 self._build_title_messages(context),
                 system_prompt=self.TITLE_PROMPT,
+                allow_multimodal=False,
             )
             parsed = self._extract_json_object(raw_result)
             title = parsed.get("title", "")
