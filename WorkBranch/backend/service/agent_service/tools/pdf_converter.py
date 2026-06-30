@@ -3,16 +3,39 @@
 转换链：
 1. 已有 docx（由 document_tools._docx_write 生成）
 2. pandoc 用自定义最简模板将 docx 转为 tex（绕过默认模板的 unicode-math 依赖）
-3. pytinytex 调 xelatex 编译 tex 为 PDF
+3. xelatex 编译 tex 为 PDF
 
-首次使用会自动下载 TinyTeX（约 244MB），超时 600s 后抛错含手动安装说明。
+TinyTeX 安装在项目内 setup/tinytex/ 目录，不污染用户目录。
+首次使用自动下载（约 244MB），超时 600s 后抛错含手动安装说明。
+不依赖 pytinytex 库，自己管理下载/解压/编译。
 """
 import os
 import sys
 import threading
 import tempfile
+import zipfile
+import shutil
+import subprocess
+import urllib.request
 
 TINYTEX_DOWNLOAD_TIMEOUT = 600  # 秒
+TINYTEX_DOWNLOAD_URL = "https://github.com/rstudio/tinytex-releases/releases/download/v2026.06/TinyTeX-v2026.06.zip"
+
+
+def _get_project_root() -> str:
+    """返回项目根目录（pdf_converter.py 上溯 5 层）"""
+    # tools/ -> agent_service/ -> service/ -> backend/ -> WorkBranch/ -> 项目根
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
+
+
+def _get_tinytex_dir() -> str:
+    """返回项目内 TinyTeX 安装目录"""
+    return os.path.join(_get_project_root(), "setup", "tinytex")
+
+
+def _get_xelatex_path() -> str:
+    """返回 xelatex 可执行文件路径（Windows）"""
+    return os.path.join(_get_tinytex_dir(), "TinyTeX", "bin", "windows", "xelatex.exe")
 
 
 def _get_template_path() -> str:
@@ -20,47 +43,65 @@ def _get_template_path() -> str:
     return os.path.join(os.path.dirname(__file__), "simple_template.tex")
 
 
-def _get_font_path() -> str:
-    """获取系统 SimHei 字体路径（动态适配系统盘）"""
-    system_root = os.environ.get("SystemRoot", r"C:\WINDOWS")
-    return system_root.replace("\\", "/") + "/Fonts/simhei.ttf"
-
-
 def _ensure_tinytex() -> str:
-    """确保 TinyTeX 已安装，返回 xelatex 可执行文件路径"""
-    import pytinytex
+    """确保 TinyTeX 已安装到项目内目录，返回 xelatex 路径
 
-    # 已安装则直接返回
-    try:
-        engine = pytinytex.get_xelatex_engine()
-        if engine and os.path.exists(engine):
-            return engine
-    except Exception:
-        pass
+    Returns:
+        xelatex.exe 的绝对路径
 
-    # 首次下载（带超时）
-    print(f"[PDF] 首次使用，开始下载 TinyTeX（超时 {TINYTEX_DOWNLOAD_TIMEOUT}s）...")
-    _download_tinytex_with_timeout(TINYTEX_DOWNLOAD_TIMEOUT)
-
-    engine = pytinytex.get_xelatex_engine()
-    assert engine and os.path.exists(engine), f"下载完成但 xelatex 不可用: {engine}"
-    return engine
-
-
-def _download_tinytex_with_timeout(timeout: int) -> None:
-    """首次下载 TinyTeX，超时抛错含手动安装说明
-
-    pytinytex 内部用 urlopen 无超时控制，这里用线程+Event 实现。
+    Raises:
+        RuntimeError: 下载或解压失败
+        TimeoutError: 下载超时
     """
-    import pytinytex
+    xelatex = _get_xelatex_path()
+    if os.path.exists(xelatex):
+        return xelatex
+
+    # 首次下载+解压
+    print(f"[PDF] 首次使用，开始下载 TinyTeX（超时 {TINYTEX_DOWNLOAD_TIMEOUT}s）...")
+    _download_and_extract_tinytex(TINYTEX_DOWNLOAD_TIMEOUT)
+
+    assert os.path.exists(xelatex), f"安装完成但 xelatex 不可用: {xelatex}"
+    return xelatex
+
+
+def _download_and_extract_tinytex(timeout: int) -> None:
+    """下载 TinyTeX zip 并解压到项目内 setup/tinytex/
+
+    使用线程+Event 实现超时控制。
+
+    Raises:
+        TimeoutError: 下载超时
+        RuntimeError: 下载或解压失败
+    """
+    tinytex_dir = _get_tinytex_dir()
+    os.makedirs(tinytex_dir, exist_ok=True)
 
     done = threading.Event()
     error_box = []
 
     def _download():
         try:
-            # variation=2 是 Windows 完整版（2026.06 起 variation 0/1 无 Windows 包）
-            pytinytex.download_tinytex(variation=2)
+            zip_path = os.path.join(tinytex_dir, "TinyTeX.zip")
+            print(f"[PDF] 下载: {TINYTEX_DOWNLOAD_URL}")
+
+            # 用 urllib 下载（支持超时）
+            def _report(block_num, block_size, total_size):
+                if block_num % 100 == 0 and total_size > 0:
+                    pct = block_num * block_size * 100 / total_size
+                    print(f"[PDF] 下载进度: {pct:.1f}%", flush=True)
+
+            urllib.request.urlretrieve(TINYTEX_DOWNLOAD_URL, zip_path, reporthook=_report)
+            print(f"[PDF] 下载完成，开始解压...")
+
+            # 解压到 tinytex_dir
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(tinytex_dir)
+
+            # 删除 zip
+            os.unlink(zip_path)
+            print(f"[PDF] 解压完成: {tinytex_dir}")
+
         except Exception as e:
             error_box.append(e)
         finally:
@@ -73,7 +114,7 @@ def _download_tinytex_with_timeout(timeout: int) -> None:
         raise TimeoutError(f"TinyTeX 下载超时（{timeout}s）")
 
     if error_box:
-        raise error_box[0]
+        raise RuntimeError(f"TinyTeX 下载/解压失败: {error_box[0]}")
 
 
 def _run_pandoc_to_tex(docx_path: str, tex_path: str, template_path: str) -> None:
@@ -99,30 +140,49 @@ def _run_pandoc_to_tex(docx_path: str, tex_path: str, template_path: str) -> Non
 
 
 def _run_xelatex(tex_path: str, pdf_path: str) -> None:
-    """用 pytinytex 调 xelatex 编译 tex 为 PDF
+    """用 xelatex 编译 tex 为 PDF（运行 2 次以解决交叉引用）
 
     Raises:
         RuntimeError: 编译失败
     """
-    import pytinytex
+    xelatex = _ensure_tinytex()
+    xelatex_dir = os.path.dirname(xelatex)
 
     # 将 xelatex 所在目录加入 PATH，确保子进程能找到相关工具
-    engine = pytinytex.get_xelatex_engine()
-    xelatex_dir = os.path.dirname(engine)
     os.environ["PATH"] = xelatex_dir + os.pathsep + os.environ.get("PATH", "")
 
-    result = pytinytex.compile(tex_path, engine="xelatex", auto_install=True)
-    if not result.success:
-        err_msgs = [e.message for e in result.errors[:3]]
-        raise RuntimeError(f"xelatex 编译失败: {'; '.join(err_msgs)}")
+    tex_dir = os.path.dirname(os.path.abspath(tex_path))
 
-    if not os.path.exists(result.pdf_path):
-        raise RuntimeError(f"xelatex 编译完成但 PDF 不存在: {result.pdf_path}")
+    # 运行 2 次（交叉引用）
+    for run_idx in range(2):
+        cmd = [
+            xelatex,
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            tex_path,
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=tex_dir,
+            timeout=120,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if result.returncode != 0:
+            # 提取错误信息（最后 20 行）
+            err_lines = result.stdout.split("\n")[-20:] if result.stdout else []
+            err_msg = "\n".join(err_lines) if err_lines else result.stderr
+            raise RuntimeError(f"xelatex 编译失败（第{run_idx+1}次）:\n{err_msg}")
 
-    # 复制到目标路径（pytinytex 输出在 tex 同目录）
-    if os.path.abspath(result.pdf_path) != os.path.abspath(pdf_path):
-        import shutil
-        shutil.copy(result.pdf_path, pdf_path)
+    # xelatex 输出 PDF 在 tex 同目录，文件名与 tex 相同但扩展名 .pdf
+    generated_pdf = os.path.splitext(tex_path)[0] + ".pdf"
+    if not os.path.exists(generated_pdf):
+        raise RuntimeError(f"xelatex 编译完成但 PDF 不存在: {generated_pdf}")
+
+    # 复制到目标路径
+    if os.path.abspath(generated_pdf) != os.path.abspath(pdf_path):
+        shutil.copy(generated_pdf, pdf_path)
 
 
 def convert_docx_to_pdf(docx_path: str, pdf_path: str) -> dict:
@@ -136,33 +196,21 @@ def convert_docx_to_pdf(docx_path: str, pdf_path: str) -> dict:
         成功: {"result": {"message": ..., "pdf_path": ...}, "error": None}
         失败: {"result": None, "error": ...}
     """
+    manual_install_hint = (
+        "请手动安装：\n"
+        "1. 下载 https://github.com/rstudio/tinytex-releases/releases/download/v2026.06/TinyTeX-v2026.06.zip\n"
+        f"2. 解压到项目内 setup/tinytex/ 目录（完整路径: {_get_tinytex_dir()}）\n"
+        "3. 确保 setup/tinytex/TinyTeX/bin/windows/xelatex.exe 存在\n"
+        "4. 重启 agent 服务"
+    )
+
     # 1. 确保 xelatex 可用（首次下载）
     try:
         _ensure_tinytex()
     except TimeoutError as e:
-        return {
-            "result": None,
-            "error": (
-                f"TinyTeX 自动下载失败: {e}\n"
-                "请手动安装：\n"
-                "1. 下载 https://github.com/rstudio/tinytex-releases/releases/download/v2026.06/TinyTeX-v2026.06.zip\n"
-                "2. 解压到用户目录下的 .pytinytex 目录（如 X:\\Users\\<用户名>\\.pytinytex）\n"
-                "3. 确保 .pytinytex\\TinyTeX\\bin\\windows\\xelatex.exe 存在\n"
-                "4. 重启 agent 服务"
-            ),
-        }
+        return {"result": None, "error": f"TinyTeX 自动下载失败: {e}\n{manual_install_hint}"}
     except Exception as e:
-        return {
-            "result": None,
-            "error": (
-                f"TinyTeX 初始化失败: {e}\n"
-                "请手动安装：\n"
-                "1. 下载 https://github.com/rstudio/tinytex-releases/releases/download/v2026.06/TinyTeX-v2026.06.zip\n"
-                "2. 解压到用户目录下的 .pytinytex 目录（如 X:\\Users\\<用户名>\\.pytinytex）\n"
-                "3. 确保 .pytinytex\\TinyTeX\\bin\\windows\\xelatex.exe 存在\n"
-                "4. 重启 agent 服务"
-            ),
-        }
+        return {"result": None, "error": f"TinyTeX 初始化失败: {e}\n{manual_install_hint}"}
 
     # 2. pandoc docx → tex
     template_path = _get_template_path()
@@ -191,8 +239,6 @@ def convert_docx_to_pdf(docx_path: str, pdf_path: str) -> dict:
         return {"result": None, "error": f"PDF生成失败: {str(e)}"}
 
     finally:
-        # 清理临时目录
-        import shutil
         try:
             shutil.rmtree(tmpdir, ignore_errors=True)
         except Exception:
