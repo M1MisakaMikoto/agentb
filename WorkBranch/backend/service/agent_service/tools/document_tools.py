@@ -246,143 +246,42 @@ def _pdf_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
 
 
 def _pdf_write(file_path: str, content: str, metadata: Optional[dict] = None) -> dict:
+    """通过 docx→tex→xelatex 链路生成 PDF，支持中文
+
+    转换链：复用 _docx_write 生成临时 docx → pdf_converter 转 PDF
+    """
+    from .pdf_converter import convert_docx_to_pdf
+
+    tmp_docx = tempfile.mktemp(suffix=".docx")
     try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen import canvas as pdf_canvas
-        from reportlab.lib.units import mm
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-    except ImportError:
-        return _make_result(error="缺少依赖: pip install reportlab")
-    
-    try:
-        c = pdf_canvas.Canvas(file_path, pagesize=A4)
-        width, height = A4
-        
-        meta = metadata or {}
-        if meta.get("title"):
-            c.setTitle(meta["title"])
-        if meta.get("author"):
-            c.setAuthor(meta["author"])
-        
-        lines = content.split("\n")
-        y = height - 40 * mm
-        
-        for line in lines:
-            if y < 40 * mm:
-                c.showPage()
-                y = height - 40 * mm
-            
-            if line.startswith("# "):
-                c.setFont("Helvetica-Bold", 18)
-                c.drawString(20 * mm, y, line[2:].strip())
-                y -= 12 * mm
-            elif line.startswith("## "):
-                c.setFont("Helvetica-Bold", 14)
-                c.drawString(20 * mm, y, line[3:].strip())
-                y -= 10 * mm
-            elif line.startswith("### "):
-                c.setFont("Helvetica-Bold", 12)
-                c.drawString(20 * mm, y, line[4:].strip())
-                y -= 8 * mm
-            else:
-                c.setFont("Helvetica", 10)
-                
-                max_width = width - 40 * mm
-                
-                if c.stringWidth(line, "Helvetica", 10) > max_width:
-                    words = line.split()
-                    current_line = ""
-                    for word in words:
-                        test = current_line + " " + word if current_line else word
-                        if c.stringWidth(test, "Helvetica", 10) <= max_width:
-                            current_line = test
-                        else:
-                            c.drawString(20 * mm, y, current_line)
-                            y -= 6 * mm
-                            if y < 40 * mm:
-                                c.showPage()
-                                y = height - 40 * mm
-                            current_line = word
-                    if current_line:
-                        c.drawString(20 * mm, y, current_line)
-                        y -= 6 * mm
-                else:
-                    c.drawString(20 * mm, y, line)
-                    y -= 6 * mm
-        
-        c.save()
-        return _make_result({"message": f"PDF创建成功: {file_path}", "pages": c.getPageNumber() if hasattr(c, '_pageNumber') else "unknown"})
+        # 1. 复用现有 _docx_write 生成临时 docx
+        docx_result = _docx_write(tmp_docx, content, metadata)
+        if docx_result.get("error"):
+            return docx_result
+
+        # 2. docx → PDF
+        conv = convert_docx_to_pdf(tmp_docx, file_path)
+        if conv.get("error"):
+            return _make_result(error=conv["error"])
+        return _make_result(conv["result"])
     except Exception as e:
         return _make_result(error=f"PDF写入失败: {str(e)}")
+    finally:
+        try:
+            if os.path.exists(tmp_docx):
+                os.unlink(tmp_docx)
+        except Exception:
+            pass
 
 
 def _pdf_append(file_path: str, content: str) -> dict:
-    try:
-        from pypdf import PdfReader, PdfWriter
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen import canvas as pdf_canvas
-        from reportlab.lib.units import mm
-    except ImportError:
-        return _make_result(error="缺少依赖: pip install pypdf reportlab")
-    
-    try:
-        temp_pdf = tempfile.mktemp(suffix=".append.pdf")
-        c = pdf_canvas.Canvas(temp_pdf, pagesize=A4)
-        width, height = A4
-        
-        lines = content.split("\n")
-        y = height - 40 * mm
-        
-        for line in lines:
-            if y < 40 * mm:
-                c.showPage()
-                y = height - 40 * mm
-            
-            c.setFont("Helvetica", 10)
-            
-            max_width = width - 40 * mm
-            if c.stringWidth(line, "Helvetica", 10) > max_width:
-                words = line.split()
-                current_line = ""
-                for word in words:
-                    test = current_line + " " + word if current_line else word
-                    if c.stringWidth(test, "Helvetica", 10) <= max_width:
-                        current_line = test
-                    else:
-                        c.drawString(20 * mm, y, current_line)
-                        y -= 6 * mm
-                        if y < 40 * mm:
-                            c.showPage()
-                            y = height - 40 * mm
-                        current_line = word
-                if current_line:
-                    c.drawString(20 * mm, y, current_line)
-                    y -= 6 * mm
-            else:
-                c.drawString(20 * mm, y, line)
-                y -= 6 * mm
-        
-        c.save()
-        
-        writer = PdfWriter()
-        reader = PdfReader(file_path)
-        for page in reader.pages:
-            writer.add_page(page)
-        
-        append_reader = PdfReader(temp_pdf)
-        for page in append_reader.pages:
-            writer.add_page(page)
-        
-        with open(file_path, "wb") as f:
-            writer.write(f)
-        
-        os.unlink(temp_pdf)
-        return _make_result({"message": f"PDF追加成功，总页数: {len(writer.pages)}"})
-    except Exception as e:
-        if os.path.exists(temp_pdf):
-            os.unlink(temp_pdf)
-        return _make_result(error=f"PDF追加失败: {str(e)}")
+    """PDF 不支持追加，明确报错（不写兜底）
+
+    PDF 格式不适合增量追加，建议用 document w 重新生成完整 PDF。
+    """
+    return _make_result(
+        error="PDF暂不支持追加操作，请用 document w 重新生成完整PDF"
+    )
 
 
 def _pdf_update(file_path: str, target: str, content: Optional[str] = None,

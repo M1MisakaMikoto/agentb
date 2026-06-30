@@ -35,3 +35,5 @@ openpyxl>=3.1.0
 pandas>=2.0.0
 xlrd>=2.0.0
 pywin32>=306; sys_platform == 'win32'
+pytinytex>=0.5.1
+pypandoc>=1.17

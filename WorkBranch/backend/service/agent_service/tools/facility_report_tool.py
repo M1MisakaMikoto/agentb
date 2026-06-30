@@ -482,14 +482,14 @@ def register_facility_report_tools():
     tools = [
         ToolDefinition(
             name="submit_facility_report",
-            description="生成设施研判报告 - 两步流程：先上传PDF文件获得fileUrl，再提交业务数据生成研判报告。串联 /v1/file/upload 和 /v1/facility/decision/report 两个接口。",
+            description="生成设施研判报告 - 两步流程：先上传PDF文件获得fileUrl，再提交业务数据生成研判报告。串联 /v1/file/upload 和 /v1/facility/decision/report 两个接口。注意：若尚无PDF文件，先用 document w 工具生成PDF（传入Markdown内容即可自动转换为PDF）。",
             params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告PDF文件本地路径，必填)","regionId":"(区域ID，必填)"}',
             category="facility_report",
             executor=execute_submit_facility_report
         ),
         ToolDefinition(
             name="submit_facility_forecast",
-            description="提交设施预测报告 - 两步流程：先上传PDF文件获得fileUrl，再提交预测数据。串联 /v1/file/upload 和 /v1/facility/forecast/report 两个接口。",
+            description="提交设施预测报告 - 两步流程：先上传PDF文件获得fileUrl，再提交预测数据。串联 /v1/file/upload 和 /v1/facility/forecast/report 两个接口。注意：若尚无PDF文件，先用 document w 工具生成PDF（传入Markdown内容即可自动转换为PDF）。",
             params='submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)"}',
             category="facility_report",
             executor=execute_submit_facility_forecast_report
