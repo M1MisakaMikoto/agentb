@@ -18,6 +18,7 @@ from .base import (
 
 # 测试用例模块
 from .bridge_defect_extract import run_defect_extraction_test, TEST_FILE_PATH, DEFECT_EXTRACTION_PROMPT
+from .qiaozitang_monthly_query import run_qiaozitang_monthly_query_test
 
 __all__ = [
     "APIClient",
@@ -39,4 +40,5 @@ __all__ = [
     "run_defect_extraction_test",
     "TEST_FILE_PATH",
     "DEFECT_EXTRACTION_PROMPT",
+    "run_qiaozitang_monthly_query_test",
 ]

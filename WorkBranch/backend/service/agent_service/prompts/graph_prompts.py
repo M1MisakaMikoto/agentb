@@ -642,6 +642,10 @@ def _format_tool_history(tool_history: List[dict]) -> str:
 
         history_lines.append(f"{time_tag} tool={item.get('tool_name')} args={item.get('args')}")
         history_lines.append(f"     result={result_text}")
+        # 补全 error 字段：当 result 为空但 error 有值时，输出错误信息供 LLM 决策
+        error_text = str(item.get("error") or "")
+        if error_text:
+            history_lines.append(f"     错误: {error_text}")
         history_lines.append("")
 
     return "\n".join(history_lines)
