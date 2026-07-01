@@ -460,8 +460,13 @@ def check_state_node(state: AgentState) -> dict:
     last_tool_success = state.get("last_tool_success")
     last_tool_name = state.get("last_tool_name")
 
-    if iteration_count > 20:
-        console.warning(f"[check_state] 迭代次数过多 ({iteration_count})，强制终止")
+    try:
+        from singleton import get_settings_service
+        _hard_limit = int(get_settings_service().get("agent:iterations:director:hard_limit"))
+    except (KeyError, ValueError, ImportError):
+        _hard_limit = 256
+    if iteration_count > _hard_limit:
+        console.warning(f"[check_state] 迭代次数过多 ({iteration_count}/{_hard_limit})，强制终止")
         return {"_route_target": "error_summary"}
 
     if last_tool_success is False and last_tool_name:

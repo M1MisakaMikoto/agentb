@@ -20,6 +20,11 @@ class ReviewDefinition(AgentDefinition):
     """
 
     def __init__(self):
+        try:
+            from singleton import get_settings_service
+            _max_iter = int(get_settings_service().get("agent:iterations:review:max"))
+        except (KeyError, ValueError, ImportError):
+            _max_iter = 8
         super().__init__(
             prompt=AgentPrompt(
                 system_prompt=REVIEW_AGENT_PROMPT,
@@ -42,7 +47,7 @@ class ReviewDefinition(AgentDefinition):
                     {"tool": "chat", "args": {"description": ""}},
                 ],
                 timeout_seconds=300,
-                max_iterations=8,
+                max_iterations=_max_iter,
                 memory_mode="accumulate",
                 agent_type="review_agent",
                 is_subagent=True,

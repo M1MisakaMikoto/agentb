@@ -21,6 +21,11 @@ class PredictionDefinition(AgentDefinition):
     """
 
     def __init__(self):
+        try:
+            from singleton import get_settings_service
+            _max_iter = int(get_settings_service().get("agent:iterations:prediction:max"))
+        except (KeyError, ValueError, ImportError):
+            _max_iter = 10
         super().__init__(
             prompt=AgentPrompt(
                 system_prompt=PREDICTION_AGENT_PROMPT,
@@ -48,7 +53,7 @@ class PredictionDefinition(AgentDefinition):
                     {"tool": "chat", "args": {"description": ""}},
                 ],
                 timeout_seconds=300,
-                max_iterations=10,
+                max_iterations=_max_iter,
                 memory_mode="accumulate",
                 agent_type="prediction_agent",
                 is_subagent=True,

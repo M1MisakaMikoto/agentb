@@ -74,7 +74,13 @@ DEFAULT_SETTINGS = {
         "memory_window_size": 3,
         "plan_auto_approve": True,
         "tool_timeout_seconds": 300,
-        "special_tool_timeout_seconds": 600
+        "special_tool_timeout_seconds": 600,
+        "iterations": {
+            "director": {"max": 16, "hard_limit": 256},
+            "prediction": {"max": 10},
+            "explore": {"max": 8},
+            "review": {"max": 8}
+        }
     },
     "agent_tools": {
         "facility_report_api_url": "http://localhost:8001",

@@ -15,6 +15,11 @@ class DirectorDefinition(AgentDefinition):
     """
 
     def __init__(self):
+        try:
+            from singleton import get_settings_service
+            _max_iter = int(get_settings_service().get("agent:iterations:director:max"))
+        except (KeyError, ValueError, ImportError):
+            _max_iter = 16
         super().__init__(
             prompt=AgentPrompt(
                 system_prompt=DIRECT_SYSTEM_PROMPT,
@@ -56,7 +61,7 @@ class DirectorDefinition(AgentDefinition):
                     {"tool": "chat", "args": {"description": ""}},
                 ],
                 timeout_seconds=300,
-                max_iterations=12,  # 需要足够迭代完成预测+提交记录
+                max_iterations=_max_iter,  # 需要足够迭代完成预测+提交记录
                 memory_mode="accumulate",
                 agent_type="director_agent",
                 is_subagent=False,
