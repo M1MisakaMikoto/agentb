@@ -1,9 +1,12 @@
+import logging
 import os
 
 from data.file_storage_system import FileStorageSystem
 
+logger = logging.getLogger(__name__)
 
-def _merge_missing_defaults(defaults, current):
+
+def _merge_missing_defaults(defaults, current, path=""):
     """Deep-merge defaults into current, only filling missing keys.
 
     Returns: (merged, changed)
@@ -12,6 +15,10 @@ def _merge_missing_defaults(defaults, current):
         return current, False
 
     if not isinstance(current, dict):
+        full_path = path or "root"
+        logger.warning(
+            f"配置节点 '{full_path}' 类型异常(expected dict, got {type(current).__name__})，已降级为默认值"
+        )
         return defaults, True
 
     merged = dict(current)
@@ -25,7 +32,8 @@ def _merge_missing_defaults(defaults, current):
 
         current_value = merged[key]
         if isinstance(default_value, dict):
-            next_value, nested_changed = _merge_missing_defaults(default_value, current_value)
+            child_path = f"{path}.{key}" if path else key
+            next_value, nested_changed = _merge_missing_defaults(default_value, current_value, child_path)
             if nested_changed:
                 merged[key] = next_value
                 changed = True
