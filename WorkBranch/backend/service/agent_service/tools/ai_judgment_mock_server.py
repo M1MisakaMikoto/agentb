@@ -60,6 +60,12 @@ class AIJudgmentMockHandler(BaseHTTPRequestHandler):
             self.send_error_response(400, "缺少 userId 参数")
             return
 
+        # 模拟扁平型错误结构（用于测试 ai_judgment_tool 的错误透传逻辑）
+        # 当 userId == "404" 时返回扁平型 404，不带 error 包装字段
+        if user_id == "404":
+            self.send_flat_error_response(404, "用户不存在")
+            return
+
         # 验证必需字段
         required_fields = ["facilityId", "facilityName", "title"]
         missing_fields = [f for f in required_fields if f not in request_data]
@@ -121,6 +127,20 @@ class AIJudgmentMockHandler(BaseHTTPRequestHandler):
                 "message": message,
                 "timestamp": datetime.now().isoformat()
             }
+        }
+        self.send_json_response(response, status)
+
+    def send_flat_error_response(self, status: int, message: str):
+        """发送扁平型错误响应（不带 error 包装字段）
+
+        模拟真实后端返回的扁平结构：
+        {"code": 404, "message": "用户不存在"}
+        用于测试 ai_judgment_tool._send_http_request 的 HTTPError 分支
+        能否正确透传扁平错误结构中的 message 字段。
+        """
+        response = {
+            "code": status,
+            "message": message,
         }
         self.send_json_response(response, status)
 

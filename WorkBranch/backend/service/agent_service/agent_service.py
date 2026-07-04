@@ -519,6 +519,7 @@ class AgentService:
                 "session_id": session_id,
                 "conversation_id": conversation_id,
                 "workspace_id": workspace_id,
+                "workspace_service": self.ws,
                 "message_id": message_id,
                 "cancel_check": cancel_check,
                 "settings_service": settings,

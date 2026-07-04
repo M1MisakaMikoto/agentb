@@ -129,9 +129,15 @@ def _send_http_request(
         logger.error(f"HTTP Error {e.code}: {error_body}")
         try:
             error_data = json.loads(error_body)
+            # 兼容两种后端错误结构：
+            #   1. 包装型: {"error": {"code":..., "message":...}}
+            #   2. 扁平型: {"code":404, "message":"用户不存在"}
+            error_info = error_data.get("error")
+            if not isinstance(error_info, dict):
+                error_info = error_data if isinstance(error_data, dict) else {}
             return {
                 "success": False,
-                "error": error_data.get("error", {}),
+                "error": error_info,
                 "http_status": e.code
             }
         except json.JSONDecodeError:

@@ -53,6 +53,7 @@ from test_cases.persistent_disease_predict import run_persistent_disease_predict
 from test_cases.update_todo_route import run_update_todo_route_test
 from test_cases.dailypatrol_test import run_dailypatrol_test
 from test_cases.qiaozitang_monthly_query import run_qiaozitang_monthly_query_test
+from test_cases.submit_tools_error_path import run_submit_tools_error_path_test
 
 
 SCENARIO_RUNNERS = {
@@ -80,6 +81,7 @@ SCENARIO_RUNNERS = {
     "update_todo_route": run_update_todo_route_test,
     "dailypatrol_submit": run_dailypatrol_test,
     "qiaozitang_monthly_query": run_qiaozitang_monthly_query_test,
+    "submit_tools_error_path": run_submit_tools_error_path_test,
 }
 
 

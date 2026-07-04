@@ -346,6 +346,7 @@ class TestResult:
         self.chat_content = ""
         self.text_content = ""
         self.tool_calls: List[str] = []
+        self.tool_results: List[Dict] = []
         self.errors: List[str] = []
         self.plan_status: Optional[str] = None
         self.workspace_id: Optional[str] = None
@@ -378,6 +379,7 @@ class TestResult:
             "chat_length": len(self.chat_content),
             "text_length": len(self.text_content),
             "tool_calls": self.tool_calls,
+            "tool_results": self.tool_results,
             "errors": self.errors,
             "plan_status": self.plan_status,
             "workspace_id": self.workspace_id,
@@ -843,6 +845,24 @@ async def collect_stream_output(
                     if verbose:
                         args_preview_short = args_preview[:80]
                         print(f"{Colors.MAGENTA}[tool_call] {tool_name}({args_preview_short}){Colors.ENDC}")
+                elif event_type == "tool_res":
+                    metadata = data.get("metadata") or {}
+                    if not isinstance(metadata, dict):
+                        metadata = {}
+                    tool_name = metadata.get("tool_name", "unknown")
+                    tool_result_entry = {
+                        "tool_name": tool_name,
+                        "result": metadata.get("result", ""),
+                        "error": metadata.get("error"),
+                        "success": metadata.get("success", True),
+                    }
+                    result.tool_results.append(tool_result_entry)
+                    error_preview = str(tool_result_entry["error"] or "")[:120]
+                    result_preview = str(tool_result_entry["result"] or "")[:120]
+                    _write_stream_log(stream_log_fh, f"  ToolRes: {tool_name} success={tool_result_entry['success']} err={error_preview} res={result_preview}\n")
+                    if verbose:
+                        status_tag = "OK" if tool_result_entry["success"] else "ERR"
+                        print(f"{Colors.CYAN}[tool_res] {tool_name} {status_tag}{Colors.ENDC}")
                 elif event_type == "state_change":
                     metadata = data.get("metadata") or {}
                     if not isinstance(metadata, dict):
