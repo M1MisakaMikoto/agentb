@@ -197,7 +197,7 @@ class FacilityReportMockHandler(BaseHTTPRequestHandler):
             return
 
         # 验证必需字段
-        required_fields = ["facilityId", "predictYear", "reportUrl"]
+        required_fields = ["regionId", "facilityId", "predictYear", "reportUrl"]
         missing_fields = [f for f in required_fields if f not in data]
         if missing_fields:
             self.send_error_response(400, f"缺少必需字段: {missing_fields}")
@@ -221,9 +221,14 @@ class FacilityReportMockHandler(BaseHTTPRequestHandler):
             "success": True,
             "data": forecast_id,
             "forecastId": forecast_id,
+            "regionId": data.get("regionId"),
             "facilityId": data.get("facilityId"),
+            "facilityName": data.get("facilityName"),
             "predictYear": data.get("predictYear"),
             "reportUrl": report_url,
+            "predictedHealthScore": data.get("predictedHealthScore"),
+            "predictedRiskLevel": data.get("predictedRiskLevel"),
+            "summary": data.get("summary"),
             "status": "completed",
             "generatedAt": datetime.now().isoformat(),
             "message": f"预测报告提交成功，ID: {forecast_id}"
@@ -286,6 +291,8 @@ def run_mock_server(host: str = "localhost", port: int = 8001):
 +============================================================+
 |  测试流程:                                                |
 |  决策/预测报告均为两步: POST /v1/file/upload → 业务接口     |
+|  预测报告请求体需包含: regionId, facilityId, predictYear,  |
+|                       reportUrl, facilityName(可选)等       |
 +============================================================+
     """)
 

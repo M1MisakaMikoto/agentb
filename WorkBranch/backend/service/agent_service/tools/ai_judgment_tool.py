@@ -6,6 +6,7 @@ AI 研判工具 - 用于向 AI 研判系统提交问题
 
 使用方法:
     submit_ai_judgment_issue(
+        regionId="130117562645086249",
         facilityId=1001,
         facilityName="测试桥梁",
         title="桥面出现裂缝",
@@ -13,15 +14,12 @@ AI 研判工具 - 用于向 AI 研判系统提交问题
     )
 
 注意:
-    - userId 会自动从当前会话上下文获取，不需要手动传入
-    - area_id 由服务端自动根据 userId 关联的 MarketId 赋值
+    - regionId 由调用方通过工具参数传入，会放入请求体中
     - 接口地址通过配置项 ai_judgment_api_url 设置，默认 http://localhost:8080
-    - userId 作为查询参数拼接到 URL 上用于身份识别
 """
-import os
 import json
 import logging
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Dict, Any
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
@@ -32,52 +30,6 @@ logger = logging.getLogger(__name__)
 # 默认配置
 DEFAULT_API_URL = "http://localhost:8080"
 DEFAULT_TIMEOUT = 30  # 超时时间（秒）
-
-
-def _get_user_id_from_context(message_context: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """从消息上下文中获取 userId
-
-    Args:
-        message_context: 消息上下文，包含 workspace_id 等信息
-
-    Returns:
-        userId 字符串，如果未找到则返回 None
-    """
-    if message_context:
-        # 优先从 message_context 直接获取 user_id（由 agent_service 注入）
-        user_id = message_context.get("user_id")
-        if user_id:
-            return str(user_id)
-
-        # 从 settings_service 获取 userId
-        settings_service = message_context.get("settings_service")
-        if settings_service:
-            try:
-                user_id = settings_service.get("user:id")
-                if user_id:
-                    return str(user_id)
-            except Exception:
-                pass
-
-        # 从 workspace_info 获取
-        workspace_id = message_context.get("workspace_id")
-        if workspace_id:
-            workspace_service = message_context.get("workspace_service")
-            if workspace_service:
-                try:
-                    info = workspace_service.get_workspace_info(workspace_id)
-                    user_id = info.get("user_id") or info.get("userId")
-                    if user_id:
-                        return str(user_id)
-                except Exception:
-                    pass
-
-    # 环境变量作为兜底
-    env_user_id = os.environ.get("AI_JUDGMENT_USER_ID")
-    if env_user_id:
-        return env_user_id
-
-    return None
 
 
 def _send_http_request(
@@ -168,35 +120,32 @@ def execute_submit_ai_judgment_issue(
 
     Args:
         tool_args: 工具参数，包含:
+            - regionId: 区域ID (必需)
             - facilityId: 设施ID (必需)
             - facilityName: 设施名称 (必需)
             - title: 问题标题 (必需)
             - description: 问题描述 (可选)
-        message_context: 消息上下文，用于获取 userId
+        message_context: 消息上下文
 
     Returns:
         包含 result 或 error 的字典
     """
     # 提取参数
+    region_id = tool_args.get("regionId")
     facility_id = tool_args.get("facilityId")
     facility_name = tool_args.get("facilityName")
     title = tool_args.get("title")
     description = tool_args.get("description", "")
 
     # 参数校验
+    if not region_id:
+        return {"result": None, "error": "缺少必需参数: regionId (区域ID)"}
     if not facility_id:
         return {"result": None, "error": "缺少必需参数: facilityId (设施ID)"}
     if not facility_name:
         return {"result": None, "error": "缺少必需参数: facilityName (设施名称)"}
     if not title:
         return {"result": None, "error": "缺少必需参数: title (问题标题)"}
-
-    # 获取 userId（从消息上下文）
-    user_id = _get_user_id_from_context(message_context)
-    if not user_id:
-        return {"result": None, "error": "无法获取用户ID，请确保消息上下文包含用户信息"}
-
-    logger.info(f"[AI 研判] userId 来源: 上下文解析, 值: {user_id}")
 
     # 获取 API 地址（settings_service配置 > 硬编码默认值）
     api_url = DEFAULT_API_URL
@@ -212,6 +161,7 @@ def execute_submit_ai_judgment_issue(
         logger.info(f"[AI 研判] ⚠️ 使用默认地址，如需修改请在settings.json的agent_tools.ai_judgment_api_url配置")
 
     request_body = {
+        "regionId": region_id,
         "facilityId": facility_id,
         "facilityName": facility_name,
         "title": title,
@@ -219,12 +169,12 @@ def execute_submit_ai_judgment_issue(
     if description:
         request_body["description"] = description
 
-    # 构建 URL（userId 作为查询参数）
-    url = f"{api_url}/v1/ai-judgment/issues?userId={user_id}"
+    # 构建 URL
+    url = f"{api_url}/v1/ai-judgment/issues"
 
     logger.info(f"[AI 研判] 提交问题: {title}")
     logger.info(f"[AI 研判] 设施: {facility_name} (ID: {facility_id})")
-    logger.info(f"[AI 研判] userId: {user_id}")
+    logger.info(f"[AI 研判] regionId: {region_id}")
     logger.info(f"[AI 研判] URL: {url} (来源: {config_source})")
 
     # 发送请求
@@ -262,7 +212,7 @@ def register_ai_judgment_tools():
         ToolDefinition(
             name="submit_ai_judgment_issue",
             description="提交 AI 研判问题 - 将设施问题提交到 AI 研判系统进行分析。返回工单ID、区域、状态等信息。",
-            params='submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)"}',
+            params='submit_ai_judgment_issue:{"regionId":"(区域ID，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)"}',
             category="ai_judgment",
             executor=execute_submit_ai_judgment_issue
         ),

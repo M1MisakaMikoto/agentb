@@ -47,52 +47,6 @@ DEFAULT_API_URL = "http://localhost:8001"
 DEFAULT_TIMEOUT = 30  # 超时时间（秒）
 
 
-def _get_user_id_from_context(message_context: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """从消息上下文中获取 userId
-
-    Args:
-        message_context: 消息上下文，包含 workspace_id 等信息
-
-    Returns:
-        userId 字符串，如果未找到则返回 None
-    """
-    if message_context:
-        # 优先从 message_context 直接获取 user_id（由 agent_service 注入）
-        user_id = message_context.get("user_id")
-        if user_id:
-            return str(user_id)
-
-        # 从 settings_service 获取 userId
-        settings_service = message_context.get("settings_service")
-        if settings_service:
-            try:
-                user_id = settings_service.get("user:id")
-                if user_id:
-                    return str(user_id)
-            except Exception:
-                pass
-
-        # 从 workspace_info 获取
-        workspace_id = message_context.get("workspace_id")
-        if workspace_id:
-            workspace_service = message_context.get("workspace_service")
-            if workspace_service:
-                try:
-                    info = workspace_service.get_workspace_info(workspace_id)
-                    user_id = info.get("user_id") or info.get("userId")
-                    if user_id:
-                        return str(user_id)
-                except Exception:
-                    pass
-
-    # 环境变量作为兜底
-    env_user_id = os.environ.get("FACILITY_REPORT_USER_ID")
-    if env_user_id:
-        return env_user_id
-
-    return None
-
-
 def _resolve_report_file_path(
     report_file: str,
     message_context: Optional[Dict[str, Any]] = None,
@@ -490,7 +444,7 @@ def register_facility_report_tools():
         ToolDefinition(
             name="submit_facility_forecast",
             description="提交设施预测报告 - 两步流程：先上传PDF文件获得fileUrl，再提交预测数据。串联 /v1/file/upload 和 /v1/facility/forecast/report 两个接口。注意：若尚无PDF文件，先用 document w 工具生成PDF（传入Markdown内容即可自动转换为PDF）。",
-            params='submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)"}',
+            params='submit_facility_forecast:{"regionId":"(区域ID，必填)","facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: HIGH/MEDIUM/LOW)","summary":"(预测结论摘要，可选)"}',
             category="facility_report",
             executor=execute_submit_facility_forecast_report
         ),
@@ -522,12 +476,13 @@ def execute_submit_facility_forecast_report(
 
     Args:
         tool_args: 工具参数，包含:
+            - regionId: 区域ID (必需)
             - facilityId: 设施ID (必需)
             - predictYear: 预测年份 (必需)
             - reportFile: 报告PDF文件本地路径 (必需)
             - facilityName: 设施名称 (可选)
             - predictedHealthScore: 预测健康分数 (可选)
-            - predictedRiskLevel: 风险等级 (可选，如高/中/低风险)
+            - predictedRiskLevel: 风险等级 (可选，如 HIGH/MEDIUM/LOW)
             - summary: 预测结论摘要 (可选)
         message_context: 消息上下文
 
@@ -535,10 +490,13 @@ def execute_submit_facility_forecast_report(
         包含 result 或 error 的字典
     """
     # 提取必填参数
+    region_id = tool_args.get("regionId")
     facility_id = tool_args.get("facilityId")
     predict_year = tool_args.get("predictYear")
     report_file = tool_args.get("reportFile")
 
+    if not region_id:
+        return {"result": None, "error": "缺少必需参数: regionId (区域ID)"}
     if not facility_id:
         return {"result": None, "error": "缺少必需参数: facilityId (设施ID)"}
     if not predict_year:
@@ -549,10 +507,10 @@ def execute_submit_facility_forecast_report(
     # 解析 reportFile 相对路径到工作区绝对路径
     report_file = _resolve_report_file_path(report_file, message_context)
 
-    # 获取 userId
-    user_id = _get_user_id_from_context(message_context)
-    if not user_id:
-        return {"result": None, "error": "无法获取用户ID，请确保消息上下文包含用户信息"}
+    # regionId 校验：与原始元数据比对，防止 agent 错位/漏传
+    passed, err_msg = _validate_region_id(region_id, message_context)
+    if not passed:
+        return {"result": None, "error": err_msg}
 
     # 获取 API 地址（settings_service配置 > 硬编码默认值）
     api_url = DEFAULT_API_URL
@@ -568,17 +526,16 @@ def execute_submit_facility_forecast_report(
         logger.info(f"[设施预测报告] ⚠️ 使用默认地址，如需修改请在settings.json的agent_tools.facility_report_api_url配置")
 
     logger.info(f"[设施预测报告] 开始处理预测报告")
-    logger.info(f"[设施预测报告] 设施ID: {facility_id}, 年份: {predict_year}")
+    logger.info(f"[设施预测报告] 区域ID: {region_id}, 设施ID: {facility_id}, 年份: {predict_year}")
     logger.info(f"[设施预测报告] 文件: {report_file}")
     logger.info(f"[设施预测报告] API地址: {api_url} (来源: {config_source})")
 
     # ========== 步骤1: 上传 PDF 文件 ==========
     upload_url = f"{api_url}/v1/file/upload"
-    auth_headers = {"X-User-Id": str(user_id)}
 
     logger.info(f"[设施预测报告] 步骤1/2 - 上传PDF文件到: {upload_url}")
 
-    upload_response = _send_multipart_upload(upload_url, report_file, headers=auth_headers)
+    upload_response = _send_multipart_upload(upload_url, report_file)
 
     if not upload_response.get("success"):
         error_info = upload_response.get("error", {})
@@ -596,9 +553,10 @@ def execute_submit_facility_forecast_report(
     # ========== 步骤2: 提交预测报告 ==========
     forecast_url = f"{api_url}/v1/facility/forecast/report"
     request_body = {
+        "regionId": region_id,
         "facilityId": facility_id,
         "predictYear": int(predict_year),
-        "reportUrl": file_url,  # 步骤1返回的 fileUrl
+        "reportUrl": file_url,
     }
 
     # 可选字段按需添加
@@ -615,7 +573,7 @@ def execute_submit_facility_forecast_report(
     logger.info(f"[设施预测报告] 步骤2/2 - 提交预测数据: {forecast_url}")
 
     try:
-        response = _send_http_request(forecast_url, "POST", request_body, headers=auth_headers)
+        response = _send_http_request(forecast_url, "POST", request_body)
     except Exception as e:
         error_msg = f"步骤2失败 - 提交预测报告异常: {str(e)}"
         logger.error(f"[设施预测报告] {error_msg}")

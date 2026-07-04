@@ -32,8 +32,8 @@ from .base import (
 )
 
 
-# 阶段A: 触发扁平型 404 错误的 userId（与 ai_judgment_mock_server.py 约定）
-ERROR_USER_ID = 404
+# 阶段A: 触发扁平型 404 错误的 regionId（与 ai_judgment_mock_server.py 约定）
+ERROR_REGION_ID = "404"
 
 # 阶段B: 测试用的相对路径文件名（agent 会先 write_file 写入工作区，再用此相对路径提交）
 RELATIVE_REPORT_FILE = "submit_tools_test_report.md"
@@ -46,7 +46,7 @@ STAGE_A_PROMPT = """## 任务：提交桥梁病害研判问题
 ### 设施信息
 - **设施名称**: 花溪河大桥
 - **设施ID**: 1
-- **地区代码**: 310101
+- **地区代码**: 404
 
 ### 病害详情
 - **病害类型**: 桥面铺装裂缝
@@ -63,7 +63,7 @@ STAGE_A_PROMPT = """## 任务：提交桥梁病害研判问题
 - 设施ID、设施名称
 - 研判标题（如"花溪河大桥桥面铺装裂缝研判"）
 - 病害详细描述（含尺寸、位置、初步建议）
-- 区域ID
+- 区域ID（使用地区代码 404）
 
 ### 完成后
 用 `chat` 工具向用户汇报提交结果（含研判工单ID或错误信息）。
@@ -198,17 +198,16 @@ async def run_submit_tools_error_path_test(
     ))
 
     # ==================== 阶段A: Bug1 错误透传 ====================
-    print_step(1, "阶段A: 测试 ai_judgment 扁平错误透传 (user_id=404)...", Colors.CYAN)
+    print_step(1, "阶段A: 测试 ai_judgment 扁平错误透传 (regionId=404)...", Colors.CYAN)
 
-    api_error = APIClient(api.config, user_id=ERROR_USER_ID)
     if verbose:
-        print_dim(f"创建 user_id={ERROR_USER_ID} 的 APIClient 触发 mock 扁平 404")
+        print_dim(f"通过 prompt 指定 regionId={ERROR_REGION_ID} 触发 mock 扁平 404")
 
     stage_a_log = str(log_dir / f"submit_tools_stage_a_{timestamp}.log")
     stage_a_timeout = scenario_config.get("stage_a_timeout", 180.0)
 
     await _run_single_conversation(
-        api_error, STAGE_A_PROMPT, result, verbose, stage_a_timeout, stage_a_log
+        api, STAGE_A_PROMPT, result, verbose, stage_a_timeout, stage_a_log
     )
 
     ai_judgment_res = _find_tool_result(result.tool_results, "submit_ai_judgment_issue")

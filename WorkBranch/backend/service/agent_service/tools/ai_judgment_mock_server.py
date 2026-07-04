@@ -26,7 +26,7 @@ class AIJudgmentMockHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """处理 POST 请求"""
-        from urllib.parse import urlparse, parse_qs
+        from urllib.parse import urlparse
         parsed = urlparse(self.path)
         base_path = parsed.path
 
@@ -50,45 +50,42 @@ class AIJudgmentMockHandler(BaseHTTPRequestHandler):
             self.send_error_response(400, f"JSON 解析失败: {e}")
             return
 
-        # 获取 userId (从查询参数)
-        from urllib.parse import urlparse, parse_qs
-        parsed = urlparse(self.path)
-        query_params = parse_qs(parsed.query)
-        user_id = query_params.get("userId", [""])[0]
+        # 获取 regionId (从请求体)
+        region_id = request_data.get("regionId")
 
-        if not user_id:
-            self.send_error_response(400, "缺少 userId 参数")
+        if not region_id:
+            self.send_error_response(400, "缺少 regionId 参数")
             return
 
         # 模拟扁平型错误结构（用于测试 ai_judgment_tool 的错误透传逻辑）
-        # 当 userId == "404" 时返回扁平型 404，不带 error 包装字段
-        if user_id == "404":
+        # 当 regionId == "404" 时返回扁平型 404，不带 error 包装字段
+        if str(region_id) == "404":
             self.send_flat_error_response(404, "用户不存在")
             return
 
         # 验证必需字段
-        required_fields = ["facilityId", "facilityName", "title"]
+        required_fields = ["regionId", "facilityId", "facilityName", "title"]
         missing_fields = [f for f in required_fields if f not in request_data]
         if missing_fields:
             self.send_error_response(400, f"缺少必需字段: {missing_fields}")
             return
 
-        # 模拟服务端处理：userId 现在为 regionId，直接使用
-        area_id = f"area_{user_id}"
+        # 使用 regionId 生成 area_id
+        area_id = f"area_{region_id}"
 
         # 生成模拟响应
-        issue_id = f"issue_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hash(user_id) % 10000}"
+        issue_id = f"issue_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hash(region_id) % 10000}"
         response = {
             "success": True,
             "data": {
                 "issueId": issue_id,
-                "userId": user_id,
+                "regionId": region_id,
                 "areaId": area_id,
                 "facilityId": request_data.get("facilityId"),
                 "facilityName": request_data.get("facilityName"),
                 "title": request_data.get("title"),
                 "description": request_data.get("description", ""),
-                "status": "pending",  # 等待 AI 研判
+                "status": "pending",
                 "createdAt": datetime.now().isoformat(),
                 "message": f"AI 研判工单已创建成功，ID: {issue_id}，区域: {area_id}"
             }
@@ -155,14 +152,14 @@ def run_mock_server(host: str = "localhost", port: int = 8080):
 ║           AI 研判接口模拟测试服务器                         ║
 ╠══════════════════════════════════════════════════════════╣
 ║  地址: http://{host}:{port}                              ║
-║  接口: POST /v1/ai-judgment/issues?userId=xxx            ║
+║  接口: POST /v1/ai-judgment/issues                       ║
 ║  健康检查: GET /health                                    ║
 ╠══════════════════════════════════════════════════════════╣
 ║  测试示例:                                                ║
 ║  curl -X POST http://{host}:{port}/v1/ai-judgment/issues  ║
-║    ?userId=12345                                         ║
 ║    -H "Content-Type: application/json"                  ║
 ║    -d '{{                                                   ║
+║         "regionId": "130117562645086249",                 ║
 ║         "facilityId": 1001,                               ║
 ║         "facilityName": "测试桥梁",                         ║
 ║         "title": "桥面出现裂缝",                            ║
