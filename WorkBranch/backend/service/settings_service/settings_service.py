@@ -81,7 +81,7 @@ DEFAULT_SETTINGS = {
         "memory_mode": "accumulate",
         "memory_window_size": 3,
         "plan_auto_approve": True,
-        "tool_timeout_seconds": 300,
+        "tool_timeout_seconds": 600,
         "special_tool_timeout_seconds": 600,
         "iterations": {
             "director": {"max": 16, "hard_limit": 256},

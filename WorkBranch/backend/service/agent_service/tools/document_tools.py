@@ -515,6 +515,7 @@ def _docx_read_via_pandoc(file_path: str, start_idx: int = 0, max_length: int = 
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=60,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         )

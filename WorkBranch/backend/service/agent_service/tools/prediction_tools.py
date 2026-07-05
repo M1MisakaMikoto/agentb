@@ -841,6 +841,7 @@ def query_standard(
     bci_score: Optional[float] = None,
     standard_version: str = "CJJ/T 233-2015",
     query_type: str = "general",
+    previous_results: Optional[Dict] = None,
 ) -> Dict:
     """
     查询行业规范知识库
