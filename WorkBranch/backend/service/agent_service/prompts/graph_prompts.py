@@ -616,30 +616,22 @@ def _build_user_message(
 
 
 def _format_tool_history(tool_history: List[dict]) -> str:
-    """格式化工具历史 - 使用时间标识，最新条目显示完整结果"""
+    """格式化工具历史 - 时间正序，最新条目在末尾（利于 kvcache 前缀稳定）"""
     if not tool_history:
         return "(暂无工具执行历史)"
 
-    def _make_summary(text: str, limit: int = 2000) -> str:
-        """简单的文本摘要"""
-        compact = " ".join(text.split())
-        if len(compact) <= limit:
-            return compact
-        return compact[: limit - 3] + "..."
-
     recent_items = tool_history[-5:]
-    history_lines = ["工具执行记录 (时间倒序):", ""]
+    history_lines = ["工具执行记录 (时间正序):", ""]
 
+    total = len(recent_items)
     for idx, item in enumerate(recent_items):
-        result_text = str(item.get("result") or "")
-        # 最新一条显示完整结果，其余使用摘要
-        if idx == 0:
+        # 最后一项为最新，其余按距最新的距离标 [t-N]
+        if idx == total - 1:
             time_tag = "[最新]"
         else:
-            time_tag = f"[t-{idx}]"
-            if len(result_text) > 2000:
-                result_text = _make_summary(result_text)
+            time_tag = f"[t-{total - 1 - idx}]"
 
+        result_text = str(item.get("result") or "")
         history_lines.append(f"{time_tag} tool={item.get('tool_name')} args={item.get('args')}")
         history_lines.append(f"     result={result_text}")
         # 补全 error 字段：当 result 为空但 error 有值时，输出错误信息供 LLM 决策
