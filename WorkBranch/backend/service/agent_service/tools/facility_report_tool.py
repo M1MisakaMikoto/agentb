@@ -390,10 +390,11 @@ def execute_submit_facility_report(
     # ========== 步骤2: 生成研判报告 ==========
     decision_url = f"{api_url}/v1/facility/decision/report"
     decision_request_body = {
-        "fileUrl": file_url,
+        "regionId": region_id,
         "reportName": report_name,
         "facilityId": facility_id,
         "facilityName": facility_name,
+        "reportFileUrl": file_url,
     }
 
     logger.info(f"[设施研判报告] 步骤2/2 - 生成研判报告: {decision_url}")

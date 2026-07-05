@@ -60,7 +60,7 @@ class FacilityReportMockHandler(BaseHTTPRequestHandler):
             self.send_error_response(404, f"未找到接口: {base_path}")
 
     def _handle_decision_report(self):
-        """处理研判报告生成接口（接收 fileUrl + 业务字段）"""
+        """处理研判报告生成接口（接收 reportFileUrl + 业务字段，含 regionId）"""
         content_type = self.headers.get("Content-Type", "")
         if "application/json" not in content_type:
             self.send_error_response(400, "Content-Type 必须为 application/json")
@@ -74,14 +74,14 @@ class FacilityReportMockHandler(BaseHTTPRequestHandler):
             return
 
         # 验证必需字段
-        required_fields = ["fileUrl", "reportName", "facilityId", "facilityName"]
+        required_fields = ["regionId", "reportName", "facilityId", "facilityName", "reportFileUrl"]
         missing_fields = [f for f in required_fields if f not in data]
         if missing_fields:
             self.send_error_response(400, f"缺少必需字段: {missing_fields}")
             return
 
-        # 验证 fileUrl 是否来自已上传的文件
-        file_url = data.get("fileUrl")
+        # 验证 reportFileUrl 是否来自已上传的文件
+        file_url = data.get("reportFileUrl")
         uploaded_file = None
         for info in self._uploaded_reports.values():
             if info.get("fileUrl") == file_url:
