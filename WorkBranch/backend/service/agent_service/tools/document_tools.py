@@ -177,7 +177,7 @@ def _check_memory_before_operation(threshold_mb: int = DOCUMENT_MAX_MEMORY_MB) -
 # PDF 操作 (r/w/a/u)
 # ============================================================
 
-def _pdf_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
+def _pdf_read(file_path: str, start_idx: int = 0, max_length: int = 100000,
               include_metadata: bool = True, use_llm_parsing: bool = True) -> dict:
     try:
         import pypdf
@@ -457,7 +457,7 @@ def _extract_table_data(table) -> Tuple[str, dict]:
     return formatted_text, metadata
 
 
-def _docx_read_via_pandoc(file_path: str, start_idx: int = 0, max_length: int = 10000,
+def _docx_read_via_pandoc(file_path: str, start_idx: int = 0, max_length: int = 100000,
                           include_metadata: bool = True) -> Optional[dict]:
     """
     使用 Pandoc 读取 Word 文档（高覆盖率方案）
@@ -576,7 +576,7 @@ def _docx_read_via_pandoc(file_path: str, start_idx: int = 0, max_length: int = 
         return None
 
 
-def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
+def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 100000,
                include_metadata: bool = True) -> dict:
     """
     读取 Word 文档（双模式：Pandoc 优先 + python-docx 降级）
@@ -1446,7 +1446,7 @@ def _save_as_doc(docx_path: str, output_doc: str) -> bool:
 # Excel XLS/XLSX 操作 (r/w/a/u)
 # ============================================================
 
-def _excel_read(file_path: str, start_idx: int = 0, max_length: int = 10000,
+def _excel_read(file_path: str, start_idx: int = 0, max_length: int = 100000,
                 include_metadata: bool = True) -> dict:
     try:
         import pandas as pd
@@ -1772,9 +1772,9 @@ def execute_document(tool_args: dict) -> dict:
         except (ValueError, TypeError):
             start_idx = 0
         try:
-            max_length = int(tool_args.get("max_length", 10000))
+            max_length = int(tool_args.get("max_length", 100000))
         except (ValueError, TypeError):
-            max_length = 10000
+            max_length = 100000
         include_metadata = tool_args.get("include_metadata", True)
 
         if ext == ".pdf":

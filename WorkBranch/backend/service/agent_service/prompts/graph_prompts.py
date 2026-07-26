@@ -620,7 +620,7 @@ def _format_tool_history(tool_history: List[dict]) -> str:
     if not tool_history:
         return "(暂无工具执行历史)"
 
-    recent_items = tool_history[-5:]
+    recent_items = tool_history
     history_lines = ["工具执行记录 (时间正序):", ""]
 
     total = len(recent_items)
