@@ -10,6 +10,8 @@ class WorkspaceService:
     def __init__(self, base_dir: str = None):
         self._base_dir = base_dir or "workspaces"
         self._workspaces: Dict[str, dict] = {}
+        # 未通知文件队列：key=session_id(str)，value=[{name, relative_path, size}, ...]
+        self._unnotified_files: Dict[str, List[Dict]] = {}
         os.makedirs(self._base_dir, exist_ok=True)
 
     @property
@@ -324,7 +326,34 @@ class WorkspaceService:
                     "size": len(content)
                 })
                 await file.seek(0)
-            
+
+            # 全部保存成功后，入未通知文件队列
+            info = self._workspaces.get(workspace_id)
+            if info:
+                session_id = str(info.get("session_id", ""))
+                if session_id:
+                    queue = self._unnotified_files.setdefault(session_id, [])
+                    for saved in saved_files:
+                        queue.append({
+                            "name": saved["original_filename"],
+                            "relative_path": os.path.relpath(
+                                saved["path"], workspace_dir
+                            ).replace("\\", "/"),
+                            "size": saved["size"],
+                        })
+
             return True, saved_files, ""
         except Exception as e:
             return False, saved_files, f"文件保存失败: {str(e)}"
+
+    def consume_unnotified_files(self, session_id) -> List[Dict]:
+        """取出并清空指定会话的未通知文件队列
+
+        Args:
+            session_id: 会话ID（int 或 str 均可）
+
+        Returns:
+            未通知文件列表 [{name, relative_path, size}, ...]；无则返回空列表
+        """
+        key = str(session_id)
+        return self._unnotified_files.pop(key, [])

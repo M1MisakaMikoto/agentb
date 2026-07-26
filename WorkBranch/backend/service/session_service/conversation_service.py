@@ -14,6 +14,15 @@ from service.session_service.canonical import Message, SegmentType, MessageBuild
 from service.session_service.message_content import deserialize_parts, normalize_user_content, parts_to_plain_text, resolve_runtime_parts, serialize_parts
 
 
+def _format_file_size(size_bytes: int) -> str:
+    """字节数转人类可读字符串（B/KB/MB，1位小数）"""
+    if size_bytes < 1024:
+        return f"{size_bytes}B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f}KB"
+    return f"{size_bytes / (1024 * 1024):.1f}MB"
+
+
 class ConversationState(Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -279,6 +288,16 @@ class ConversationService:
             deserialize_parts(persisted_conv.user_content) if persisted_conv else [],
             workspace_dir,
         )
+        # 取出未通知文件，非空则追加到 user 消息（仅传给 agent，不持久化到 DB）
+        unnotified = self._workspace_service.consume_unnotified_files(conv_info.session_id)
+        if unnotified:
+            file_summary = "; ".join(
+                f"{f['name']} ({f['relative_path']}, {_format_file_size(f['size'])})"
+                for f in unnotified
+            )
+            user_message_parts = list(user_message_parts) + [
+                {"type": "text", "text": f"\n[新上传文件] {file_summary}"}
+            ]
         history_context = []
         for item in context if context else []:
             role = item.get("role", "user")
