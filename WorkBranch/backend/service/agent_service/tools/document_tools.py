@@ -1886,7 +1886,7 @@ DOCUMENT_TOOLS = {
     "document": ToolDefinition(
         name="document",
         description="统一文档操作，支持 PDF/DOC/DOCX/XLS/XLSX；operation: r=读 w=写 a=追加 u=修改 s=搜索(grep) 示例: {op:'s',path:'x.docx',pat:'BCI|评分'}",
-        params='document:{"operation":"r|w|a|u|s(必填)","file_path":"(必填)","content":"(文本)","data":"(Excel)","pattern":"(搜索正则)","case_sensitive":false,"context":2,"max_results":50}',
+        params='document:(仅支持doc/docx/pdf/xls/xlsx；写md/txt/json等文本文件请用write_file){"operation":"r|w|a|u|s(必填)","file_path":"(必填)","content":"(文本)","data":"(Excel)","pattern":"(搜索正则)","case_sensitive":false,"context":2,"max_results":50}',
         category="document",
         executor=execute_document
     )

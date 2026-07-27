@@ -197,7 +197,14 @@ def execute_submit_ai_judgment_issue(
         else:
             error_info = response.get("error", {})
             error_msg = error_info.get("message", "未知错误")
-            logger.error(f"[AI 研判] 提交失败: {error_msg}")
+            # 补全失败日志：记录 http_status、完整 error_info、请求体关键字段，便于诊断真因
+            http_status = response.get("http_status")
+            logger.error(
+                f"[AI 研判] 提交失败: {error_msg} | "
+                f"http_status={http_status} | url={url} | "
+                f"facilityId={facility_id} | regionId={region_id} | "
+                f"error_info={error_info}"
+            )
             return {"result": None, "error": f"提交失败: {error_msg}"}
 
     except Exception as e:

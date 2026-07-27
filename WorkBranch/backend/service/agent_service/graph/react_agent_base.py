@@ -966,10 +966,17 @@ class ReActAgentBase:
                 if kind == "step_done":
                     has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
                     if not has_chat_call:
-                        console.warning("[_create_decide_node] Agent 遗漏了 chat 工具调用，强制注入最终回复输出")
+                        # 检查 tool_history 是否含失败工具，调整 chat 兜底信号避免误报"任务已完成"
+                        has_failed_tool = any(t.get("error") for t in tool_history)
+                        if has_failed_tool:
+                            chat_desc = "任务结束（含失败工具），请基于工具历史如实汇报执行结果和失败原因，不得隐瞒失败。"
+                            console.warning("[_create_decide_node] Agent 遗漏 chat 调用且存在失败工具，注入如实汇报信号")
+                        else:
+                            chat_desc = "任务已完成，请输出最终结果。"
+                            console.warning("[_create_decide_node] Agent 遗漏了 chat 工具调用，强制注入最终回复输出")
                         return {
                             "pending_tools": [{"tool_name": "chat", "args": {
-                                "description": "任务已完成，请输出最终结果。"
+                                "description": chat_desc
                             }}],
                             "has_tool_use": True,
                             "todo_status": None,  # 清除状态，等待 chat 执行
@@ -985,7 +992,8 @@ class ReActAgentBase:
             
             tool_name = decision_data.get("tool_name")
             tool_args = decision_data.get("tool_args") or {}
-            reason = decision_data.get("reason", "")  # 工具调用原因
+            # 工具调用原因：LLM 按 system prompt 返回 task_description 字段，兼容历史 reason 字段
+            reason = decision_data.get("task_description") or decision_data.get("reason") or ""
             
             if not tool_name or not is_tool_allowed(tool_name, agent_type, settings_service):
                 retry_count = (state.get("invalid_tool_retry_count", 0) or 0) + 1
@@ -1094,6 +1102,7 @@ class ReActAgentBase:
                 "args": tool_args,
                 "reason": reason,
                 "result": tool_result.get("result"),
+                "error": tool_result.get("error"),
                 "timestamp": datetime.datetime.now().isoformat(),
             }]
             
