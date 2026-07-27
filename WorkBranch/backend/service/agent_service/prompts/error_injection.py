@@ -44,6 +44,14 @@ def format_error_for_prompt(error: ToolCallError) -> str:
     Returns:
         格式化的提示词文本
     """
+    if error.type == "json_format_error":
+        return "\n".join([
+            "⚠️ 上一次决策格式错误：",
+            f"- 错误详情: {error.error}",
+            f"- 原始JSON: {error.original_json}",
+            "请返回合法的顶层JSON对象后重新决策。",
+        ])
+
     lines = [
         "⚠️ 上一次工具调用有错误：",
         f"- 错误类型: {error.type}",

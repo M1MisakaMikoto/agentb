@@ -12,7 +12,7 @@ class UserTemplateManager:
     # 静态规则说明（已迁移至System Prompt）
     # 仅保留简短的输出格式提醒
     STATIC_RULES = (
-        "请只决定下一步动作，并以 JSON 形式返回："
+        "请只决定下一步动作，并以 JSON 形式返回；顶层必须是单个 JSON 对象，禁止返回数组或其他类型："
         "如果需要继续操作，返回一个 tool 调用；"
         "如果当前 todo 已完成，返回 kind=step_done；"
         "如果需要向用户输出最终回复，使用 chat 工具；"

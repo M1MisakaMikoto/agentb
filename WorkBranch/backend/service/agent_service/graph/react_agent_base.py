@@ -1,6 +1,8 @@
 import datetime
 from typing import Dict, Any, Optional, Callable, List
 
+from pydantic import ValidationError
+
 from .agent_definition import AgentDefinition
 from core.logging import console
 from ..state import AgentState
@@ -8,6 +10,10 @@ from service.agent_service.prompts.error_injection import (
     ToolCallError,
     create_json_format_error,
     create_tool_name_error,
+)
+from .decision.response_schema import (
+    format_decision_validation_error,
+    parse_decision_response,
 )
 
 
@@ -668,8 +674,10 @@ class ReActAgentBase:
             "decide",
             self._route_after_decide,
             {
+                "decide": "decide",
                 "execute": "execute",
                 "done": END,
+                "error_summary": "error_summary",
             }
         )
         
@@ -907,12 +915,7 @@ class ReActAgentBase:
                 if not response_text:
                     raise ValueError("LLM 返回了空响应，可能是 API 超时或模型异常")
 
-                decision_data = json.loads(response_text)
-                # 防御：LLM 偶尔返回 JSON 数组 [{...}] 而非对象 {...}，取第一个元素
-                if isinstance(decision_data, list):
-                    if len(decision_data) == 0:
-                        raise ValueError("LLM 返回了空数组")
-                    decision_data = decision_data[0]
+                decision_data = parse_decision_response(response_text)
             except Exception as e:
                 # 记录完整的异常信息
                 import traceback as _tb
@@ -940,9 +943,14 @@ class ReActAgentBase:
                         _f.flush()
 
                     # 设置错误信息，让下一次 prompt 注入错误提示
+                    parse_error = (
+                        format_decision_validation_error(e)
+                        if isinstance(e, ValidationError)
+                        else f"[{type(e).__name__}] {e}"
+                    )
                     last_error = create_json_format_error(
                         original_json=response_text if 'response_text' in locals() else "",
-                        parse_error=str(e)
+                        parse_error=parse_error,
                     )
                     return {
                         "next_action": None,
@@ -954,7 +962,16 @@ class ReActAgentBase:
                     }
 
                 # 重试次数用完，返回错误
-                reply = f"当前无法自动决策下一步：{e}"
+                original_response = response_text if 'response_text' in locals() else "(空)"
+                error_detail = (
+                    format_decision_validation_error(e)
+                    if isinstance(e, ValidationError)
+                    else f"[{type(e).__name__}] {e}"
+                )
+                reply = (
+                    f"当前无法自动决策下一步：{error_detail}\n"
+                    f"原始响应: {original_response}"
+                )
                 return {
                     "next_action": {"kind": "reply", "reply": reply},
                     "final_reply": reply,
@@ -1250,6 +1267,8 @@ class ReActAgentBase:
         decision_error_count = state.get("decision_error_count", 0) or 0
         if decision_error_count >= 3:
             return "error_summary"
+        if decision_error_count > 0:
+            return "decide"
 
         # ===== 【关键修复】检查 Agent 是否遗漏了 chat 工具调用 =====
         # 条件：有工具调用历史 + 没有调用过 chat
