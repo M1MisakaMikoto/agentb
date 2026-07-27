@@ -61,3 +61,6 @@ scenarios:
     description: "submit 工具错误透传(Bug1) + 相对路径解析(Bug2) 测试"
     stage_a_timeout: 180.0
     stage_b_timeout: 240.0
+  sql_permission_fallback:
+    description: "SQL 工具失败回退测试 (验证 tool_history error 字段修复)"
+    timeout: 240.0
