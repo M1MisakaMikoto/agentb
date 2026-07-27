@@ -40,11 +40,16 @@ suites:
     description: "submit 工具错误透传与路径解析"
     scenarios:
       - submit_tools_error_path
+  pdf:
+    description: "agent 通过 document w 生成结构化报告 PDF"
+    scenarios:
+      - pdf_generate
   all:
     description: "全部场景"
     scenarios:
       - qiaozitang_monthly_query
       - submit_tools_error_path
+      - pdf_generate
 
 scenarios:
   qiaozitang_monthly_query:
@@ -64,3 +69,6 @@ scenarios:
   sql_permission_fallback:
     description: "SQL 工具失败回退测试 (验证 tool_history error 字段修复)"
     timeout: 240.0
+  pdf_generate:
+    description: "agent 通过 document w 生成结构化报告 PDF 到 .test/output/"
+    extraction_timeout: 300.0

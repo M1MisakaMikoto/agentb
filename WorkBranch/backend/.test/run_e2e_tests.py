@@ -55,6 +55,7 @@ from test_cases.dailypatrol_test import run_dailypatrol_test
 from test_cases.qiaozitang_monthly_query import run_qiaozitang_monthly_query_test
 from test_cases.submit_tools_error_path import run_submit_tools_error_path_test
 from test_cases.sql_permission_fallback import run_sql_permission_fallback_test
+from test_cases.pdf_generate import run_pdf_generate_test
 
 
 SCENARIO_RUNNERS = {
@@ -84,6 +85,7 @@ SCENARIO_RUNNERS = {
     "qiaozitang_monthly_query": run_qiaozitang_monthly_query_test,
     "submit_tools_error_path": run_submit_tools_error_path_test,
     "sql_permission_fallback": run_sql_permission_fallback_test,
+    "pdf_generate": run_pdf_generate_test,
 }
 
 
