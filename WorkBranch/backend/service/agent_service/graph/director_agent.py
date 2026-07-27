@@ -804,7 +804,12 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 raise ValueError("LLM 返回了空响应，可能是 API 超时或模型异常")
 
             decision_data = json.loads(response_text)
-        except json.JSONDecodeError as e:
+            # 防御：LLM 偶尔返回 JSON 数组 [{...}] 而非对象 {...}，取第一个元素
+            if isinstance(decision_data, list):
+                console.warning(f"[LLM-PARSE-WARN] LLM 返回了数组而非对象，取第一个元素")
+                if len(decision_data) == 0:
+                    raise ValueError("LLM 返回了空数组")
+                decision_data = decision_data[0]
             # ✅ 分类异常：JSON解析错误
             console.warning(f"[LLM-PARSE-ERROR] JSON解析失败 (第{decision_error_count+1}次): {e}")
             console.warning(f"[LLM-PARSE-ERROR] 原始响应内容:\n{response_text}")
@@ -883,8 +888,8 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
                 "iteration_count": iteration_count,
             }
 
-        tool_name = decision_data.get("tool_name")
-        tool_args = decision_data.get("tool_args") or {}
+        tool_name = decision_data.get("tool_name") or decision_data.get("name")
+        tool_args = decision_data.get("tool_args") or decision_data.get("args") or {}
         task_description = decision_data.get("task_description") or user_message
 
         if not tool_name or not is_tool_allowed(tool_name, current_agent_type, settings_service):

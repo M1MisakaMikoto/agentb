@@ -908,6 +908,11 @@ class ReActAgentBase:
                     raise ValueError("LLM 返回了空响应，可能是 API 超时或模型异常")
 
                 decision_data = json.loads(response_text)
+                # 防御：LLM 偶尔返回 JSON 数组 [{...}] 而非对象 {...}，取第一个元素
+                if isinstance(decision_data, list):
+                    if len(decision_data) == 0:
+                        raise ValueError("LLM 返回了空数组")
+                    decision_data = decision_data[0]
             except Exception as e:
                 # 记录完整的异常信息
                 import traceback as _tb
@@ -990,8 +995,8 @@ class ReActAgentBase:
                     "last_error": None,  # 清除错误信息
                 }
             
-            tool_name = decision_data.get("tool_name")
-            tool_args = decision_data.get("tool_args") or {}
+            tool_name = decision_data.get("tool_name") or decision_data.get("name")
+            tool_args = decision_data.get("tool_args") or decision_data.get("args") or {}
             # 工具调用原因：LLM 按 system prompt 返回 task_description 字段，兼容历史 reason 字段
             reason = decision_data.get("task_description") or decision_data.get("reason") or ""
             
