@@ -428,35 +428,10 @@ def check_state_node(state: AgentState) -> dict:
         console.info("[check_state] 检测到 todo_status=step_done，任务完成")
         return {"_route_target": "done"}
 
-    # ===== 检测 Agent 忘记调用 chat 工具 =====
-    tool_history = state.get("tool_history", []) or []
-    has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
-
-    if tool_history and not has_chat_call:
-        console.warning(
-            f"[check_state] 检测到 Agent 遗漏了 chat 工具调用，注入最终回复任务"
-        )
-        # 注入 chat 工具到 pending_tools，让 execute 节点执行
-        previous_results = [
-            {
-                "tool_name": t.get("tool_name"),
-                "result": t.get("result"),
-                "reason": "",
-                "timestamp": t.get("timestamp", ""),
-            }
-            for t in tool_history
-            if t.get("result")
-        ]
-        return {
-            "_route_target": "execute",
-            "pending_tools": [{"tool_name": "chat", "args": {
-                "description": "请汇总已执行的工具结果，输出最终回复。",
-                "previous_results": previous_results,
-            }}],
-            "has_tool_use": True,
-        }
-
     # ===== 检测工具失败循环 =====
+    # 注意：chat 兜底逻辑已移除。step_done 时的 chat 兜底由 decide 节点处理，
+    # check_state_node 不再无条件注入 chat，避免 update_todo 后误触发。
+    tool_history = state.get("tool_history", []) or []
     last_tool_success = state.get("last_tool_success")
     last_tool_name = state.get("last_tool_name")
 

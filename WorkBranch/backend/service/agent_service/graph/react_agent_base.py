@@ -960,18 +960,16 @@ class ReActAgentBase:
             
             kind = decision_data.get("kind")
             if kind in ("step_done", "blocked"):
-                # ===== 【关键修复】检查 Agent 是否遗漏了 chat 工具调用 =====
+                # ===== 检查 Agent 是否遗漏了 chat 工具调用 =====
+                # step_done 表示 Agent 自认任务完成；此时若未调过 chat，强制注入 chat 输出结果
+                # 不限定 document：任何工具组合下，只要没调 chat 就需要兜底
                 if kind == "step_done":
-                    has_document_call = any(t.get("tool_name") == "document" for t in tool_history)
                     has_chat_call = any(t.get("tool_name") == "chat" for t in tool_history)
-
-                    if has_document_call and not has_chat_call:
-                        # Agent 完成了数据分析但忘记调用 chat 工具输出结果
-                        # 强制注入 chat 工具调用
+                    if not has_chat_call:
                         console.warning("[_create_decide_node] Agent 遗漏了 chat 工具调用，强制注入最终回复输出")
                         return {
                             "pending_tools": [{"tool_name": "chat", "args": {
-                                "description": "已完成分析并提取病害信息。请输出最终结果。"
+                                "description": "任务已完成，请输出最终结果。"
                             }}],
                             "has_tool_use": True,
                             "todo_status": None,  # 清除状态，等待 chat 执行
