@@ -196,10 +196,10 @@ async def _verify_user_exists(
     """第一步：验证用户是否存在于系统中（TO_Org_User 表）
 
     SQL:
-        SELECT COUNT(*) AS cnt FROM TO_Org_User WHERE MarketId = %s
+        SELECT COUNT(*) AS cnt FROM TO_Org_User WHERE Id = %s
 
     Args:
-        user_id: 用户ID（对应 TO_Org_User.MarketId 字段）
+        user_id: 用户ID（对应 TO_Org_User.Id 字段）
         db_config: 数据库连接配置
 
     Returns:
@@ -220,7 +220,7 @@ async def _verify_user_exists(
     try:
         async with conn.cursor(aiomysql.cursors.DictCursor) as cursor:
             await cursor.execute(
-                "SELECT COUNT(*) AS cnt FROM TO_Org_User WHERE MarketId = %s",
+                "SELECT COUNT(*) AS cnt FROM TO_Org_User WHERE Id = %s",
                 (user_id,),
             )
             row = await cursor.fetchone()
@@ -259,7 +259,7 @@ async def _resolve_user_permission(
         SELECT m.Id, m.AdminAreaName, m.Region
         FROM TO_Org_User ou
         INNER JOIN TB_Market m ON ou.MarketId = m.Id
-        WHERE ou.MarketId = %s
+        WHERE ou.Id = %s
         LIMIT 1
 
     Args:
@@ -288,7 +288,7 @@ async def _resolve_user_permission(
                 SELECT m.Id, m.AdminAreaName, m.Region
                 FROM TO_Org_User ou
                 INNER JOIN TB_Market m ON ou.MarketId = m.Id
-                WHERE ou.MarketId = %s
+                WHERE ou.Id = %s
                 LIMIT 1
                 """,
                 (user_id,),
