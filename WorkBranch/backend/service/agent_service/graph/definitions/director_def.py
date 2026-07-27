@@ -44,7 +44,7 @@ class DirectorDefinition(AgentDefinition):
                     "web_search",
                     "web_fetch",
                     "ask_user_question",
-                    "todo_write",
+                    "update_todo",
                     "glob",
                     "grep",
                     "document",
