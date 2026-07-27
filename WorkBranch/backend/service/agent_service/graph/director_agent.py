@@ -2015,6 +2015,7 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                 "tool_name": tool_name,
                 "args": tool_args,
                 "result": tool_result.get("result"),
+                "error": tool_result.get("error"),
                 "timestamp": datetime.datetime.now().isoformat(),
             }]
 
