@@ -1085,6 +1085,9 @@ class ReActAgentBase:
             enhanced_message_context["workspace_id"] = state.get("workspace_id")
             enhanced_message_context["parent_chain_messages"] = parent_chain_messages
             enhanced_message_context["current_conversation_messages"] = current_conversation_messages
+            current_user_message_text = state.get("current_user_message_text")
+            assert isinstance(current_user_message_text, str), "Agent state 缺少 current_user_message_text"
+            enhanced_message_context["current_user_message_text"] = current_user_message_text
             
             tool_result = run_tool_execution(
                 tool_name=tool_name,

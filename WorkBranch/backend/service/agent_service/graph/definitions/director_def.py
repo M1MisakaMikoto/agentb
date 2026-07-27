@@ -27,6 +27,7 @@ class DirectorDefinition(AgentDefinition):
             ),
             meta=AgentMeta(
                 allowed_tools=[
+                    "thinking",
                     "chat",
                     "enter_plan_mode",
                     "call_explore_agent",
@@ -56,6 +57,7 @@ class DirectorDefinition(AgentDefinition):
                     "submit_dailypatrol_record",
                 ],
                 default_tools=[
+                    {"tool": "thinking", "args": {"description": ""}},
                     {"tool": "chat", "args": {"description": ""}},
                 ],
                 timeout_seconds=300,

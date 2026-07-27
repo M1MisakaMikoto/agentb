@@ -615,6 +615,8 @@ def _execute_thinking_tool(
     """处理thinking工具的特殊逻辑"""
     parent_chain_messages = message_context.get("parent_chain_messages", []) if message_context else []
     current_conversation_messages = message_context.get("current_conversation_messages", []) if message_context else []
+    current_user_message_text = message_context.get("current_user_message_text", "") if message_context else ""
+    previous_results = tool_args.get("previous_results", []) if tool_args else []
     
     next_task = task_description
     if tool_args:
@@ -640,11 +642,13 @@ def _execute_thinking_tool(
 
     try:
         import datetime
-        from service.agent_service.prompts.graph_prompts import build_context_prompt
-        full_prompt = build_context_prompt(
-            parent_chain_messages,
-            current_conversation_messages,
-            next_task,
+        _, full_prompt = _build_child_agent_chat_prompt(
+            task_description=next_task,
+            previous_results=previous_results,
+            parent_chain_messages=parent_chain_messages,
+            current_conversation_messages=current_conversation_messages,
+            user_message=current_user_message_text,
+            settings_service=message_context.get("settings_service") if message_context else None,
         )
         messages = [{"role": "user", "content": full_prompt}]
 
