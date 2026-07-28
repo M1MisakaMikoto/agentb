@@ -81,13 +81,14 @@ DEFAULT_SETTINGS = {
         "memory_mode": "accumulate",
         "memory_window_size": 3,
         "plan_auto_approve": True,
-        "tool_timeout_seconds": 600,
-        "special_tool_timeout_seconds": 600,
+        "tool_timeout_seconds": 1200,
+        "special_tool_timeout_seconds": 1200,
+        "subagent_timeout_seconds": 1800,
         "iterations": {
-            "director": {"max": 16, "hard_limit": 256},
-            "prediction": {"max": 10},
-            "explore": {"max": 8},
-            "review": {"max": 8}
+            "director": {"max": 32, "hard_limit": 256},
+            "prediction": {"max": 32},
+            "explore": {"max": 32},
+            "review": {"max": 32}
         }
     },
     "agent_tools": {
@@ -137,6 +138,35 @@ DEFAULT_SETTINGS = {
         "consistency_check": False
     }
 }
+
+
+def _validate_runtime_limits(data: dict) -> None:
+    agent = data.get("agent")
+    if not isinstance(agent, dict):
+        raise ValueError("agent 设置必须是对象")
+
+    iterations = agent.get("iterations")
+    if not isinstance(iterations, dict):
+        raise ValueError("agent.iterations 设置必须是对象")
+
+    director = iterations.get("director")
+    if not isinstance(director, dict) or director.get("hard_limit") != 256:
+        raise ValueError("agent.iterations.director.hard_limit 必须为 256")
+
+    for agent_name in ("director", "prediction", "explore", "review"):
+        agent_iterations = iterations.get(agent_name)
+        max_iterations = agent_iterations.get("max") if isinstance(agent_iterations, dict) else None
+        if isinstance(max_iterations, bool) or not isinstance(max_iterations, int):
+            raise ValueError(f"agent.iterations.{agent_name}.max 必须是整数")
+        if not 1 <= max_iterations <= 256:
+            raise ValueError(f"agent.iterations.{agent_name}.max 必须在 1 到 256 之间")
+
+    for key in ("tool_timeout_seconds", "special_tool_timeout_seconds", "subagent_timeout_seconds"):
+        value = agent.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"agent.{key} 必须是正整数")
+
+
 DEFAULT_SETTINGS_METADATA = {
     "ui": {
         "scale": {
@@ -153,7 +183,18 @@ DEFAULT_SETTINGS_METADATA = {
             "max": 600,
             "step": 10,
         }
-    }
+    },
+    "agent": {
+        "tool_timeout_seconds": {"type": "number", "control": "slider", "min": 60, "max": 3600, "step": 60},
+        "special_tool_timeout_seconds": {"type": "number", "control": "slider", "min": 60, "max": 3600, "step": 60},
+        "subagent_timeout_seconds": {"type": "number", "control": "slider", "min": 60, "max": 7200, "step": 60},
+        "iterations": {
+            "director": {"max": {"type": "number", "control": "slider", "min": 1, "max": 256, "step": 1}},
+            "prediction": {"max": {"type": "number", "control": "slider", "min": 1, "max": 256, "step": 1}},
+            "explore": {"max": {"type": "number", "control": "slider", "min": 1, "max": 256, "step": 1}},
+            "review": {"max": {"type": "number", "control": "slider", "min": 1, "max": 256, "step": 1}},
+        },
+    },
 }
 
 ENV_SETTING_MAPPINGS = {
@@ -217,6 +258,7 @@ class SettingsService:
         data = self._fs.read_settings()
         merged, changed = _merge_missing_defaults(DEFAULT_SETTINGS, data)
         self._data = _apply_env_overrides(merged)
+        _validate_runtime_limits(self._data)
         if changed:
             self._persist()
 
@@ -255,13 +297,19 @@ class SettingsService:
 
     def update_setting(self, key: str, value) -> bool:
         """修改单个顶层设置项并持久化。"""
-        self._data[key] = value
+        candidate = dict(self._data)
+        candidate[key] = value
+        _validate_runtime_limits(candidate)
+        self._data = candidate
         self._persist()
         return True
 
     def update_settings(self, updates: dict) -> bool:
         """批量修改顶层设置项并持久化。"""
-        self._data.update(updates)
+        candidate = dict(self._data)
+        candidate.update(updates)
+        _validate_runtime_limits(candidate)
+        self._data = candidate
         self._persist()
         return True
 

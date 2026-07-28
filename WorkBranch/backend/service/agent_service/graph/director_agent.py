@@ -20,12 +20,12 @@ import fnmatch
 
 from .decision.complexity_analyzer import ExecutionMode
 from .definitions import get_definition
-from .agent_definition import AgentDefinition
+from .agent_definition import AgentDefinition, calculate_recursion_limit
 from ..state import AgentState
 from .subgraphs.tool_registry import (
     is_tool_allowed, get_allowed_tools, _write_tool_event
 )
-from .subgraphs.tool_executor import run_tool_execution
+from .subgraphs.tool_executor import run_tool_execution, _get_subagent_timeout
 from .react_agent_base import ReActAgentBase, MemoryManager
 from .definitions import get_definition
 from service.agent_service.prompts.graph_prompts import (
@@ -1493,6 +1493,8 @@ def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callbac
     if not workspace_id:
         return {"result": None, "error": "缺少 workspace_id，无法切换到探索 Agent Graph"}
 
+    subagent_timeout = _get_subagent_timeout(settings_service)
+
     try:
         from .agent_graphs import run_agent_graph
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -1512,7 +1514,7 @@ def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callbac
                 False,
             )
             try:
-                outcome = future.result(timeout=300)
+                outcome = future.result(timeout=subagent_timeout)
             except FutureTimeoutError:
                 future.cancel()
                 outcome = {
@@ -1522,8 +1524,8 @@ def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callbac
                     "produced_user_reply": False,
                     "exit_info": {
                         "code": "subgraph_timeout",
-                        "message": "explore_agent 子图执行超时（300秒）",
-                        "details": {"agent_type": "explore_agent", "timeout_seconds": 300},
+                        "message": f"explore_agent 子图执行超时（{subagent_timeout}秒）",
+                        "details": {"agent_type": "explore_agent", "timeout_seconds": subagent_timeout},
                     },
                 }
         if outcome.get("status") == "failed":
@@ -1559,6 +1561,8 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
     if not workspace_id:
         return {"result": None, "error": "缺少 workspace_id，无法切换到审查 Agent Graph"}
 
+    subagent_timeout = _get_subagent_timeout(settings_service)
+
     try:
         from .agent_graphs import run_agent_graph
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -1578,7 +1582,7 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
                 False,
             )
             try:
-                outcome = future.result(timeout=300)
+                outcome = future.result(timeout=subagent_timeout)
             except FutureTimeoutError:
                 future.cancel()
                 outcome = {
@@ -1588,8 +1592,8 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
                     "produced_user_reply": False,
                     "exit_info": {
                         "code": "subgraph_timeout",
-                        "message": "review_agent 子图执行超时（300秒）",
-                        "details": {"agent_type": "review_agent", "timeout_seconds": 300},
+                        "message": f"review_agent 子图执行超时（{subagent_timeout}秒）",
+                        "details": {"agent_type": "review_agent", "timeout_seconds": subagent_timeout},
                     },
                 }
         if outcome.get("status") == "failed":
@@ -2340,7 +2344,7 @@ def run_graph_v3(
     # ✅ 正确做法：通过 graph.invoke() 的 config 参数传递 recursion_limit
     # ⚠️ compile() 不接受此参数！必须在 invoke() 时传入
     _max_iters = definition.meta.max_iterations
-    graph_config = {'recursion_limit': max(_max_iters * 4, 50)}
+    graph_config = {'recursion_limit': calculate_recursion_limit(_max_iters)}
 
     final_state = graph.invoke(initial_state, config=graph_config)
 

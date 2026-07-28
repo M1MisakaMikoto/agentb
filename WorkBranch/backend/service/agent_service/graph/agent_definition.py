@@ -2,6 +2,11 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Callable
 
 
+def calculate_recursion_limit(max_iterations: int) -> int:
+    assert isinstance(max_iterations, int) and max_iterations > 0, "max_iterations 必须是正整数"
+    return max(max_iterations * 5 + 10, 64)
+
+
 @dataclass
 class AgentPrompt:
     """Agent 提示词定义

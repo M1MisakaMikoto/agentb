@@ -10,6 +10,7 @@ from .decision.complexity_analyzer import ExecutionMode
 from .subgraphs import run_tool_execution
 from .react_agent_base import ReActAgentBase
 from .definitions import get_definition
+from .agent_definition import calculate_recursion_limit
 from ..persistence import PersistenceService
 from ..state import AgentState
 
@@ -135,6 +136,7 @@ def run_agent_graph(
     from service.settings_service.settings_service import SettingsService
     from service.agent_service.service.llm_service import get_llm_service
 
+    definition = None
     try:
         definition = get_definition(agent_type)
         config = {"execution_mode": definition.get_execution_mode()}
@@ -157,6 +159,7 @@ def run_agent_graph(
         initial_state = build_initial_state(
             user_message=user_message,
             workspace_id=workspace_id,
+            definition=definition,
             parent_chain_messages=parent_chain_messages,
             current_conversation_messages=current_conversation_messages,
             agent_type=agent_type,
@@ -218,7 +221,7 @@ def run_agent_graph(
         # 【关键修复】通过 config 传递 recursion_limit，防止 LangGraph 递归限制
         # 决策失败可能导致多次重试，需要足够的递归深度
         max_iterations = initial_state.get('max_iterations', 10) or 10
-        graph_config = {'recursion_limit': max(max_iterations * 4, 50)}  # 决策重试需要更多深度
+        graph_config = {'recursion_limit': calculate_recursion_limit(max_iterations)}
 
         with open_trace_log() as f:
             f.write(f"[{timestamp}] Graph invoke with recursion_limit: {graph_config['recursion_limit']}\n")

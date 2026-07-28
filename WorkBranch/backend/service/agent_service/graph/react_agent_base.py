@@ -739,11 +739,6 @@ class ReActAgentBase:
         last_tool_result = state.get("last_tool_result") or ""
         tool_history = state.get("tool_history", []) or []
 
-        # 基础保护：如果迭代次数过多（超过15次）且没有pending_tools，强制终止
-        if iteration_count > 15 and not state.get("pending_tools"):
-            console.warning(f"[_route_after_execute] 迭代次数过多 ({iteration_count})")
-            return "error_summary"
-
         # ===== 新增：检测 document 工具读取空内容循环 =====
         if last_tool_name == "document" and last_tool_success is not False:
             # document 工具没有报错，但检查是否返回空内容
@@ -1330,10 +1325,6 @@ class ReActAgentBase:
         last_tool_name = state.get("last_tool_name")
         last_tool_result = state.get("last_tool_result") or ""
         tool_history = state.get("tool_history", []) or []
-
-        # 基础保护：如果迭代次数过多（超过15次）且没有pending_tools，强制终止
-        if iteration_count > 15 and not state.get("pending_tools"):
-            return "error_summary"
 
         # ===== 新增：检测 document 工具读取空内容循环 =====
         if last_tool_name == "document" and last_tool_success is not False:

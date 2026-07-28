@@ -621,6 +621,7 @@ def _format_tool_history(tool_history: List[dict]) -> str:
     history_lines = ["工具执行记录 (时间正序):", ""]
 
     total = len(recent_items)
+    full_result_start = max(total - 8, 0)
     for idx, item in enumerate(recent_items):
         # 最后一项为最新，其余按距最新的距离标 [t-N]
         if idx == total - 1:
@@ -629,6 +630,11 @@ def _format_tool_history(tool_history: List[dict]) -> str:
             time_tag = f"[t-{total - 1 - idx}]"
 
         result_text = str(item.get("result") or "")
+        if idx < full_result_start:
+            result_text = f"[旧记录已归档，完整内容保留在状态中；原长度 {len(result_text)} 字符]"
+        elif len(result_text) > 4000:
+            omitted = len(result_text) - 4000
+            result_text = f"{result_text[:2000]}\n[中间省略 {omitted} 字符]\n{result_text[-2000:]}"
         history_lines.append(f"{time_tag} tool={item.get('tool_name')} args={item.get('args')}")
         history_lines.append(f"     result={result_text}")
         # 补全 error 字段：当 result 为空但 error 有值时，输出错误信息供 LLM 决策

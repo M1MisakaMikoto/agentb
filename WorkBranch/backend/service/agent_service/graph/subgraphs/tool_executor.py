@@ -34,6 +34,13 @@ from core.logging import console, open_trace_log
 TOOL_EXECUTION_TIMEOUT_SECONDS = 60
 SPECIAL_TOOL_TIMEOUT_SECONDS = 120
 
+
+def _get_subagent_timeout(settings_service) -> int:
+    assert settings_service is not None, "子 Agent 调用缺少 settings_service"
+    timeout = int(settings_service.get("agent:subagent_timeout_seconds"))
+    assert timeout > 0, "子 Agent 超时必须为正整数"
+    return timeout
+
 SPECIAL_TOOLS_CONFIG = {
     "thinking": {
         "start_type": SegmentType.THINKING_START,
@@ -1306,6 +1313,8 @@ def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callbac
     if not workspace_id:
         return {"result": None, "error": "缺少 workspace_id，无法切换到探索 Agent Graph"}
 
+    subagent_timeout = _get_subagent_timeout(settings_service)
+
     try:
         from ..agent_graphs import run_agent_graph
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -1325,7 +1334,7 @@ def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callbac
                 False,
             )
             try:
-                outcome = future.result(timeout=300)
+                outcome = future.result(timeout=subagent_timeout)
             except FutureTimeoutError:
                 future.cancel()
                 outcome = {
@@ -1335,8 +1344,8 @@ def _execute_call_explore_agent(tool_args: dict, llm_service=None, token_callbac
                     "produced_user_reply": False,
                     "exit_info": {
                         "code": "subgraph_timeout",
-                        "message": "explore_agent 子图执行超时（300秒）",
-                        "details": {"agent_type": "explore_agent", "timeout_seconds": 300},
+                        "message": f"explore_agent 子图执行超时（{subagent_timeout}秒）",
+                        "details": {"agent_type": "explore_agent", "timeout_seconds": subagent_timeout},
                     },
                 }
         if outcome.get("status") == "failed":
@@ -1377,6 +1386,8 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
     if not workspace_id:
         return {"result": None, "error": "缺少 workspace_id，无法切换到审查 Agent Graph"}
 
+    subagent_timeout = _get_subagent_timeout(settings_service)
+
     try:
         from ..agent_graphs import run_agent_graph
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -1396,7 +1407,7 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
                 False,
             )
             try:
-                outcome = future.result(timeout=300)
+                outcome = future.result(timeout=subagent_timeout)
             except FutureTimeoutError:
                 future.cancel()
                 outcome = {
@@ -1406,8 +1417,8 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
                     "produced_user_reply": False,
                     "exit_info": {
                         "code": "subgraph_timeout",
-                        "message": "review_agent 子图执行超时（300秒）",
-                        "details": {"agent_type": "review_agent", "timeout_seconds": 300},
+                        "message": f"review_agent 子图执行超时（{subagent_timeout}秒）",
+                        "details": {"agent_type": "review_agent", "timeout_seconds": subagent_timeout},
                     },
                 }
         if outcome.get("status") == "failed":
@@ -1466,9 +1477,7 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
             f.flush()
 
         # 直接同步调用，不再使用子线程
-        _prediction_timeout = 600
-        if settings_service:
-            _prediction_timeout = settings_service.get("agent:special_tool_timeout_seconds") or 600
+        _prediction_timeout = _get_subagent_timeout(settings_service)
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
         with open_trace_log() as f:

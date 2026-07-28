@@ -23,6 +23,7 @@ from controller.session_api import router as session_router
 from controller.conversation_api import router as conversation_router
 from controller.workspace_api import router as workspace_router
 from controller.plan_api import router as plan_router
+from controller.settings_api import router as settings_router
 from core.logging import bind_ctx, get_ctx, initialize_trace_writer
 from singleton import clear_all_singletons_async, get_logging_runtime, get_settings_service, get_user_service
 from middleware.auth import AuthMiddleware
@@ -458,4 +459,5 @@ app.include_router(session_router)
 app.include_router(conversation_router)
 app.include_router(workspace_router)
 app.include_router(plan_router)
+app.include_router(settings_router)
 app.include_router(rag_router)
