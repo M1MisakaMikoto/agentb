@@ -6,7 +6,7 @@ import traceback
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_openai import ChatOpenAI
 
-from core.logging import console
+from core.logging import console, open_trace_log
 from service.session_service.message_content import (
     build_user_message,
     has_image_parts,
@@ -144,7 +144,7 @@ class LLMService:
             import datetime
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
             try:
-                with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                with open_trace_log() as f:
                     f.write(f"\n{'='*80}\n")
                     f.write(f"[{timestamp}] === ❌ LLM SERVICE OS ERROR ===\n")
                     f.write(f"Operation: {operation}\n")

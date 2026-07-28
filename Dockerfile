@@ -5,6 +5,8 @@ ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
 ENV APP_HOME=/app
 ENV PYTHONPATH=/app/WorkBranch/backend:/app/WorkBranch
+ENV GUNICORN_WORKERS=1
+ENV LLM_TRACE_LOG_PATH=/app/logs/llm_decision_trace.log
 
 WORKDIR ${APP_HOME}
 

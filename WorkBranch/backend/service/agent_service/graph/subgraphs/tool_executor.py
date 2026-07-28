@@ -29,7 +29,7 @@ from service.agent_service.prompts.graph_prompts import (
     build_direct_chat_messages,
 )
 from service.session_service.canonical import SegmentType
-from core.logging import console
+from core.logging import console, open_trace_log
 
 TOOL_EXECUTION_TIMEOUT_SECONDS = 60
 SPECIAL_TOOL_TIMEOUT_SECONDS = 120
@@ -259,7 +259,7 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
     try:
         import datetime
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"\n{'='*80}\n")
             f.write(f"[{timestamp}] === TOOL CALL ===\n")
             f.write(f"Tool Name: {tool_name}\n")
@@ -554,7 +554,7 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
             result_preview = str(tool_result.get('result', ''))
             error_msg = tool_result.get('error')
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            with open_trace_log() as f:
                 f.write(f"[{timestamp}] === TOOL RESULT ===\n")
                 f.write(f"Tool: {tool_name}\n")
                 f.write(f"Success: {error_msg is None}\n")
@@ -655,7 +655,7 @@ def _execute_thinking_tool(
         agent_type_for_log = message_context.get("agent_type", "child_agent") if message_context else "child_agent"
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
         
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"\n{'='*80}\n")
             f.write(f"[{timestamp}] === COMPLETE PROMPT FOR LLM CALL (CHILD AGENT) ===\n")
             f.write(f"Agent Type: {agent_type_for_log}\n")
@@ -673,7 +673,7 @@ def _execute_thinking_tool(
         total_chars = 0
         thinking_start_time = datetime.datetime.now()
         
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"\n[{timestamp}] === 🔍 DIAGNOSTIC: THINKING TOOL START ===\n")
             f.write(f"[{timestamp}] 🆔 Call ID: {thinking_call_id}\n")
             f.write(f"[{timestamp}] 📝 Task: {next_task}\n")
@@ -696,7 +696,7 @@ def _execute_thinking_tool(
                 
                 if token_count % 50 == 0:  # 每50个token记录一次
                     cb_timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-                    with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+                    with open_trace_log() as f:
                         f.write(f"[{cb_timestamp}] 🔄 THINKING TOKEN CALLBACK [{thinking_call_id}]\n")
                         f.write(f"  - token #{token_count}, chars so far: {total_chars}\n")
                         f.write(f"  - current token: {token}\n")
@@ -711,7 +711,7 @@ def _execute_thinking_tool(
         
         console.success("思考完成")
 
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             end_ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
             f.write(f"\n[{end_ts}] === 🔍 DIAGNOSTIC: THINKING TOOL COMPLETE ===\n")
             f.write(f"[{end_ts}] 🆔 Call ID: {thinking_call_id}\n")
@@ -857,7 +857,7 @@ def _execute_chat_tool(
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
 
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"\n{'='*80}\n")
             f.write(f"[{timestamp}] === CHAT TOOL REQUEST (CHILD AGENT: {agent_type}) ===\n")
             f.write(f"[{timestamp}] Topic: {chat_topic}\n")
@@ -1455,7 +1455,7 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
         
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"\n{'='*80}\n")
             f.write(f"[{timestamp}] === PREDICTION_AGENT CALL START ===\n")
             f.write(f"Task Description: {task_description}\n")
@@ -1471,7 +1471,7 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
             _prediction_timeout = settings_service.get("agent:special_tool_timeout_seconds") or 600
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"\n[{timestamp}] === PREDICTION_AGENT SYNC CALL START ===\n")
             f.write(f"Timeout: {_prediction_timeout}s\n")
             f.flush()
@@ -1506,13 +1506,13 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
                 },
             }
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            with open_trace_log() as f:
                 f.write(f"[{timestamp}] === PREDICTION_AGENT TIMEOUT ===\n")
                 f.flush()
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
 
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"\n[{timestamp}] === PREDICTION_AGENT SYNC CALL END ===\n")
             f.write(f"Outcome Status: {outcome.get('status')}\n")
             f.write(f"Outcome Kind: {outcome.get('kind')}\n")
@@ -1542,7 +1542,7 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
 
     except Exception as e:
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"\n[{timestamp}] === PREDICTION_AGENT EXCEPTION ===\n")
             f.write(f"Exception: {type(e).__name__}: {e}\n")
             f.flush()

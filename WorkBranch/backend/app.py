@@ -23,7 +23,7 @@ from controller.session_api import router as session_router
 from controller.conversation_api import router as conversation_router
 from controller.workspace_api import router as workspace_router
 from controller.plan_api import router as plan_router
-from core.logging import bind_ctx, get_ctx
+from core.logging import bind_ctx, get_ctx, initialize_trace_writer
 from singleton import clear_all_singletons_async, get_logging_runtime, get_settings_service, get_user_service
 from middleware.auth import AuthMiddleware
 from rag.controller.file_controller import router as rag_router, on_rag_shutdown, on_rag_startup
@@ -38,6 +38,7 @@ for stream_name in ('stdout', 'stderr'):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    initialize_trace_writer()
     on_rag_startup()
 
     from singleton import get_mysql_database

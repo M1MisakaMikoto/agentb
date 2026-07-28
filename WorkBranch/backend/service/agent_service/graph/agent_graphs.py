@@ -3,7 +3,7 @@ from typing import List, Dict, Optional, Any
 from langgraph.graph import StateGraph, END
 
 from singleton import get_workspace_service
-from core.logging import console
+from core.logging import console, open_trace_log
 
 from .director_agent import build_initial_state, create_orchestrator_graph_v3, get_last_user_message_text
 from .decision.complexity_analyzer import ExecutionMode
@@ -166,7 +166,7 @@ def run_agent_graph(
 
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
     
-    with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+    with open_trace_log() as f:
         f.write(f"\n[{timestamp}] === RUN_AGENT_GRAPH ({agent_type}) ===\n")
         f.write(f"Config: {config}\n")
         f.write(f"Initial State - has_tool_use (before): {initial_state.get('has_tool_use')}\n")
@@ -177,7 +177,7 @@ def run_agent_graph(
         initial_state["execution_mode"] = config["execution_mode"]
         initial_state["has_tool_use"] = bool(initial_state.get("pending_tools"))
         
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"[{timestamp}] Setting execution_mode: {config['execution_mode']}\n")
             f.write(f"[{timestamp}] has_tool_use after mode set: {initial_state.get('has_tool_use')}\n")
             f.flush()
@@ -192,14 +192,14 @@ def run_agent_graph(
                     {"tool": "chat", "args": {"description": get_last_user_message_text(initial_state)}},
                 ]
             
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            with open_trace_log() as f:
                 f.write(f"[{timestamp}] Building default tools: {default_tools}\n")
                 f.flush()
                 
             initial_state["pending_tools"] = default_tools
             initial_state["has_tool_use"] = bool(default_tools)
             
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            with open_trace_log() as f:
                 f.write(f"[{timestamp}] Final pending_tools: {initial_state.get('pending_tools')}\n")
                 f.write(f"[{timestamp}] Final has_tool_use: {initial_state.get('has_tool_use')}\n")
                 f.flush()
@@ -220,14 +220,14 @@ def run_agent_graph(
         max_iterations = initial_state.get('max_iterations', 10) or 10
         graph_config = {'recursion_limit': max(max_iterations * 4, 50)}  # 决策重试需要更多深度
 
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"[{timestamp}] Graph invoke with recursion_limit: {graph_config['recursion_limit']}\n")
             f.flush()
 
         final_state = graph.invoke(initial_state, config=graph_config)
     except Exception as e:
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"\n[{timestamp}] === GRAPH INVOKE EXCEPTION ===\n")
             f.write(f"Exception Type: {type(e).__name__}\n")
             f.write(f"Exception Message: {str(e)}\n")

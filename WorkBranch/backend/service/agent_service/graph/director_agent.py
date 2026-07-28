@@ -50,7 +50,7 @@ from service.agent_service.service.plan_file_service import plan_file_service
 from service.agent_service.service.workspace_service import WorkspaceService
 from service.session_service.message_content import build_prompt_safe_text, get_message_parts, get_message_text, has_image_parts
 from service.agent_service.tools.todo_tools import build_todo_agent_state_update, restore_todo_checkpoint
-from core.logging import console
+from core.logging import console, open_trace_log
 from singleton import get_workspace_service
 
 MAX_REPLAN_COUNT = 3
@@ -609,7 +609,7 @@ def _handle_decision_error(exception: Exception, response_text: str, state: Agen
     # 记录到文件日志（保留原有逻辑）
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
     try:
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"\n{'='*80}\n")
             f.write(f"[{timestamp}] === ❌ DIRECTOR AGENT DECISION EXCEPTION ===\n")
             f.write(f"[{timestamp}] Exception Type: {type(exception).__name__}\n")
@@ -764,7 +764,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         try:
             import datetime
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            with open_trace_log() as f:
                 f.write(f"\n{'='*80}\n")
                 f.write(f"[{timestamp}] === 🔄 DIRECTOR LLM REQUEST START ===\n")
                 f.write(f"[{timestamp}] Agent Type: {current_agent_type}\n")
@@ -796,7 +796,7 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
 
             # 记录 LLM 响应
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            with open_trace_log() as f:
                 f.write(f"\n{'='*80}\n")
                 f.write(f"[{timestamp}] === 🤖 DIRECTOR LLM RAW RESPONSE ===\n")
                 f.write(f"[{timestamp}] Raw response ({len(response_text)} chars):\n{response_text}\n")
@@ -1913,7 +1913,7 @@ def _director_chat_strategy(
         # 记录日志
         import datetime
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+        with open_trace_log() as f:
             f.write(f"\n{'='*80}\n")
             f.write(f"[{timestamp}] === CHAT TOOL REQUEST (DIRECTOR) ===\n")
             f.write(f"[{timestamp}] Topic: {chat_topic}\n")

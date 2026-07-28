@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, Callable, List
 from pydantic import ValidationError
 
 from .agent_definition import AgentDefinition
-from core.logging import console
+from core.logging import console, open_trace_log
 from ..state import AgentState
 from service.agent_service.prompts.error_injection import (
     ToolCallError,
@@ -879,7 +879,7 @@ class ReActAgentBase:
 
             # 记录完整的请求上下文（在调用前记录，确保异常时也有记录）
             try:
-                with open('llm_decision_trace.log', 'a', encoding='utf-8') as _f:
+                with open_trace_log() as _f:
                     _f.write(f"\n[{_ts}] === 🔄 LLM REQUEST START ===\n")
                     _f.write(f"[{_ts}] Agent: {agent_type}, Iteration: {iteration_count}/{max_iterations}\n")
                     _f.write(f"[{_ts}] Tool history: {len(tool_history)} items\n")
@@ -906,7 +906,7 @@ class ReActAgentBase:
                 response_text = response.strip()
 
                 # 记录 LLM 原始响应
-                with open('llm_decision_trace.log', 'a', encoding='utf-8') as _f:
+                with open_trace_log() as _f:
                     _f.write(f"\n[{_ts}] === 🤖 LLM RAW RESPONSE ===\n")
                     _f.write(f"[{_ts}] Raw response ({len(response_text)} chars):\n{response_text}\n")
                     _f.flush()
@@ -921,7 +921,7 @@ class ReActAgentBase:
                 import traceback as _tb
                 import datetime as _dt
                 _ts = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-                with open('llm_decision_trace.log', 'a', encoding='utf-8') as _f:
+                with open_trace_log() as _f:
                     _f.write(f"\n[{_ts}] === ❌ LLM CALL EXCEPTION ===\n")
                     _f.write(f"[{_ts}] Exception Type: {type(e).__name__}\n")
                     _f.write(f"[{_ts}] Exception Message: {str(e)}\n")
@@ -938,7 +938,7 @@ class ReActAgentBase:
                     # 重试决策，不设置 final_reply 让 graph 继续
                     import datetime as _dt
                     _ts = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-                    with open('llm_decision_trace.log', 'a', encoding='utf-8') as _f:
+                    with open_trace_log() as _f:
                         _f.write(f"[{_ts}] ⚠️ 决策尝试 #{decision_error_count} 失败，将重试：{e}\n")
                         _f.flush()
 

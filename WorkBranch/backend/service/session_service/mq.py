@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from core.logging import bind_ctx
+from core.logging import bind_ctx, open_trace_log
 from service.session_service.canonical import Message, SegmentType
 
 
@@ -239,7 +239,7 @@ class HybridMessageQueue:
                 
                 diagnostic_log_lines.append(f"[{publish_timestamp}] ✅ DONE signal sent, cleaning up conversation")
 
-            with open('llm_decision_trace.log', 'a', encoding='utf-8') as f:
+            with open_trace_log() as f:
                 f.write('\n'.join(diagnostic_log_lines) + '\n')
                 f.flush()
 

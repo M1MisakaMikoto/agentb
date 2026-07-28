@@ -3,6 +3,7 @@ from core.logging.logger import Logger
 from core.logging.runtime import LoggingRuntime
 from core.logging.types import LOG_MODULES, LOG_LEVELS
 from core.logging.console_formatter import ConsoleFormatter, console
+from core.logging.trace_writer import TraceWriter, initialize_trace_writer, open_trace_log
 
 __all__ = [
     "bind_ctx",
@@ -15,4 +16,7 @@ __all__ = [
     "LOG_LEVELS",
     "ConsoleFormatter",
     "console",
+    "TraceWriter",
+    "initialize_trace_writer",
+    "open_trace_log",
 ]

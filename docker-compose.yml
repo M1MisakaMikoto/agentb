@@ -13,8 +13,9 @@ services:
       - .env
     environment:
       GUNICORN_BIND: 0.0.0.0:8000
-      GUNICORN_WORKERS: 2
+      GUNICORN_WORKERS: 1
       GUNICORN_LOG_LEVEL: info
+      LLM_TRACE_LOG_PATH: /app/logs/llm_decision_trace.log
     volumes:
       - ./logs:/app/logs
       - ./workspaces:/app/workspaces
