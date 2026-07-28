@@ -49,6 +49,7 @@ from service.session_service.canonical import SegmentType
 from service.agent_service.service.plan_file_service import plan_file_service
 from service.agent_service.service.workspace_service import WorkspaceService
 from service.session_service.message_content import build_prompt_safe_text, get_message_parts, get_message_text, has_image_parts
+from service.agent_service.tools.todo_tools import build_todo_agent_state_update, restore_todo_checkpoint
 from core.logging import console
 from singleton import get_workspace_service
 
@@ -315,9 +316,12 @@ def build_initial_state(
     forced_execution_mode: Optional[ExecutionMode] = None,
     plan_file: Optional[str] = None,
     plan_content: Optional[str] = None,
+    prior_agent_state: Optional[AgentState] = None,
 ) -> dict:
     # 从 definition 读取 max_iterations，默认为 10
     max_iterations = definition.meta.max_iterations if definition else 10
+    todo_state = restore_todo_checkpoint(prior_agent_state, workspace_id)
+
     return {
         "messages": [user_message],
         "current_user_message_text": build_prompt_safe_text(user_message),
@@ -345,13 +349,13 @@ def build_initial_state(
         "last_tool_success": None,
         "last_tool_error": None,
         "invalid_tool_retry_count": 0,
-        "todos": [],
-        "current_todo_index": 0,
+        "todos": list(todo_state.todos),
+        "current_todo_index": todo_state.doingIdx,
         "current_todo_goal": None,
         "current_todo_done_when": None,
         "current_todo_iteration_count": 0,
         "todo_max_iterations": max_iterations,
-        "todo_status": None,
+        "todo_status": "pending" if todo_state.todos else None,
     }
 
 
@@ -2049,17 +2053,10 @@ def create_execute_node(llm_service=None, token_callback=None, settings_service=
                     "next_action": None,
                 }
                 if tool_success and tool_name == "update_todo":
-                    next_todos = tool_result.get("todos") or []
-                    next_doing_idx = tool_result.get("doingIdx", 0)
-                    direct_update.update({
-                        "todos": next_todos,
-                        "current_todo_index": next_doing_idx,
-                        "current_todo_goal": None,
-                        "current_todo_done_when": None,
-                        "iteration_count": 0,
-                        "current_todo_iteration_count": 0,
-                        "todo_status": "pending",
-                    })
+                    direct_update.update(build_todo_agent_state_update(
+                        todos=tool_args.get("todos"),
+                        doing_idx=tool_args.get("doingIdx"),
+                    ))
                 if tool_success and tool_name == "switch_execution_mode":
                     mode_value = tool_result.get("execution_mode")
                     if mode_value == "PLAN":
@@ -2183,17 +2180,15 @@ def _director_post_execute_hook(direct_update: dict, tool_result: dict, state: d
         return hook_updates
     
     if tool_name == "update_todo":
-        next_todos = tool_result.get("todos") or []
-        next_doing_idx = tool_result.get("doingIdx", 0)
-        hook_updates.update({
-            "todos": next_todos,
-            "current_todo_index": next_doing_idx,
-            "current_todo_goal": None,
-            "current_todo_done_when": None,
-            "iteration_count": 0,
-            "current_todo_iteration_count": 0,
-            "todo_status": "pending",
-        })
+        pending_tools = state.get("pending_tools") or []
+        assert pending_tools, "update_todo requires a pending tool call"
+        tool_args = pending_tools[0].get("args")
+        assert isinstance(tool_args, dict), "update_todo requires tool arguments"
+        assert "todos" in tool_args and "doingIdx" in tool_args, "update_todo arguments are incomplete"
+        hook_updates.update(build_todo_agent_state_update(
+            todos=tool_args["todos"],
+            doing_idx=tool_args["doingIdx"],
+        ))
     
     if tool_name == "switch_execution_mode":
         mode_value = tool_result.get("execution_mode")
@@ -2318,7 +2313,8 @@ def run_graph_v3(
     settings_service=None,
     message_context: dict = None,
     parent_chain_messages: List[dict] = None,
-    current_conversation_messages: List[dict] = None
+    current_conversation_messages: List[dict] = None,
+    prior_agent_state: Optional[AgentState] = None,
 ) -> dict:
     print("\n" + "="*60)
     print("[Director Agent] 块类型驱动循环 + Plan/Execute 分离")
@@ -2336,6 +2332,7 @@ def run_graph_v3(
         parent_chain_messages=parent_chain_messages,
         current_conversation_messages=current_conversation_messages,
         is_root_graph=True,
+        prior_agent_state=prior_agent_state,
     )
 
     graph = create_orchestrator_graph_v3(llm_service, token_callback, memory_mode, window_size, settings_service, message_context)
