@@ -118,7 +118,7 @@ class AgentState(TypedDict):
     last_tool_error: Optional[str]
     iteration_count: Optional[int]
     max_iterations: Optional[int]
-    todos: Optional[List[TodoItem]]
+    todos: Optional[List[str]]
     current_todo_index: Optional[int]
     current_todo_goal: Optional[str]
     current_todo_done_when: Optional[str]

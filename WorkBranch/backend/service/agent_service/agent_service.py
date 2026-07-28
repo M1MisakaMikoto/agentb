@@ -381,6 +381,7 @@ class AgentService:
         
         conv = self._conversations.get(conversation_id)
         session_id = conv.session_id if conv else ""
+        prior_agent_state = conv.result if conv else None
         
         if message_id is None:
             message_id = self._generate_id()
@@ -542,7 +543,8 @@ class AgentService:
                         settings_service=settings,
                         message_context=message_context,
                         parent_chain_messages=parent_chain_messages,
-                        current_conversation_messages=current_conversation_messages
+                        current_conversation_messages=current_conversation_messages,
+                        prior_agent_state=prior_agent_state,
                     )
                 finally:
                     self._deregister_conversation_http_client(conversation_id, http_client)
@@ -566,6 +568,9 @@ class AgentService:
                     exception="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
                 )
                 raise
+
+            if conv:
+                conv.result = result
 
             if text_started:
                 msg = MessageBuilder.text_end(
