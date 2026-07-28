@@ -237,6 +237,28 @@ async def stream_conversation_message(
                             event_data["seq"] = last_seq + idx + 1
                             stream_logger.log(event_data, event_data["seq"])
                             yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                    elif last_seq == 0:
+                        # 首次请求且 Agent 已完成，从数据库获取结果
+                        from singleton import get_conversation_dao
+                        dao = get_conversation_dao()
+                        persisted_conv = await dao.get_conversation_by_id(conversation_id)
+                        if persisted_conv and persisted_conv.assistant_content:
+                            # 构造 chat_start + chat_delta + chat_end 事件
+                            chat_start = {'type': 'chat_start', 'conversation_id': conversation_id, 'message_id': persisted_conv.id, 'content': ''}
+                            stream_logger.log(chat_start, 1)
+                            yield f"data: {json.dumps(chat_start, ensure_ascii=False)}\n\n"
+
+                            chat_delta = {'type': 'chat_delta', 'conversation_id': conversation_id, 'message_id': persisted_conv.id, 'content': persisted_conv.assistant_content}
+                            stream_logger.log(chat_delta, 2)
+                            yield f"data: {json.dumps(chat_delta, ensure_ascii=False)}\n\n"
+
+                            chat_end = {'type': 'chat_end', 'conversation_id': conversation_id, 'message_id': persisted_conv.id, 'content': ''}
+                            stream_logger.log(chat_end, 3)
+                            yield f"data: {json.dumps(chat_end, ensure_ascii=False)}\n\n"
+                        else:
+                            done_event = {'type': 'stream_completed', 'conversation_id': conversation_id, 'last_seq': last_seq, 'message': '对话已完成，请调用历史API获取完整数据'}
+                            stream_logger.log(done_event, 0)
+                            yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
                     else:
                         done_event = {'type': 'stream_completed', 'conversation_id': conversation_id, 'last_seq': last_seq, 'message': '对话已完成，请调用历史API获取完整数据'}
                         stream_logger.log(done_event, 0)
