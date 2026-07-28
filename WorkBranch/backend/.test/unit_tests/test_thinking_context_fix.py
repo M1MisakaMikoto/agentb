@@ -1,5 +1,7 @@
 import ast
+from contextlib import nullcontext
 import datetime
+from io import StringIO
 import os
 import unittest
 
@@ -67,6 +69,7 @@ def _load_thinking_executor():
         "console": _Console(),
         "THINK_SYSTEM_PROMPT": "thinking-system",
         "datetime": datetime,
+        "open_trace_log": lambda: nullcontext(StringIO()),
         "_build_child_agent_chat_prompt": build_special_prompt,
     }
     code = compile(ast.Module(body=[function], type_ignores=[]), EXECUTOR_PATH, "exec")
@@ -110,7 +113,7 @@ class ThinkingContextTest(unittest.TestCase):
         original_import = builtins.__import__
         builtins.__import__ = fake_import
         try:
-            execute_thinking(
+            result = execute_thinking(
                 "thinking",
                 tool_args,
                 "CURRENT_THINKING_TASK",
@@ -121,6 +124,7 @@ class ThinkingContextTest(unittest.TestCase):
         finally:
             builtins.__import__ = original_import
 
+        self.assertIsNone(result["error"])
         self.assertIn("ORIGINAL_USER_CONTEXT", llm.user_prompt)
         self.assertIn("PREVIOUS_TOOL_RESULT", llm.user_prompt)
         self.assertIn("CURRENT_THINKING_TASK", llm.user_prompt)
