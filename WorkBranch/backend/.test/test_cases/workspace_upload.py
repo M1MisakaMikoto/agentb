@@ -6,6 +6,7 @@ Workspace Upload Tests
 """
 
 import asyncio
+import json
 from pathlib import Path
 from typing import List
 
@@ -31,6 +32,15 @@ def resolve_source_file(source_path: str) -> Path:
     if not full_path.exists():
         raise FileNotFoundError(f"Source file not found: {full_path}")
     return full_path
+
+
+def parse_workspace_file_index(user_content: str) -> tuple[dict, str]:
+    if not user_content.startswith("`"):
+        raise ValueError("user_content does not start with a backtick file index")
+    marker_end = user_content.find("`", 1)
+    if marker_end < 0:
+        raise ValueError("user_content file index is missing its closing backtick")
+    return json.loads(user_content[1:marker_end]), user_content[marker_end + 1:].lstrip()
 
 
 async def upload_files_to_workspace(
@@ -61,6 +71,104 @@ async def upload_files_to_workspace(
             print_error(f"Error uploading {source_path}: {e}")
     
     return uploaded_files
+
+
+async def run_workspace_upload_user_content_index_test(
+    api: APIClient,
+    scenario_config: dict,
+    verbose: bool = True,
+) -> TestResult:
+    result = TestResult("workspace_upload_user_content_index", scenario_config)
+    print_test_header("Workspace Upload - User Content Index Test")
+
+    session_result = await api.create_session(title="Workspace File Index E2E")
+    if not session_result.get("success", True):
+        result.errors.append(f"create_session: {session_result.get('message')}")
+        return result
+    session_data = session_result.get("data") or {}
+    session_id = session_data["id"]
+    workspace_id = session_data["workspace_id"]
+    result.session_id = session_id
+    result.workspace_id = workspace_id
+
+    source_path = scenario_config.get("source_file", ".dev/table/我是测试知识文件.txt")
+    file_path = resolve_source_file(source_path)
+    upload_result = await api.upload_workspace_file(workspace_id, file_path)
+    if not upload_result.get("success", True):
+        result.errors.append(f"upload_file: {upload_result.get('message')}")
+        return result
+    saved_files = upload_result.get("data") or []
+    if len(saved_files) != 1:
+        result.errors.append(f"upload_file: unexpected saved file count {len(saved_files)}")
+        return result
+    saved_file = saved_files[0]
+    expected_file = {
+        "workspace_id": workspace_id,
+        "name": file_path.name,
+        "relative_path": saved_file["saved_as"],
+        "size": saved_file["size"],
+    }
+
+    workspace_result = await api.list_workspace_files(workspace_id)
+    workspace_files = workspace_result.get("data") or []
+    matching_files = [
+        item for item in workspace_files
+        if not item["is_dir"] and item["path"] == expected_file["relative_path"]
+    ]
+    if len(matching_files) != 1 or matching_files[0]["size"] != expected_file["size"]:
+        result.errors.append(f"workspace file mismatch: expected={expected_file}")
+        return result
+
+    prompt = scenario_config.get("prompt", "请确认已收到上传文件。")
+    conversation_result = await api.create_conversation(session_id, prompt)
+    if not conversation_result.get("success", True):
+        result.errors.append(f"create_conversation: {conversation_result.get('message')}")
+        return result
+    conversation_id = (conversation_result.get("data") or {})["conversation_id"]
+    result.conversation_id = conversation_id
+
+    stream = api.stream_message(conversation_id)
+    first_event_task = asyncio.create_task(stream.__anext__())
+    actual_user_content = ""
+    actual_parts = []
+    try:
+        await asyncio.wait_for(first_event_task, timeout=15.0)
+        for _ in range(50):
+            conversation = await api.get_conversation(conversation_id)
+            conversation_data = conversation.get("data") or {}
+            actual_user_content = conversation_data.get("user_content", "")
+            actual_parts = conversation_data.get("user_content_parts", [])
+            try:
+                index, _ = parse_workspace_file_index(actual_user_content)
+                if index.get("workspace_files"):
+                    break
+            except (ValueError, json.JSONDecodeError):
+                pass
+            await asyncio.sleep(0.1)
+    finally:
+        await api.cancel_conversation(conversation_id)
+        await stream.aclose()
+
+    expected_index = {"workspace_files": [expected_file]}
+    try:
+        actual_index, original_content = parse_workspace_file_index(actual_user_content)
+    except (ValueError, json.JSONDecodeError) as exc:
+        result.errors.append(f"workspace file index is not parseable: {exc}")
+    else:
+        if actual_index != expected_index:
+            result.errors.append(
+                f"workspace file index mismatch: expected={expected_index}, actual={actual_index}"
+            )
+        if original_content != prompt:
+            result.errors.append(
+                f"original user content mismatch: expected={prompt}, actual={original_content}"
+            )
+        expected_marker = f"`{json.dumps(expected_index, ensure_ascii=False, separators=(',', ':'))}`"
+        if actual_parts[:1] != [{"type": "text", "text": expected_marker}]:
+            result.errors.append(f"stored index marker mismatch: actual={actual_parts[:1]}")
+    if not result.errors:
+        print_success(f"Workspace file index verified: {expected_index}")
+    return result
 
 
 async def run_workspace_upload_extract_write_test(
@@ -163,6 +271,7 @@ async def run_workspace_upload_read_document_test(
     
     try:
         uploaded_files = []
+        expected_file_indexes = []
         for source_file in source_files:
             file_path = resolve_source_file(source_file)
             upload_result = await api.upload_workspace_file(workspace_id, file_path)
@@ -171,6 +280,17 @@ async def run_workspace_upload_read_document_test(
                 result.errors.append(f"upload_file: {upload_result.get('message')}")
                 return result
             uploaded_files.append(file_path.name)
+            saved_files = upload_result.get("data") or []
+            if len(saved_files) != 1:
+                result.errors.append(f"upload_file: unexpected saved file count {len(saved_files)}")
+                return result
+            saved_file = saved_files[0]
+            expected_file_indexes.append({
+                "workspace_id": workspace_id,
+                "name": file_path.name,
+                "relative_path": saved_file["saved_as"],
+                "size": saved_file["size"],
+            })
             print_success(f"Uploaded: {file_path.name}")
     except FileNotFoundError as e:
         print_error(str(e))
@@ -210,6 +330,23 @@ async def run_workspace_upload_read_document_test(
         print_success(f"Response length: {len(result.response_text)} chars")
     else:
         print_error("No response text found")
+
+    conversation_data = final_result.get("data") or {}
+    try:
+        actual_index, _ = parse_workspace_file_index(conversation_data.get("user_content", ""))
+        actual_file_indexes = actual_index.get("workspace_files")
+    except (ValueError, json.JSONDecodeError) as exc:
+        actual_file_indexes = None
+        result.errors.append(f"workspace file index is not parseable: {exc}")
+    if actual_file_indexes == expected_file_indexes:
+        print_success("Workspace file indexes persisted in user_content")
+    elif actual_file_indexes is not None:
+        error = (
+            "workspace_file indexes mismatch: "
+            f"expected={expected_file_indexes}, actual={actual_file_indexes}"
+        )
+        print_error(error)
+        result.errors.append(error)
     
     print(f"\n{Colors.GREEN}{'='*60}{Colors.ENDC}")
     print(f"{Colors.GREEN}  Workspace Upload Read Document Test Completed{Colors.ENDC}")

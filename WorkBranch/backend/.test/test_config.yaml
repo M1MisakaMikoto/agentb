@@ -52,6 +52,10 @@ suites:
       - pdf_generate
 
 scenarios:
+  workspace_upload_user_content_index:
+    description: "反引号 JSON 文件索引写入当前 conv user_content"
+    source_file: ".dev/table/我是测试知识文件.txt"
+    prompt: "请确认已收到上传文件。"
   qiaozitang_monthly_query:
     description: "桥梓塘立交1-5月跨5份巡查报告聚合查询"
     source_files:

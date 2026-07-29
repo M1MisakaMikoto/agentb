@@ -491,6 +491,10 @@ class APIClient:
         path = self._get_endpoint("conversation", "get", conversation_id=conversation_id)
         return await self._request("GET", path)
 
+    async def cancel_conversation(self, conversation_id: str) -> dict:
+        path = self._get_endpoint("conversation", "cancel", conversation_id=conversation_id)
+        return await self._request("POST", path)
+
     async def get_plan_status(self, workspace_id: str) -> dict:
         path = self._get_endpoint("plan", "status", workspace_id=workspace_id)
         return await self._request("GET", path)

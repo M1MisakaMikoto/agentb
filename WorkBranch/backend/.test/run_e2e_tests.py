@@ -33,6 +33,7 @@ from test_cases.plan_mode import run_plan_mode_test
 from test_cases.search_mode import run_search_mode_test
 from test_cases.serial_mode import run_serial_mode_test
 from test_cases.workspace_upload import (
+    run_workspace_upload_user_content_index_test,
     run_workspace_upload_extract_write_test,
     run_workspace_upload_read_document_test,
     run_workspace_upload_image_understanding_test,
@@ -63,6 +64,7 @@ SCENARIO_RUNNERS = {
     "plan_mode": run_plan_mode_test,
     "search_mode": run_search_mode_test,
     "serial_mode": run_serial_mode_test,
+    "workspace_upload_user_content_index": run_workspace_upload_user_content_index_test,
     "workspace_upload_extract_write": run_workspace_upload_extract_write_test,
     "workspace_upload_read_document": run_workspace_upload_read_document_test,
     "workspace_upload_image_understanding": run_workspace_upload_image_understanding_test,

@@ -14,13 +14,19 @@ from service.session_service.canonical import Message, SegmentType, MessageBuild
 from service.session_service.message_content import deserialize_parts, normalize_user_content, parts_to_plain_text, resolve_runtime_parts, serialize_parts
 
 
-def _format_file_size(size_bytes: int) -> str:
-    """字节数转人类可读字符串（B/KB/MB，1位小数）"""
-    if size_bytes < 1024:
-        return f"{size_bytes}B"
-    if size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f}KB"
-    return f"{size_bytes / (1024 * 1024):.1f}MB"
+def _build_workspace_file_index_text(workspace_id: str, files: List[Dict[str, Any]]) -> str:
+    index = {
+        "workspace_files": [
+            {
+                "workspace_id": workspace_id,
+                "name": file_info["name"],
+                "relative_path": file_info["relative_path"],
+                "size": file_info["size"],
+            }
+            for file_info in files
+        ]
+    }
+    return f"`{json.dumps(index, ensure_ascii=False, separators=(',', ':'))}`"
 
 
 class ConversationState(Enum):
@@ -284,20 +290,20 @@ class ConversationService:
         workspace_dir = self._workspace_service.get_workspace_dir(conv_info.workspace_id)
 
         persisted_conv = await self._dao.get_conversation_by_id(conversation_id)
-        user_message_parts = resolve_runtime_parts(
-            deserialize_parts(persisted_conv.user_content) if persisted_conv else [],
-            workspace_dir,
-        )
-        # 取出未通知文件，非空则追加到 user 消息（仅传给 agent，不持久化到 DB）
+        assert persisted_conv is not None, f"Conversation {conversation_id} not found"
+        persisted_user_parts = deserialize_parts(persisted_conv.user_content)
         unnotified = self._workspace_service.consume_unnotified_files(conv_info.session_id)
         if unnotified:
-            file_summary = "; ".join(
-                f"{f['name']} ({f['relative_path']}, {_format_file_size(f['size'])})"
-                for f in unnotified
+            file_index_part = {
+                "type": "text",
+                "text": _build_workspace_file_index_text(conv_info.workspace_id, unnotified),
+            }
+            persisted_user_parts = [file_index_part, *persisted_user_parts]
+            await self._dao.update_conversation(
+                conversation_id,
+                user_content=serialize_parts(persisted_user_parts),
             )
-            user_message_parts = list(user_message_parts) + [
-                {"type": "text", "text": f"\n[新上传文件] {file_summary}"}
-            ]
+        user_message_parts = resolve_runtime_parts(persisted_user_parts, workspace_dir)
         history_context = []
         for item in context if context else []:
             role = item.get("role", "user")
