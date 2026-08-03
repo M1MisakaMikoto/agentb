@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
@@ -18,6 +18,7 @@ from service.session_service.mq import MessageQueue
 from service.session_service.canonical import SegmentType, Message
 from raw_streaming_response import RawStreamingResponse
 from service.session_service.message_content import MessageContentError, normalize_user_content
+from controller.affinity import require_owned_conversation
 
 router = APIRouter(prefix="/session/conversations", tags=["conversations"])
 STREAM_MAX_TIMEOUT_TICKS = 300
@@ -118,7 +119,8 @@ class SendConversationMessageBody(BaseModel):
 
 
 @router.get("/{conversation_id}")
-async def get_conversation(conversation_id: str) -> Result:
+async def get_conversation(conversation_id: str, request: Request) -> Result:
+    await require_owned_conversation(request, conversation_id)
     service = get_conversation_service()
     conversation = await service.get_conversation(conversation_id)
     if not conversation:
@@ -127,22 +129,25 @@ async def get_conversation(conversation_id: str) -> Result:
 
 
 @router.delete("/{conversation_id}")
-async def delete_conversation(conversation_id: str) -> Result:
+async def delete_conversation(conversation_id: str, request: Request) -> Result:
+    await require_owned_conversation(request, conversation_id, claim_owner=True)
     service = get_conversation_service()
     await service.delete_conversation(conversation_id)
     return Result.success()
 
 
 @router.post("/{conversation_id}/cancel")
-async def cancel_conversation(conversation_id: str) -> Result:
+async def cancel_conversation(conversation_id: str, request: Request) -> Result:
+    await require_owned_conversation(request, conversation_id, claim_owner=True)
     service = get_conversation_service()
     await service.cancel_conversation(conversation_id)
     return Result.success()
 
 
 @router.delete("/{conversation_id}/cascade")
-async def cascade_delete_conversation(conversation_id: str) -> Result:
+async def cascade_delete_conversation(conversation_id: str, request: Request) -> Result:
     """删除该对话以及之后的所有对话（回退功能）"""
+    await require_owned_conversation(request, conversation_id, claim_owner=True)
     service = get_conversation_service()
     deleted_count = await service.delete_conversations_after(conversation_id)
     return Result.success(data={
@@ -155,8 +160,10 @@ async def cascade_delete_conversation(conversation_id: str) -> Result:
 async def prepare_conversation_message(
     conversation_id: str,
     body: SendConversationMessageBody,
+    request: Request,
 ) -> Result:
     """准备消息 - 更新用户消息内容，返回消息ID，不执行 Agent"""
+    await require_owned_conversation(request, conversation_id, claim_owner=True)
     service = get_conversation_service()
     conversation = await service.get_conversation(conversation_id)
     if not conversation:
@@ -178,7 +185,9 @@ async def prepare_conversation_message(
 @router.get("/{conversation_id}/stream")
 async def stream_conversation_message(
     conversation_id: str,
+    request: Request,
     last_seq: int = 0,
+    last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
     mode: str = "interactive",  # 模式: interactive(完整流式) | silent(仅heartbeat+done)
 ) -> StreamingResponse:
     """流式发送消息 - 支持交互式/静默双模式
@@ -188,6 +197,12 @@ async def stream_conversation_message(
         last_seq: 上次接收的最后消息序号，用于断点续传
         mode: 运行模式，interactive为默认交互式模式，silent为静默模式（过滤流式中间结果）
     """
+    await require_owned_conversation(request, conversation_id, claim_owner=True)
+    if last_event_id and last_seq == 0:
+        try:
+            last_seq = int(last_event_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Last-Event-ID must be an integer") from exc
     service = get_conversation_service()
     mq = get_message_queue()
     
@@ -229,15 +244,33 @@ async def stream_conversation_message(
             )
 
             try:
-                if stream_state["is_completed"]:
+                if stream_state["is_completed"] or conversation.get("state") in {
+                    "completed", "failed", "cancelled"
+                }:
                     messages_after = mq.get_messages_after(conversation_id, last_seq)
                     if messages_after:
                         for idx, msg in enumerate(messages_after):
-                            event_data = msg.to_dict()
-                            event_data["seq"] = last_seq + idx + 1
+                            event_data = msg.to_dict() if hasattr(msg, "to_dict") else dict(msg)
+                            event_data["seq"] = int(event_data.get("seq") or last_seq + idx + 1)
                             stream_logger.log(event_data, event_data["seq"])
-                            yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                            yield f"id: {event_data['seq']}\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+                        logger.info(
+                            event="stream.completed_from_history",
+                            msg="stream completed from durable stream",
+                            extra={"conversation_id": conversation_id, "last_seq": last_seq},
+                        )
+                        return
                     elif last_seq == 0:
+                        terminal_state = conversation.get("state")
+                        if terminal_state in {"failed", "cancelled"}:
+                            terminal_event = {
+                                "type": "error" if terminal_state == "failed" else "cancelled",
+                                "conversation_id": conversation_id,
+                                "content": conversation.get("error") or terminal_state,
+                            }
+                            stream_logger.log(terminal_event, 0)
+                            yield f"data: {json.dumps(terminal_event, ensure_ascii=False)}\n\n"
+                            return
                         # 首次请求且 Agent 已完成，从数据库获取结果
                         from singleton import get_conversation_dao
                         dao = get_conversation_dao()
@@ -260,9 +293,7 @@ async def stream_conversation_message(
                             stream_logger.log(done_event, 0)
                             yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
                     else:
-                        done_event = {'type': 'stream_completed', 'conversation_id': conversation_id, 'last_seq': last_seq, 'message': '对话已完成，请调用历史API获取完整数据'}
-                        stream_logger.log(done_event, 0)
-                        yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+                        return
                     end_event = {'type': 'done'}
                     stream_logger.log(end_event, 0)
                     yield f"data: {json.dumps(end_event, ensure_ascii=False)}\n\n"
@@ -278,7 +309,7 @@ async def stream_conversation_message(
                 
                 print(f"[DEBUG] stream_state: {stream_state}, last_seq: {last_seq}, state: {conversation.get('state')}")
 
-                if last_seq == 0 and conversation.get("state") != "running":
+                if last_seq == 0 and conversation.get("state") == "pending":
                     print(f"[DEBUG] Creating send_message task for conversation {conversation_id}, state={conversation.get('state')}")
                     logger.info(
                         event="send_message_task_creating",
@@ -344,10 +375,10 @@ async def stream_conversation_message(
                         event_type = event_data.get("type", "unknown")
                         yield_json = json.dumps(event_data, ensure_ascii=False)
                         print(f"[STREAM-YIELD] type={event_type}, yield_size={len(yield_json)}")
-                        yield f"data: {yield_json}\n\n"
+                        yield f"id: {seq}\ndata: {yield_json}\n\n"
                         print(f"[STREAM-DEBUG] ✓ Yielded message to client")
 
-                        if message.type == SegmentType.DONE:
+                        if message.type in {SegmentType.DONE, SegmentType.ERROR, SegmentType.CANCELLED}:
                             done_received = True
                             logger.info(
                                 event="stream.completed",

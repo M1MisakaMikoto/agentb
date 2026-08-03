@@ -12,6 +12,7 @@ from service.agent_service.agent_service import AgentService
 from data.conversation_dao import ConversationDAO
 from service.session_service.canonical import Message, SegmentType, MessageBuilder
 from service.session_service.message_content import deserialize_parts, normalize_user_content, parts_to_plain_text, resolve_runtime_parts, serialize_parts
+from service.runtime import get_runtime_state
 
 
 def _format_file_size(size_bytes: int) -> str:
@@ -147,12 +148,27 @@ class ConversationService:
         session_id: int,
         user_content: Any,
         allow_existing_running: bool = False,
+        idempotency_key: Optional[str] = None,
     ) -> str:
         conversation_id = str(uuid.uuid4())
         
         session = await self._dao.get_session_by_id(session_id)
         if not session:
             raise ValueError(f"Session {session_id} not found")
+
+        runtime = get_runtime_state()
+        claim = await runtime.claim_session(session_id)
+        if claim.acquired:
+            await self._dao.fail_stale_running_conversations(
+                session_id, runtime.instance_id
+            )
+
+        if idempotency_key:
+            existing = await self._dao.get_conversation_by_idempotency_key(
+                session_id, idempotency_key
+            )
+            if existing:
+                return existing.id
 
         existing_conversations = await self._dao.list_conversations_by_session(session_id)
         if not allow_existing_running and any(conv.state == ConversationState.RUNNING.value for conv in existing_conversations):
@@ -161,11 +177,19 @@ class ConversationService:
         workspace_id = session.workspace_id
 
         normalized_parts = normalize_user_content(user_content)
-        await self._dao.create_conversation(
+        created = await self._dao.create_conversation(
             conversation_id=conversation_id,
             session_id=session_id,
             user_content=serialize_parts(normalized_parts),
+            idempotency_key=idempotency_key,
         )
+        if not created and idempotency_key:
+            existing = await self._dao.get_conversation_by_idempotency_key(
+                session_id, idempotency_key
+            )
+            if existing:
+                return existing.id
+            raise RuntimeError("Idempotent conversation creation could not be resolved")
 
         async with self._lock:
             self._conversations[conversation_id] = ConversationInfo(
@@ -236,6 +260,7 @@ class ConversationService:
             if conv_info.state == ConversationState.RUNNING:
                 raise RuntimeError(f"Conversation {conversation_id} is already running")
 
+        await get_runtime_state().claim_session(conv_info.session_id)
         normalized_parts = normalize_user_content(user_message)
         await self._dao.update_conversation(
             conversation_id,
@@ -278,6 +303,13 @@ class ConversationService:
             if conv_info.state == ConversationState.RUNNING:
                 raise RuntimeError(f"Conversation {conversation_id} is already running")
 
+        runtime = get_runtime_state()
+        claim = await runtime.claim_session(conv_info.session_id)
+        if claim.acquired:
+            await self._dao.fail_stale_running_conversations(
+                conv_info.session_id, runtime.instance_id
+            )
+
         context = await self._dao.get_session_context(
             conv_info.session_id, conversation_id
         )
@@ -310,10 +342,6 @@ class ConversationService:
 
         message_id = f"msg-{conversation_id}-{int(datetime.now().timestamp() * 1000)}"
 
-        async with self._lock:
-            conv_info.state = ConversationState.RUNNING
-            await self._dao.update_conversation(conversation_id, state=ConversationState.RUNNING.value)
-
         mq = self._get_mq()
         await mq.start_consumer()
 
@@ -328,15 +356,43 @@ class ConversationService:
 
         subscriber = mq.subscribe(conv_info.conversation_id)
 
+        try:
+            transitioned = await self._dao.transition_conversation_state(
+                conversation_id,
+                [ConversationState.PENDING.value],
+                ConversationState.RUNNING.value,
+                owner_instance_id=runtime.instance_id,
+            )
+        except Exception as exc:
+            mq.unsubscribe(conv_info.conversation_id, subscriber)
+            if "Duplicate" in str(exc):
+                raise RuntimeError(
+                    f"Session {conv_info.session_id} already has a running conversation"
+                ) from exc
+            raise
+        if not transitioned:
+            mq.unsubscribe(conv_info.conversation_id, subscriber)
+            raise RuntimeError(
+                f"Conversation {conversation_id} is not pending and cannot be started"
+            )
+
+        async with self._lock:
+            conv_info.state = ConversationState.RUNNING
+
         messages: List[Message] = []
         done_received = False
+        terminal_error: Optional[str] = None
+        active_session = runtime.active_session(conv_info.session_id)
+        await active_session.__aenter__()
 
         async def collect_and_forward(message: Message):
-            nonlocal done_received
+            nonlocal done_received, terminal_error
             
             messages.append(message)
-            if message.type == SegmentType.DONE:
+            if message.type in {SegmentType.DONE, SegmentType.ERROR, SegmentType.CANCELLED}:
                 done_received = True
+            if message.type == SegmentType.ERROR:
+                terminal_error = message.content or "Agent execution failed"
             
             if on_chunk:
                 await on_chunk(message.to_dict())
@@ -376,14 +432,18 @@ class ConversationService:
                 except asyncio.TimeoutError:
                     task.cancel()
 
+            if terminal_error:
+                raise RuntimeError(terminal_error)
+
             messages_json = json.dumps([msg.to_dict() for msg in messages])
 
             async with self._lock:
                 conv_info.state = ConversationState.COMPLETED
-                await self._dao.update_conversation(
+                await self._dao.transition_conversation_state(
                     conversation_id,
+                    [ConversationState.RUNNING.value],
+                    ConversationState.COMPLETED.value,
                     assistant_content=messages_json,
-                    state=ConversationState.COMPLETED.value,
                 )
 
             return {
@@ -395,10 +455,11 @@ class ConversationService:
             messages_json = json.dumps([msg.to_dict() for msg in messages])
             async with self._lock:
                 conv_info.state = ConversationState.CANCELLED
-                await self._dao.update_conversation(
+                await self._dao.transition_conversation_state(
                     conversation_id,
+                    [ConversationState.RUNNING.value],
+                    ConversationState.CANCELLED.value,
                     assistant_content=messages_json,
-                    state=ConversationState.CANCELLED.value,
                 )
             raise
 
@@ -408,28 +469,52 @@ class ConversationService:
             async with self._lock:
                 conv_info.state = ConversationState.FAILED
                 conv_info.error = error_msg
-                await self._dao.update_conversation(
+                await self._dao.transition_conversation_state(
                     conversation_id,
+                    [ConversationState.RUNNING.value],
+                    ConversationState.FAILED.value,
                     assistant_content=messages_json,
-                    state=ConversationState.FAILED.value,
                     error=error_msg,
                 )
             raise
 
         finally:
             mq.unsubscribe(conv_info.conversation_id, subscriber)
+            await active_session.__aexit__(None, None, None)
 
     async def cancel_conversation(self, conversation_id: str) -> None:
+        persisted = await self._dao.get_conversation_by_id(conversation_id)
+        if not persisted:
+            raise ValueError(f"Conversation {conversation_id} not found")
+        await get_runtime_state().claim_session(persisted.session_id)
+        task_to_cancel = None
         async with self._lock:
             conv_info = self._conversations.get(conversation_id)
             if conv_info and conv_info.task and not conv_info.task.done():
-                conv_info.task.cancel()
+                task_to_cancel = conv_info.task
             if conv_info:
                 conv_info.state = ConversationState.CANCELLED
-                await self._dao.update_conversation(
-                    conversation_id,
-                    state=ConversationState.CANCELLED.value,
+        transitioned = await self._dao.transition_conversation_state(
+            conversation_id,
+            [ConversationState.RUNNING.value, ConversationState.PENDING.value],
+            ConversationState.CANCELLED.value,
+        )
+        if transitioned:
+            session = await self._dao.get_session_by_id(persisted.session_id)
+            self._get_mq().publish_sync(
+                Message(
+                    role="assistant",
+                    message_id=f"cancel-{conversation_id}",
+                    conversation_id=conversation_id,
+                    session_id=str(persisted.session_id),
+                    workspace_id=session.workspace_id if session else "",
+                    type=SegmentType.CANCELLED,
+                    content="cancelled",
+                    metadata={"reason": "cancelled_by_user"},
                 )
+            )
+        if task_to_cancel is not None:
+            task_to_cancel.cancel()
 
     async def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         conv = await self._dao.get_conversation_by_id(conversation_id)
@@ -469,6 +554,10 @@ class ConversationService:
         ]
 
     async def delete_conversation(self, conversation_id: str) -> None:
+        persisted = await self._dao.get_conversation_by_id(conversation_id)
+        if not persisted:
+            return
+        await get_runtime_state().claim_session(persisted.session_id)
         async with self._lock:
             conv_info = self._conversations.get(conversation_id)
             if conv_info and conv_info.task and not conv_info.task.done():
@@ -492,6 +581,8 @@ class ConversationService:
         conv = await self._dao.get_conversation_by_id(conversation_id)
         if not conv:
             return 0
+
+        await get_runtime_state().claim_session(conv.session_id)
 
         async with self._lock:
             to_delete = []

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -36,9 +37,13 @@ class IngestionService:
         docs_root: Optional[Path] = None,
     ) -> None:
         root = Path(__file__).resolve().parents[3]
-        self.meta_db = meta_db or (root / "rag" / "file_meta.sqlite3")
-        self.docs_root = docs_root or (root / "DOCS")
-        self.rag_dao = rag_dao or RAG_DAO()
+        self.meta_db = meta_db or Path(
+            os.getenv("AGENTB_RAG_META_DB", str(root / "rag" / "file_meta.sqlite3"))
+        )
+        self.docs_root = docs_root or Path(
+            os.getenv("AGENTB_RAG_DOCS_ROOT", str(root / "DOCS"))
+        )
+        self.rag_dao = rag_dao or RAG_DAO(db_path=self.meta_db)
         self.meta_dao = meta_dao or IngestionMetaDAO(db_path=self.meta_db)
         self.chunk_registry = chunk_registry or ChunkEngineRegistry()
         self.embedding_engine = embedding_engine or OllamaEmbeddingEngine(

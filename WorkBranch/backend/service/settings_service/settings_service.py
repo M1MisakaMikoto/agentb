@@ -198,6 +198,7 @@ DEFAULT_SETTINGS_METADATA = {
 }
 
 ENV_SETTING_MAPPINGS = {
+    "workspace:base_dir": ("AGENTB_WORKSPACE_DIR", str),
     "mysql:host": ("MYSQL_HOST", str),
     "mysql:port": ("MYSQL_PORT", int),
     "mysql:user": ("MYSQL_USER", str),

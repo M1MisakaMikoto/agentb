@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -20,7 +21,9 @@ class RAG_DAO(BaseRAGDAO):
         if db_path is None:
             # Match existing backend db relative path
             app_root = Path(__file__).resolve().parents[2]
-            db_path = app_root / "rag" / "file_meta.sqlite3"
+            db_path = Path(
+                os.getenv("AGENTB_RAG_META_DB", str(app_root / "rag" / "file_meta.sqlite3"))
+            )
 
         self.vec_dao = SqliteVecDAO(db_path)
         LOGGER.info("RAG_DAO initialized with SqliteVecDAO")

@@ -1,0 +1,32 @@
+services:
+  agentb-1:
+    networks: [default]
+  agentb-2:
+    networks: [default]
+  agentb-3:
+    networks: [default]
+  agentb-rag-worker:
+    networks: [default]
+
+  agentb-router:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    expose:
+      - "8080"
+    volumes:
+      - ./deploy/nginx/agentb.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - default
+      - platform
+    depends_on:
+      agentb-1:
+        condition: service_healthy
+      agentb-2:
+        condition: service_healthy
+      agentb-3:
+        condition: service_healthy
+
+networks:
+  platform:
+    external: true
+    name: ${AGENTB_PLATFORM_NETWORK:?Set AGENTB_PLATFORM_NETWORK}

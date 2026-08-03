@@ -26,6 +26,7 @@ class SegmentType(Enum):
     TOOL_CALL = "tool_call"
     TOOL_RES = "tool_res"
     ERROR = "error"
+    CANCELLED = "cancelled"
     DONE = "done"
     CONVERSATION_HANDOFF = "conversation_handoff"
     COMPRESSION_START = "compression_start"

@@ -50,6 +50,8 @@ run_server*.py
 nginx.conf
 nginx.zip
 nginx/
+!deploy/nginx/
+!deploy/nginx/agentb.conf
 mime.types
 
 # Test artifacts and temp data

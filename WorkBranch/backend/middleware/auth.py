@@ -10,6 +10,8 @@ from controller.VO.result import Result
 
 PUBLIC_PATHS = {
     "/health",
+    "/health/ready",
+    "/router-health",
     "/docs",
     "/openapi.json",
 }
@@ -39,7 +41,7 @@ class AuthMiddleware:
         
         if _is_auth_disabled():
             # 即使禁用认证，也要设置默认用户信息
-            scope["state"] = getattr(scope, "state", {})
+            scope.setdefault("state", {})
             scope["state"]["user"] = {
                 "id": 1,
                 "name": "default_user"
@@ -80,7 +82,7 @@ class AuthMiddleware:
             return
         
         # 将用户信息存储在 scope 的 state 中
-        scope["state"] = getattr(scope, "state", {})
+        scope.setdefault("state", {})
         scope["state"]["user"] = {
             "id": user_id,
             "name": f"user_{user_id}"

@@ -112,6 +112,14 @@ class MySQLDatabase:
                 await cursor.execute(sql, params)
                 return cursor.lastrowid
 
+    async def execute_affected(self, sql: str, params: Optional[Tuple] = None) -> int:
+        """Execute a mutation and return the affected row count."""
+        await self.ensure_pool()
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(sql, params)
+                return cursor.rowcount
+
     async def fetch_all(self, sql: str, params: Optional[Tuple] = None) -> List[dict]:
         """执行查询并返回所有结果（字典列表）。"""
         await self.ensure_pool()
@@ -172,11 +180,32 @@ class MySQLDatabase:
                         thinking_content LONGTEXT,
                         state ENUM('pending', 'running', 'completed', 'failed', 'cancelled') DEFAULT 'pending',
                         error TEXT,
+                        owner_instance_id VARCHAR(128),
+                        idempotency_key VARCHAR(128),
+                        running_session_id INTEGER GENERATED ALWAYS AS (
+                            CASE WHEN state = 'running' THEN session_id ELSE NULL END
+                        ) STORED,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 ''')
+
+                # Forward-compatible migrations for databases created by older releases.
+                column_migrations = {
+                    "owner_instance_id": "ALTER TABLE conversations ADD COLUMN owner_instance_id VARCHAR(128)",
+                    "idempotency_key": "ALTER TABLE conversations ADD COLUMN idempotency_key VARCHAR(128)",
+                    "running_session_id": (
+                        "ALTER TABLE conversations ADD COLUMN running_session_id INTEGER "
+                        "GENERATED ALWAYS AS (CASE WHEN state = 'running' THEN session_id ELSE NULL END) STORED"
+                    ),
+                }
+                for column_name, statement in column_migrations.items():
+                    await cursor.execute(
+                        "SHOW COLUMNS FROM conversations LIKE %s", (column_name,)
+                    )
+                    if await cursor.fetchone() is None:
+                        await cursor.execute(statement)
 
                 try:
                     await cursor.execute('''
@@ -198,5 +227,23 @@ class MySQLDatabase:
                     ''')
                 except Exception:
                     pass
+
+                for index_name, statement in (
+                    (
+                        "uq_conversations_running_session",
+                        "CREATE UNIQUE INDEX uq_conversations_running_session "
+                        "ON conversations(running_session_id)",
+                    ),
+                    (
+                        "uq_conversations_idempotency",
+                        "CREATE UNIQUE INDEX uq_conversations_idempotency "
+                        "ON conversations(session_id, idempotency_key)",
+                    ),
+                ):
+                    await cursor.execute(
+                        "SHOW INDEX FROM conversations WHERE Key_name = %s", (index_name,)
+                    )
+                    if await cursor.fetchone() is None:
+                        await cursor.execute(statement)
 
             await conn.commit()

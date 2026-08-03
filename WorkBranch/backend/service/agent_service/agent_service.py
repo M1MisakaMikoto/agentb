@@ -474,14 +474,6 @@ class AgentService:
 
                 send_message("抱歉，我无法处理此请求", SegmentType.ERROR, {"message_id": message_id, "error": "malicious_request"})
 
-                msg = MessageBuilder.done(
-                    message_id=message_id,
-                    conversation_id=conversation_id,
-                    session_id=session_id,
-                    workspace_id=workspace_id,
-                    metadata={"message_id": message_id, "status": "blocked"},
-                )
-                mq.publish_sync(msg)
                 return {"status": "blocked", "reason": "malicious_request"}
 
             if intent_result.rewritten_query != message_text:
