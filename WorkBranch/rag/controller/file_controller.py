@@ -240,8 +240,13 @@ async def upload_document(
             converted_from_doc = True
             LOGGER.info("upload_doc_converted display_name=%s size_bytes=%s", display_name, len(content))
         except DocConvertError as exc:
-            LOGGER.warning("upload_doc_convert_failed filename=%s error=%s", file.filename, exc)
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # 无 LibreOffice/Word 时降级：保留原始 .doc 由 DocChunkEngine 解析，避免上传被阻塞
+            LOGGER.warning(
+                "upload_doc_convert_failed_keep_legacy filename=%s error=%s mime=%s",
+                file.filename,
+                exc,
+                mime,
+            )
 
     size = len(content)
     hash_sha = _sha256_bytes(content)
@@ -545,8 +550,8 @@ def read_file(
                     name = docx_display_name(name)
                     LOGGER.info("read_file_doc_converted path=%s out_name=%s", path, name)
                 except DocConvertError as exc:
-                    LOGGER.warning("read_file_doc_convert_failed path=%s error=%s", path, exc)
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                    # 与上传降级保持一致：无 LibreOffice/Word 时返回原始 .doc 字节，由前端 CFB 解析
+                    LOGGER.warning("read_file_doc_convert_failed_keep_legacy path=%s error=%s", path, exc)
             media_type = _media_type_for_binary_download(name)
             headers = {
                 **_deprecation_headers(),

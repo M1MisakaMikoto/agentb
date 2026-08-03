@@ -21,13 +21,15 @@ RUN apt-get update \
         libsm6 \
         libxext6 \
         libxrender1 \
+        libreoffice-core \
+        libreoffice-writer \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./requirements.txt
 
 RUN pip install --upgrade pip setuptools wheel \
-    && pip install -r requirements.txt \
-    && pip install gunicorn psutil
+    && pip install --retries 5 --timeout 120 -r requirements.txt \
+    && pip install --retries 5 --timeout 120 gunicorn psutil
 
 COPY . .
 
