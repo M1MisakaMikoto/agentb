@@ -23,6 +23,7 @@ RUN apt-get update \
         libxrender1 \
         libreoffice-core \
         libreoffice-writer \
+        libreoffice-impress \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./requirements.txt

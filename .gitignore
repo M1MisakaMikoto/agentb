@@ -64,3 +64,5 @@ setup/tinytex/
 
 # TinyTeX download artifacts
 TinyTeX-*.zip
+
+.idea
