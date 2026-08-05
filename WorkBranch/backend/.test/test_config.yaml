@@ -2,9 +2,9 @@
 # 测试配置：API端点、测试套件、场景参数
 
 api:
-  base_url: "http://127.0.0.1:8000"
+  base_url: "http://127.0.0.1:8152/api"
   host: "127.0.0.1"
-  port: 8000
+  port: 8152
   timeout:
     connect: 30.0
     read: 300.0
@@ -32,36 +32,53 @@ api:
       approve: "/plan/update"
 
 suites:
-  qiaozitang:
-    description: "桥梓塘立交1-5月跨报告聚合查询"
+  distributed_regression: &distributed_regression
+    description: "Multi-worker affinity regression suite"
     scenarios:
+      - serial_mode
+      - workspace_upload_image_understanding
+      - workspace_upload_read_table_document
       - qiaozitang_monthly_query
-  submit_tools:
-    description: "submit 工具错误透传与路径解析"
-    scenarios:
-      - submit_tools_error_path
-  pdf:
-    description: "agent 通过 document w 生成结构化报告 PDF"
-    scenarios:
       - pdf_generate
-  all:
-    description: "全部场景"
-    scenarios:
-      - qiaozitang_monthly_query
-      - submit_tools_error_path
-      - pdf_generate
+      - sql_query
+      - sql_agent_bridge
+      - sql_silent_behavior
+      - sql_permission_fallback
+      - cross_lifecycle
+      - mq_resume
+      - parallel
+      - bridge_defect_extract_parallel
+      - persistent_disease_predict
+      - bridge_predict
+  all: *distributed_regression
 
 scenarios:
+  workspace_upload_image_understanding:
+    description: "Workspace image upload and vision understanding"
+    source_file: ".dev/fixture/测试图片.png"
+    required_files:
+      - ".dev/fixture/测试图片.png"
+  workspace_upload_read_table_document:
+    description: "Workspace Word table extraction"
+    source_file: ".dev/fixture/table_test_document.docx"
+    required_files:
+      - ".dev/fixture/table_test_document.docx"
   qiaozitang_monthly_query:
     description: "桥梓塘立交1-5月跨5份巡查报告聚合查询"
     source_files:
-      - ".dev/table/桥梁检测报告4/大渡口1月巡查报告.docx"
-      - ".dev/table/桥梁检测报告4/大渡口2月巡查报告.docx"
-      - ".dev/table/桥梁检测报告4/大渡口3月巡查报告.docx"
-      - ".dev/table/桥梁检测报告4/大渡口4月巡查报告.docx"
-      - ".dev/table/桥梁检测报告4/大渡口5月巡查报告.docx"
+      - ".dev/fixture/大渡口1月巡查报告.docx"
+      - ".dev/fixture/大渡口2月巡查报告.docx"
+      - ".dev/fixture/大渡口3月巡查报告.docx"
+      - ".dev/fixture/大渡口4月巡查报告.docx"
+      - ".dev/fixture/大渡口5月巡查报告.docx"
     prompt: "查询桥梓塘立交1-5月的数据"
     extraction_timeout: 300.0
+    required_files:
+      - ".dev/fixture/大渡口1月巡查报告.docx"
+      - ".dev/fixture/大渡口2月巡查报告.docx"
+      - ".dev/fixture/大渡口3月巡查报告.docx"
+      - ".dev/fixture/大渡口4月巡查报告.docx"
+      - ".dev/fixture/大渡口5月巡查报告.docx"
   submit_tools_error_path:
     description: "submit 工具错误透传(Bug1) + 相对路径解析(Bug2) 测试"
     stage_a_timeout: 180.0
@@ -70,5 +87,24 @@ scenarios:
     description: "SQL 工具失败回退测试 (验证 tool_history error 字段修复)"
     timeout: 240.0
   pdf_generate:
-    description: "agent 通过 document w 生成结构化报告 PDF 到 .test/output/"
+    description: "agent 通过 document w 在共享 workspace 中生成结构化 PDF"
     extraction_timeout: 300.0
+  bridge_defect_extract_parallel:
+    description: "Two concurrent bridge report extraction conversations"
+    required_files:
+      - ".dev/fixture/07 朝阳寺立交桥.doc"
+      - ".dev/fixture/09 陈家湾桥.doc"
+  persistent_disease_predict:
+    description: "Multi-year persistent disease prediction"
+    required_files:
+      - ".dev/fixture/周家堰桥+A级.pdf"
+      - ".dev/fixture/069周家堰桥+C级.pdf"
+      - ".dev/fixture/001周家堰桥+B级.doc"
+  bridge_predict:
+    description: "Bridge report prediction for 陈家阁大桥"
+    prediction_timeout: 600.0
+    required_files:
+      - ".dev/fixture/12陈家阁大桥定期检测2018.10.docx"
+      - ".dev/fixture/03 陈家阁大桥.doc"
+      - ".dev/fixture/09 陈家阁立交.doc"
+      - ".dev/fixture/003 陈家阁大桥+C级.doc"

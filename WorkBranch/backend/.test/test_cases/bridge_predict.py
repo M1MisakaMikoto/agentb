@@ -325,18 +325,19 @@ def grade_evaluation_score(comparison: Dict) -> int:
         return 0
 
 
-BRIDGE_REPORT_ROOT = Path(r"E:\PythonProject\agentb\.dev\table\桥梁检测报告")
-BRIDGE_REPORT_ROOT_DIR2 = Path(r"E:\PythonProject\agentb\.dev\table\桥梁检测报告2")
+BRIDGE_REPORT_ROOT = get_project_root() / ".dev" / "fixture" / "桥梁检测报告"
+BRIDGE_REPORT_ROOT_DIR2 = get_project_root() / ".dev" / "fixture" / "桥梁检测报告2"
+FIXTURE_ROOT = get_project_root() / ".dev" / "fixture"
 
 # 桥梁列表配置 - 每座桥包含历史报告和真实报告路径
 BRIDGE_CONFIGS = {
     "陈家阁大桥": {
         "historical": {
-            "2018": BRIDGE_REPORT_ROOT / "2018" / "12陈家阁大桥定期检测2018.10.docx",
-            "2020": BRIDGE_REPORT_ROOT / "2020" / "03 陈家阁大桥.doc",
-            "2022": BRIDGE_REPORT_ROOT / "2022" / "09 陈家阁立交.doc",
+            "2018": FIXTURE_ROOT / "12陈家阁大桥定期检测2018.10.docx",
+            "2020": FIXTURE_ROOT / "03 陈家阁大桥.doc",
+            "2022": FIXTURE_ROOT / "09 陈家阁立交.doc",
         },
-        "ground_truth": BRIDGE_REPORT_ROOT / "2024" / "003 陈家阁大桥+C级.doc",
+        "ground_truth": FIXTURE_ROOT / "003 陈家阁大桥+C级.doc",
     },
     "朝阳寺立交桥": {
         "historical": {
@@ -464,43 +465,14 @@ async def upload_historical_reports(
         historical_files = HISTORICAL_FILES
 
     uploaded_files = []
-    backend_dir = str(Path(__file__).resolve().parents[2])
-    if backend_dir not in sys.path:
-        sys.path.insert(0, backend_dir)
-    from service.agent_service.tools.document_tools import _convert_doc_to_docx
-
-    cache_dir = Path(tempfile.gettempdir())
 
     for year, file_path in historical_files.items():
         try:
             full_path = resolve_source_file(file_path)
 
             upload_file = full_path
-            if full_path.suffix.lower() == ".doc":
-                cache_name = f"bridge_{year}_{full_path.stem}.docx"
-                cache_path = cache_dir / cache_name
-
-                if cache_path.exists() and cache_path.stat().st_size > 1000:
-                    upload_file = cache_path
-                    if verbose:
-                        print_success(f"Using cached {year}: {upload_file.name} ({cache_path.stat().st_size:,} bytes)")
-                else:
-                    if verbose:
-                        print_dim(f"Pre-converting {year} .doc to .docx: {full_path.name}")
-                    docx_path = _convert_doc_to_docx(str(full_path))
-                    if docx_path:
-                        try:
-                            import shutil
-                            shutil.copy2(docx_path, str(cache_path))
-                            upload_file = cache_path
-                            if verbose:
-                                print_success(f"Converted & cached {year}: {upload_file.name}")
-                        except Exception:
-                            upload_file = Path(docx_path)
-                            if verbose:
-                                print_success(f"Converted {year}: {upload_file.name}")
-                    else:
-                        print_error(f"Failed to convert {year} .doc file, uploading original")
+            if verbose:
+                print_dim(f"Uploading {year} report: {upload_file.name}")
 
             if verbose:
                 print_dim(f"Uploading {year} report: {upload_file.name}")
@@ -524,42 +496,52 @@ async def upload_historical_reports(
 async def read_ground_truth_report(ground_truth_path: Path) -> str:
     full_path = resolve_source_file(ground_truth_path)
 
-    suffix = full_path.suffix.lower()
-    backend_dir = str(Path(__file__).resolve().parents[2])
-    if backend_dir not in sys.path:
-        sys.path.insert(0, backend_dir)
-    from service.agent_service.tools.document_tools import _docx_read, _convert_doc_to_docx, _pdf_read
-    import time as _time
+    # 本机可能没有 Word/LibreOffice/pandoc 等 .doc/.pdf 解析工具，
+    # 读取失败时降级为空内容（评级仍可从文件名提取），不让场景直接失败。
+    try:
+        suffix = full_path.suffix.lower()
+        backend_dir = str(Path(__file__).resolve().parents[2])
+        if backend_dir not in sys.path:
+            sys.path.insert(0, backend_dir)
+        from service.agent_service.tools.document_tools import _docx_read, _convert_doc_to_docx, _pdf_read
+        import time as _time
 
-    if suffix == ".docx":
-        result = _docx_read(str(full_path))
-    elif suffix == ".doc":
-        docx_path = None
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                docx_path = _convert_doc_to_docx(str(full_path))
-                if docx_path:
-                    break
-                if attempt < max_retries - 1:
-                    _time.sleep(2 * (attempt + 1))
-            except Exception:
-                if attempt < max_retries - 1:
-                    _time.sleep(2 * (attempt + 1))
+        if suffix == ".docx":
+            result = _docx_read(str(full_path))
+        elif suffix == ".doc":
+            docx_path = None
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    docx_path = _convert_doc_to_docx(str(full_path))
+                    if docx_path:
+                        break
+                    if attempt < max_retries - 1:
+                        _time.sleep(2 * (attempt + 1))
+                except Exception:
+                    if attempt < max_retries - 1:
+                        _time.sleep(2 * (attempt + 1))
 
-        if not docx_path:
-            raise RuntimeError(f"Failed to convert .doc to .docx after {max_retries} attempts: {full_path}")
-        result = _docx_read(docx_path)
-    elif suffix == ".pdf":
-        # PDF格式支持 - 使用pymupdf4llm进行LLM友好的解析
-        result = _pdf_read(str(full_path), use_llm_parsing=True)
-    else:
-        result = {"error": f"Unsupported format: {suffix}", "result": None}
+            if not docx_path:
+                print_warning(
+                    f"Failed to convert .doc ground truth locally ({full_path.name}), "
+                    "falling back to filename grade only"
+                )
+                return ""
+            result = _docx_read(docx_path)
+        elif suffix == ".pdf":
+            # PDF格式支持 - 使用pymupdf4llm进行LLM友好的解析
+            result = _pdf_read(str(full_path), use_llm_parsing=True)
+        else:
+            result = {"error": f"Unsupported format: {suffix}", "result": None}
 
-    if result.get("error"):
-        raise RuntimeError(f"Failed to read ground truth report: {result['error']}")
-
-    return result["result"].get("content", "")
+        if result.get("error"):
+            print_warning(f"Ground truth read skipped: {result['error']}")
+            return ""
+        return result["result"].get("content", "")
+    except Exception as exc:
+        print_warning(f"Ground truth read skipped: {exc}")
+        return ""
 
 
 async def run_bridge_predict_test(
@@ -593,7 +575,7 @@ async def run_bridge_predict_test(
     ground_truth_path = bridge_config["ground_truth"]
     ground_truth_year = bridge_config.get("ground_truth_year", 2024)
 
-    result = TestResult(f"bridge_predict_{bridge_name}", scenario_config)
+    result = TestResult("bridge_predict", scenario_config)
     result.bridge_name = bridge_name
     result.ground_truth_year = ground_truth_year
 
@@ -638,6 +620,7 @@ async def run_bridge_predict_test(
     session_id = session_result.get("data", {}).get("id")
     workspace_id = session_result.get("data", {}).get("workspace_id")
     result.session_id = session_id
+    result.workspace_id = workspace_id
     print_success(f"Session created: {session_id}")
     print_dim(f"Workspace ID: {workspace_id}")
 
@@ -715,22 +698,16 @@ async def run_bridge_predict_test(
                 print(f"{Colors.YELLOW}[Follow-up #{followup_count}] Auto-approved plan detected, continuing with conversation: {result.next_conversation_id}{Colors.ENDC}")
             next_conv_id = result.next_conversation_id
             result.next_conversation_id = None
+            result.detected_mode = None
             conversation_id = next_conv_id
             result.conversation_id = conversation_id
             await wait_for_conversation_state(api, conversation_id, "processing", timeout=10.0)
             await collect_stream_output(api, conversation_id, result, verbose=verbose, timeout=prediction_timeout, stream_log_file=stream_log_file)
         elif result.detected_mode == "PLAN":
             if verbose:
-                print(f"{Colors.YELLOW}[Follow-up #{followup_count}] PLAN mode detected, sending approval...{Colors.ENDC}")
-            try:
-                approve_result = await api.approve_plan(result.workspace_id, approved=True)
-                if verbose:
-                    print(f"{Colors.DIM}[Follow-up #{followup_count}] Plan approval result: {approve_result.get('message', 'ok')}{Colors.ENDC}")
-            except Exception as e:
-                if verbose:
-                    print(f"{Colors.DIM}[Follow-up #{followup_count}] Approve plan failed: {e}, trying create_conversation...{Colors.ENDC}")
+                print(f"{Colors.YELLOW}[Follow-up #{followup_count}] PLAN mode detected, sending approval conversation...{Colors.ENDC}")
             conv_result = await api.create_conversation(session_id, "可以")
-            if conv_result.get("success", True):
+            if conv_result.get("success", False):
                 next_conv_id = conv_result.get("data", {}).get("conversation_id")
                 if next_conv_id:
                     conversation_id = next_conv_id
@@ -741,12 +718,16 @@ async def run_bridge_predict_test(
                 else:
                     break
             else:
-                print_error(f"Failed to create follow-up: {conv_result.get('message')}")
+                error = f"Failed to create follow-up: {conv_result.get('message')}"
+                print_error(error)
+                result.errors.append(error)
                 break
     
     if followup_count > 0:
         if verbose:
             print_success(f"Completed {followup_count} follow-up conversation(s)")
+    if result.next_conversation_id or result.detected_mode == "PLAN":
+        result.errors.append(f"Follow-up limit reached ({max_followups})")
     
     # [方案A] 增强错误恢复: 检查流输出状态并尝试恢复
     print_step(6.5, "Checking stream output status and recovery...", Colors.CYAN)

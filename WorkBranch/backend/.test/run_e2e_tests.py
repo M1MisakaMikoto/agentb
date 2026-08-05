@@ -8,7 +8,9 @@ E2E Tests Runner
 import argparse
 import asyncio
 import json
+import re
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -211,6 +213,12 @@ Examples:
         action="store_true",
         help="List available suites and scenarios"
     )
+
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="Validate selected scenario fixture files without calling the API",
+    )
     
     return parser.parse_args()
 
@@ -247,19 +255,69 @@ def get_scenarios_to_run(config: Dict, suite: Optional[str], scenario: Optional[
     return config.get("suites", {}).get("all", {}).get("scenarios", list(SCENARIO_RUNNERS.keys()))
 
 
+def validate_required_files(config: Dict, scenarios: List[str]) -> List[Path]:
+    project_root = Path(__file__).resolve().parents[3]
+    missing: List[Path] = []
+    seen = set()
+    for scenario_name in scenarios:
+        scenario_config = config.get("scenarios", {}).get(scenario_name, {})
+        for raw_path in scenario_config.get("required_files", []):
+            candidate = Path(raw_path)
+            if not candidate.is_absolute():
+                candidate = project_root / candidate
+            candidate = candidate.resolve()
+            key = str(candidate).casefold()
+            if key not in seen and not candidate.is_file():
+                seen.add(key)
+                missing.append(candidate)
+    return missing
+
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
 class OutputDuplicator:
     def __init__(self, file_path: Optional[str]):
+        self._terminal = sys.stdout
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
+        self._lock = threading.Lock()
         self.file = None
         if file_path:
-            self.file = open(file_path, "w", encoding="utf-8")
+            output_path = Path(file_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            self.file = open(output_path, "w", encoding="utf-8")
+        self.encoding = getattr(self._terminal, "encoding", "utf-8")
     
     def write(self, text: str):
-        print(text)
-        if self.file:
-            self.file.write(text + "\n")
-            self.file.flush()
+        if not text:
+            return 0
+        with self._lock:
+            self._terminal.write(text)
+            self._terminal.flush()
+            if self.file:
+                self.file.write(ANSI_ESCAPE_RE.sub("", text))
+                self.file.flush()
+        return len(text)
+
+    def flush(self):
+        with self._lock:
+            self._terminal.flush()
+            if self.file:
+                self.file.flush()
+
+    def isatty(self):
+        return False
+
+    def install(self):
+        sys.stdout = self
+        sys.stderr = self
     
     def close(self):
+        if sys.stdout is self:
+            sys.stdout = self._original_stdout
+        if sys.stderr is self:
+            sys.stderr = self._original_stderr
         if self.file:
             self.file.close()
 
@@ -269,7 +327,6 @@ async def run_tests(
     scenarios: List[str],
     start_server: bool,
     verbose: bool,
-    output: Optional[OutputDuplicator] = None,
 ) -> List[TestResult]:
     results = []
     backend_process = None
@@ -326,52 +383,66 @@ async def run_tests(
 
 def main():
     args = parse_args()
-    
-    config_path = Path(__file__).parent / "test_config.yaml"
-    if args.config:
-        config_path = Path(args.config)
+    output = OutputDuplicator(args.output) if args.output else None
+    if output:
+        output.install()
     
     try:
-        config = load_config(str(config_path))
-    except FileNotFoundError:
-        print(f"{Colors.RED}Error: Config file not found: {config_path}{Colors.ENDC}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"{Colors.RED}Error loading config: {e}{Colors.ENDC}")
-        sys.exit(1)
-    
-    if args.list:
-        list_suites_and_scenarios(config)
-        return
-    
-    print_banner()
-    
-    scenarios = get_scenarios_to_run(config, args.suite, args.scenario)
-    
-    print(f"{Colors.CYAN}Running scenarios:{Colors.ENDC}")
-    for s in scenarios:
-        print(f"  - {s}")
-    print()
-    
-    output = OutputDuplicator(args.output) if args.output else None
-    
-    start_time = time.time()
-    results = asyncio.run(run_tests(
-        config,
-        scenarios,
-        start_server=not args.no_server,
-        verbose=args.verbose,
-        output=output,
-    ))
-    total_duration = time.time() - start_time
-    
-    all_passed = print_summary(results, total_duration)
-    
-    if output:
-        output.close()
-    
-    sys.exit(0 if all_passed else 1)
+        config_path = Path(__file__).parent / "test_config.yaml"
+        if args.config:
+            config_path = Path(args.config)
+
+        try:
+            config = load_config(str(config_path))
+        except FileNotFoundError:
+            print(f"{Colors.RED}Error: Config file not found: {config_path}{Colors.ENDC}")
+            return 1
+        except Exception as e:
+            print(f"{Colors.RED}Error loading config: {e}{Colors.ENDC}")
+            return 1
+
+        if args.list:
+            list_suites_and_scenarios(config)
+            return 0
+
+        print_banner()
+
+        scenarios = get_scenarios_to_run(config, args.suite, args.scenario)
+
+        missing_files = validate_required_files(config, scenarios)
+        if missing_files:
+            print(f"{Colors.RED}Required E2E fixture files are missing:{Colors.ENDC}")
+            for missing_file in missing_files:
+                print(f"  - {missing_file}")
+            return 2
+        if args.preflight_only:
+            print(
+                f"{Colors.GREEN}E2E fixture preflight passed for "
+                f"{len(scenarios)} scenarios{Colors.ENDC}"
+            )
+            return 0
+
+        print(f"{Colors.CYAN}API base URL: {APIClient(config).base_url}{Colors.ENDC}")
+        print(f"{Colors.CYAN}Running scenarios:{Colors.ENDC}")
+        for scenario_name in scenarios:
+            print(f"  - {scenario_name}")
+        print()
+
+        start_time = time.time()
+        results = asyncio.run(run_tests(
+            config,
+            scenarios,
+            start_server=not args.no_server,
+            verbose=args.verbose,
+        ))
+        total_duration = time.time() - start_time
+
+        all_passed = print_summary(results, total_duration)
+        return 0 if all_passed else 1
+    finally:
+        if output:
+            output.close()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -12,14 +12,15 @@ x-agentb-environment: &agentb-environment
   AGENTB_WORKSPACE_DIR: /app/workspaces
   AGENTB_RAG_META_DB: /app/rag-data/file_meta.sqlite3
   AGENTB_RAG_DOCS_ROOT: /app/rag-docs
+  AGENTB_EMBEDDING_DISABLED: ${AGENTB_EMBEDDING_DISABLED:-1}
   MYSQL_HOST: ${MYSQL_HOST:-mysql}
   MYSQL_PORT: ${MYSQL_PORT:-3306}
   MYSQL_USER: ${MYSQL_USER:-agentb}
   MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change_me}
   MYSQL_DATABASE: ${MYSQL_DATABASE:-agentb}
   LLM_API_KEY: ${LLM_API_KEY:-}
-  LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-  LLM_MODEL: ${LLM_MODEL:-qwen3.6-plus}
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  LLM_MODEL: ${LLM_MODEL:-}
 
 x-agentb-backend: &agentb-backend
   build:
@@ -31,6 +32,7 @@ x-agentb-backend: &agentb-backend
   stop_grace_period: ${AGENTB_STOP_GRACE_PERIOD:-45s}
   environment: *agentb-environment
   volumes:
+    - ${AGENTB_SETTING_FILE:-./.dev/setting.json}:/app/setting.json:ro
     - agentb-workspaces:/app/workspaces
     - agentb-logs:/app/logs
     - agentb-rag-data:/app/rag-data
@@ -72,6 +74,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        INSTALL_RAG_DEPS: "1"
     restart: unless-stopped
     command: ["python", "-m", "rag.worker"]
     working_dir: /app/WorkBranch
@@ -81,8 +85,10 @@ services:
       AGENTB_INSTANCE_ID: agentb-rag-worker
       AGENTB_RAG_LEASE_SECONDS: ${AGENTB_RAG_LEASE_SECONDS:-1800}
     volumes:
+      - ${AGENTB_SETTING_FILE:-./.dev/setting.json}:/app/setting.json:ro
       - agentb-rag-data:/app/rag-data
       - agentb-rag-docs:/app/rag-docs
+      - agentb-easyocr-models:/root/.EasyOCR
     deploy:
       resources:
         limits:
@@ -94,3 +100,4 @@ volumes:
   agentb-logs:
   agentb-rag-data:
   agentb-rag-docs:
+  agentb-easyocr-models:

@@ -7,8 +7,12 @@ queue. MySQL remains the source of truth for Sessions and Conversations.
 
 ## Standalone mode
 
-Copy `.env.compose.example` to `.env.compose`, replace every password and API
-key, then start the stack:
+Copy `.env.compose.example` to `.env.compose`, set the database passwords, and
+point `AGENTB_SETTING_FILE` at the deployment settings file. The supplied
+development configuration is `.dev/setting.json`. It is mounted read-only as
+`/app/setting.json` in every API and RAG worker so all processes use the same
+LLM, tool, and timeout settings. Empty `LLM_*` values preserve the values in
+that file; non-empty environment values override them. Then start the stack:
 
 ```powershell
 docker compose --env-file .env.compose -f compose.yml -f compose.standalone.yml up -d
@@ -30,6 +34,10 @@ named volume. If the platform requires a bind mount, replace the volume source
 with a durable host path but keep the container target `/app/workspaces`, for
 example `/srv/agentb/workspaces:/app/workspaces`. The legacy single-instance
 `docker-compose.yml` uses `./workspaces:/app/workspaces`.
+
+The settings file is configuration, not workspace data. Deployments should
+mount it at `/app/setting.json`; workspace persistence must remain mounted at
+`/app/workspaces`.
 
 ## Platform mode
 
@@ -114,3 +122,48 @@ curl.exe http://127.0.0.1:8152/api/health
 docker compose -f compose.yml -f compose.standalone.yml ps
 docker compose -f compose.yml -f compose.standalone.yml logs agentb-router agentb-1 redis
 ```
+
+## Distributed regression suite
+
+The legacy backend E2E client has been adapted to the affinity contract. With
+an already healthy standalone stack on port 8152, run the affinity smoke test
+and the selected 16-scenario regression suite together:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy/e2e/run_regression.ps1
+```
+
+Use `-Port 8153` (or the next configured router port) when 8152 is occupied.
+Use `-ComposeMode platform` when collecting logs from the platform override.
+The command does not start or stop containers. It writes the suite output,
+affinity smoke output, Compose logs, and an exit-code summary under
+`WorkBranch/backend/.test/logs/distributed_<timestamp>/`.
+Before contacting the router it validates all fixture files declared by the
+selected scenarios. Missing files are listed in the suite log and the command
+stops with exit code 1 without creating test Sessions.
+The local input files live under `.dev/fixture` and are intentionally ignored
+by Git. See [e2e/FIXTURES.md](e2e/FIXTURES.md) for the exact file list.
+
+For long local builds or diagnostics, start the standalone WSL control console:
+
+```powershell
+cmd.exe /d /c wsl.exe --cd D:\dev\projects\agentb python3 deploy/e2e/debug_console.py --port 8153
+```
+
+Then open `http://127.0.0.1:8153/`. The console process keeps the WSL instance
+active while it runs. It exposes only fixed project actions, binds to localhost,
+and injects a per-process token into the page. It can start dependencies and
+workers in order, build or stop the stack, collect Compose logs, and launch the
+16-scenario regression command. Stop it with `Ctrl+C` when monitoring is done.
+
+For builds or regressions that need interactive monitoring, start the local
+control console:
+
+```powershell
+.venv\Scripts\python.exe deploy/e2e/control_console.py --port 8153
+```
+
+Open `http://127.0.0.1:8153`. If that port is occupied, the console selects the
+next free port through 8162 and prints the selected URL. It binds only to
+localhost and exposes fixed Compose, log, WSL keepalive, and regression actions;
+it does not accept arbitrary shell commands.

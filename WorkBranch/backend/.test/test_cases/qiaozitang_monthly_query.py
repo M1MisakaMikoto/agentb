@@ -5,11 +5,11 @@ Qiaozitang Overpass Monthly Query Test
 跨5份大渡口月度巡查报告，聚合查询"桥梓塘立交"1-5月的数据。
 
 测试文件:
-  .dev/table/桥梁检测报告4/大渡口1月巡查报告.docx
-  .dev/table/桥梁检测报告4/大渡口2月巡查报告.docx
-  .dev/table/桥梁检测报告4/大渡口3月巡查报告.docx
-  .dev/table/桥梁检测报告4/大渡口4月巡查报告.docx
-  .dev/table/桥梁检测报告4/大渡口5月巡查报告.docx
+  .dev/fixture/大渡口1月巡查报告.docx
+  .dev/fixture/大渡口2月巡查报告.docx
+  .dev/fixture/大渡口3月巡查报告.docx
+  .dev/fixture/大渡口4月巡查报告.docx
+  .dev/fixture/大渡口5月巡查报告.docx
 """
 
 from pathlib import Path
@@ -38,11 +38,11 @@ from .base import (
 
 # 5 份月度巡查报告（相对项目根目录）
 DEFAULT_SOURCE_FILES = [
-    ".dev/table/桥梁检测报告4/大渡口1月巡查报告.docx",
-    ".dev/table/桥梁检测报告4/大渡口2月巡查报告.docx",
-    ".dev/table/桥梁检测报告4/大渡口3月巡查报告.docx",
-    ".dev/table/桥梁检测报告4/大渡口4月巡查报告.docx",
-    ".dev/table/桥梁检测报告4/大渡口5月巡查报告.docx",
+    ".dev/fixture/大渡口1月巡查报告.docx",
+    ".dev/fixture/大渡口2月巡查报告.docx",
+    ".dev/fixture/大渡口3月巡查报告.docx",
+    ".dev/fixture/大渡口4月巡查报告.docx",
+    ".dev/fixture/大渡口5月巡查报告.docx",
 ]
 
 # 默认查询提示词

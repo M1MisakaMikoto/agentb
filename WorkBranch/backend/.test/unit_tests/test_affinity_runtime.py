@@ -1,11 +1,15 @@
 import asyncio
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from service.runtime.affinity import AffinityError, RuntimeState, validate_affinity_key
 from service.session_service.redis_mq import _seq_from_stream_id, _stream_id_from_seq
 from data.conversation_dao import ConversationDAO
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 class AffinityValidationTests(unittest.TestCase):
@@ -25,6 +29,13 @@ class AffinityValidationTests(unittest.TestCase):
                 _stream_id_from_seq(_seq_from_stream_id(stream_id)), stream_id
             )
             self.assertLess(_seq_from_stream_id(stream_id), 2**53)
+
+
+class SchemaCompatibilityTests(unittest.TestCase):
+    def test_running_session_generated_column_is_mysql_84_compatible(self):
+        mysql_source = (BACKEND_ROOT / "db" / "mysql.py").read_text(encoding="utf-8")
+        self.assertEqual(mysql_source.count(") VIRTUAL"), 2)
+        self.assertNotIn(") STORED", mysql_source)
 
 
 class RuntimeStateTests(unittest.IsolatedAsyncioTestCase):

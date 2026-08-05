@@ -13,9 +13,11 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+from urllib.parse import urlencode
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -402,13 +404,24 @@ class TestResult:
         }
 
 
+class AffinityProtocolError(RuntimeError):
+    pass
+
+
 class APIClient:
     def __init__(self, config: Dict, user_id: int = 1):
         self.config = config
         api_config = config.get("api", {})
-        self.base_url = api_config.get("base_url", "http://localhost:8000").rstrip("/")
+        self.base_url = os.getenv(
+            "AGENTB_E2E_API_BASE_URL",
+            api_config.get("base_url", "http://localhost:8000"),
+        ).rstrip("/")
         self.endpoints = api_config.get("endpoints", {})
         self.user_id = user_id
+        self._conversation_sessions: Dict[str, str] = {}
+        self._workspace_sessions: Dict[str, str] = {}
+        self._workspace_affinities: Dict[str, str] = {}
+        self._session_instances: Dict[str, str] = {}
         timeout_config = api_config.get("timeout", {})
         self.timeout = httpx.Timeout(
             connect=timeout_config.get("connect", 30.0),
@@ -417,15 +430,68 @@ class APIClient:
             pool=timeout_config.get("pool", 300.0),
         )
 
-    def _headers(self) -> dict:
-        return {
+    def bind_conversation(self, conversation_id: str, session_id: int | str) -> None:
+        self._conversation_sessions[str(conversation_id)] = str(session_id)
+
+    def session_for_conversation(self, conversation_id: str) -> Optional[str]:
+        return self._conversation_sessions.get(str(conversation_id))
+
+    def bind_workspace(
+        self,
+        workspace_id: str,
+        session_id: int | str,
+        affinity_key: int | str,
+    ) -> None:
+        key = str(workspace_id)
+        self._workspace_sessions[key] = str(session_id)
+        self._workspace_affinities[key] = str(affinity_key)
+
+    def session_for_workspace(self, workspace_id: str) -> Optional[str]:
+        return self._workspace_sessions.get(str(workspace_id))
+
+    def affinity_for_workspace(self, workspace_id: str) -> Optional[str]:
+        return self._workspace_affinities.get(str(workspace_id))
+
+    def observation_session_for_workspace(self, workspace_id: str) -> Optional[str]:
+        session_id = self.session_for_workspace(workspace_id)
+        affinity_key = self.affinity_for_workspace(workspace_id)
+        return session_id if session_id == affinity_key else None
+
+    def _headers(self, affinity_key: int | str | None = None) -> dict:
+        headers = {
             "Content-Type": "application/json",
             "X-User-ID": str(self.user_id),
         }
+        if affinity_key is not None:
+            headers["X-AgentB-Affinity-Key"] = str(affinity_key)
+        return headers
 
-    def _auth_headers(self) -> dict:
+    def _auth_headers(self, affinity_key: int | str | None = None) -> dict:
+        headers = {"X-User-ID": str(self.user_id)}
+        if affinity_key is not None:
+            headers["X-AgentB-Affinity-Key"] = str(affinity_key)
+        return headers
+
+    def _observe_instance(
+        self,
+        session_id: int | str | None,
+        instance_id: Optional[str],
+    ) -> None:
+        if session_id is None or not instance_id:
+            return
+        key = str(session_id)
+        previous = self._session_instances.setdefault(key, instance_id)
+        if previous != instance_id:
+            raise AffinityProtocolError(
+                f"Session {key} moved from {previous} to {instance_id}"
+            )
+
+    @staticmethod
+    def _response_diagnostics(response: httpx.Response) -> dict:
         return {
-            "X-User-ID": str(self.user_id),
+            "instance_id": response.headers.get("X-AgentB-Instance-ID"),
+            "owner_instance_id": response.headers.get("X-AgentB-Owner-ID"),
+            "retry_after": response.headers.get("Retry-After"),
         }
 
     def _get_endpoint(self, category: str, name: str, **kwargs) -> str:
@@ -435,19 +501,48 @@ class APIClient:
             path = path.replace(f"{{{key}}}", str(value))
         return path
 
-    async def _request(self, method: str, path: str, **kwargs) -> dict:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        affinity_key: int | str | None = None,
+        session_id: int | str | None = None,
+        **kwargs,
+    ) -> dict:
         url = f"{self.base_url}{path}"
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        request_headers = self._headers(affinity_key)
+        if "files" in kwargs:
+            request_headers.pop("Content-Type", None)
+        request_headers.update(kwargs.pop("headers", {}))
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
-                response = await client.request(method, url, headers=self._headers(), **kwargs)
+                response = await client.request(
+                    method,
+                    url,
+                    headers=request_headers,
+                    **kwargs,
+                )
+                diagnostics = self._response_diagnostics(response)
+                self._observe_instance(session_id, diagnostics["instance_id"])
                 try:
                     data = response.json()
                     if response.status_code >= 400:
+                        detail = data.get("detail", data) if isinstance(data, dict) else data
                         return {
                             "code": response.status_code,
-                            "message": data.get("detail", str(data)),
+                            "message": str(detail),
                             "data": None,
                             "success": False,
+                            **diagnostics,
+                        }
+                    if not isinstance(data, dict):
+                        return {
+                            "code": response.status_code,
+                            "message": "ok",
+                            "data": data,
+                            "success": True,
+                            **diagnostics,
                         }
                     api_code = data.get("code")
                     if api_code is not None and api_code != 200:
@@ -456,20 +551,54 @@ class APIClient:
                             "message": data.get("message", "Unknown error"),
                             "data": data.get("data"),
                             "success": False,
+                            **diagnostics,
                         }
-                    return {"success": True, **data}
+                    return {"success": True, **data, **diagnostics}
                 except Exception:
-                    return {"code": response.status_code, "message": response.text, "data": None, "success": False}
+                    return {
+                        "code": response.status_code,
+                        "message": response.text,
+                        "data": None,
+                        "success": False,
+                        **diagnostics,
+                    }
+            except AffinityProtocolError:
+                raise
             except Exception as e:
                 return {"code": -1, "message": str(e), "data": None, "success": False}
 
     async def create_session(self, title: str = "Test Session") -> dict:
         path = self._get_endpoint("session", "create")
-        return await self._request("POST", path, json={"title": title})
+        provisional_affinity = str(uuid.uuid4())
+        result = await self._request(
+            "POST",
+            path,
+            affinity_key=provisional_affinity,
+            json={"title": title},
+        )
+        if result.get("success"):
+            data = result.get("data") or {}
+            session_id = data.get("id") or data.get("session_id")
+            workspace_id = data.get("workspace_id")
+            if session_id is not None and workspace_id:
+                # Workspace APIs are not affinity-enforced, but routing their
+                # initial upload to the Session-creation worker avoids relying
+                # on another worker's in-memory workspace registry.
+                self.bind_workspace(
+                    str(workspace_id),
+                    session_id,
+                    provisional_affinity,
+                )
+        return result
 
     async def get_session(self, session_id: int) -> dict:
         path = self._get_endpoint("session", "get", session_id=session_id)
-        return await self._request("GET", path)
+        return await self._request(
+            "GET",
+            path,
+            affinity_key=session_id,
+            session_id=session_id,
+        )
 
     async def list_sessions(self) -> dict:
         path = self._get_endpoint("session", "list")
@@ -477,38 +606,93 @@ class APIClient:
 
     async def generate_session_title(self, session_id: int) -> dict:
         path = self._get_endpoint("session", "generate_title", session_id=session_id)
-        return await self._request("POST", path)
+        return await self._request(
+            "POST",
+            path,
+            affinity_key=session_id,
+            session_id=session_id,
+        )
 
-    async def create_conversation(self, session_id: int, user_content: str, user_content_parts: Optional[List[dict]] = None) -> dict:
+    async def create_conversation(
+        self,
+        session_id: int,
+        user_content: str,
+        user_content_parts: Optional[List[dict]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
         path = self._get_endpoint("conversation", "create", session_id=session_id)
         if user_content_parts:
             body = {"user_content_parts": user_content_parts}
         else:
             body = {"user_content": user_content}
-        return await self._request("POST", path, json=body)
+        body["idempotency_key"] = idempotency_key or str(uuid.uuid4())
+        result = await self._request(
+            "POST",
+            path,
+            affinity_key=session_id,
+            session_id=session_id,
+            json=body,
+        )
+        if result.get("success"):
+            data = result.get("data") or {}
+            conversation_id = data.get("conversation_id") or data.get("id")
+            if conversation_id:
+                self.bind_conversation(str(conversation_id), session_id)
+            for workspace_id, mapped_session in self._workspace_sessions.items():
+                if mapped_session == str(session_id):
+                    self._workspace_affinities[workspace_id] = str(session_id)
+        return result
 
     async def get_conversation(self, conversation_id: str) -> dict:
         path = self._get_endpoint("conversation", "get", conversation_id=conversation_id)
-        return await self._request("GET", path)
+        session_id = self.session_for_conversation(conversation_id)
+        return await self._request(
+            "GET",
+            path,
+            affinity_key=session_id,
+            session_id=session_id,
+        )
 
     async def get_plan_status(self, workspace_id: str) -> dict:
         path = self._get_endpoint("plan", "status", workspace_id=workspace_id)
-        return await self._request("GET", path)
+        session_id = self.observation_session_for_workspace(workspace_id)
+        return await self._request(
+            "GET",
+            path,
+            affinity_key=self.affinity_for_workspace(workspace_id),
+            session_id=session_id,
+        )
 
     async def approve_plan(self, workspace_id: str, approved: bool = True) -> dict:
         path = self._get_endpoint("plan", "approve")
+        session_id = self.observation_session_for_workspace(workspace_id)
         return await self._request(
-            "POST", path,
-            json={"workspace_id": workspace_id, "approved": approved}
+            "POST",
+            path,
+            affinity_key=self.affinity_for_workspace(workspace_id),
+            session_id=session_id,
+            json={"workspace_id": workspace_id, "approved": approved},
         )
 
     async def get_workspace(self, workspace_id: str) -> dict:
         path = self._get_endpoint("workspace", "get", workspace_id=workspace_id)
-        return await self._request("GET", path)
+        session_id = self.observation_session_for_workspace(workspace_id)
+        return await self._request(
+            "GET",
+            path,
+            affinity_key=self.affinity_for_workspace(workspace_id),
+            session_id=session_id,
+        )
 
     async def list_workspace_files(self, workspace_id: str) -> dict:
         path = self._get_endpoint("workspace", "list_files", workspace_id=workspace_id)
-        return await self._request("GET", path)
+        session_id = self.observation_session_for_workspace(workspace_id)
+        return await self._request(
+            "GET",
+            path,
+            affinity_key=self.affinity_for_workspace(workspace_id),
+            session_id=session_id,
+        )
 
     async def upload_workspace_file(self, workspace_id: str, file_path: Path) -> dict:
         path = self._get_endpoint("workspace", "upload_file", workspace_id=workspace_id)
@@ -526,46 +710,121 @@ class APIClient:
         suffix = file_path.suffix.lower()
         mime_type = mime_types.get(suffix, "application/octet-stream")
 
+        session_id = self.observation_session_for_workspace(workspace_id)
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                with open(file_path, "rb") as f:
-                    response = await client.post(
-                        f"{self.base_url}{path}",
-                        headers=self._auth_headers(),
-                        files=[("files", (file_path.name, f, mime_type))],
-                    )
-                try:
-                    data = response.json()
-                    if response.status_code >= 400:
-                        return {
-                            "code": response.status_code,
-                            "message": data.get("detail", str(data)),
-                            "data": None,
-                        }
-                    return data
-                except Exception:
-                    return {"code": response.status_code, "message": response.text, "data": None}
+            with open(file_path, "rb") as file_handle:
+                return await self._request(
+                    "POST",
+                    path,
+                    affinity_key=self.affinity_for_workspace(workspace_id),
+                    session_id=session_id,
+                    files=[("files", (file_path.name, file_handle, mime_type))],
+                )
         except Exception as e:
-            return {"code": -1, "message": str(e), "data": None}
+            return {"code": -1, "message": str(e), "data": None, "success": False}
+
+    async def create_rag_knowledge_base(self, name: str, description: str) -> dict:
+        return await self._request(
+            "POST",
+            "/rag/api/knowledge-bases",
+            json={"name": name, "description": description},
+        )
+
+    async def upload_rag_document(
+        self,
+        kb_id: int,
+        filename: str,
+        content: str,
+    ) -> dict:
+        return await self._request(
+            "POST",
+            "/rag/api/documents/upload",
+            data={"kb_id": str(kb_id)},
+            files={"file": (filename, content.encode("utf-8"), "text/plain")},
+        )
+
+    async def get_rag_job(self, job_id: int) -> dict:
+        return await self._request("GET", f"/rag/api/jobs/{job_id}")
+
+    async def delete_rag_document(self, document_id: int) -> dict:
+        return await self._request("DELETE", f"/rag/api/documents/{document_id}")
+
+    async def delete_rag_knowledge_base(self, kb_id: int) -> dict:
+        return await self._request("DELETE", f"/rag/api/knowledge-bases/{kb_id}")
+
+    async def wait_for_rag_job(self, job_id: int, timeout: float = 180.0) -> dict:
+        deadline = time.time() + timeout
+        last_result: dict = {}
+        while time.time() < deadline:
+            last_result = await self.get_rag_job(job_id)
+            if not last_result.get("success"):
+                return last_result
+            status = str(last_result.get("status") or "").lower()
+            if status in {"completed", "success", "succeeded", "ready"}:
+                return last_result
+            if status in {"failed", "cancelled"}:
+                return {
+                    **last_result,
+                    "success": False,
+                    "message": last_result.get("error_message") or status,
+                }
+            await asyncio.sleep(1.0)
+        return {
+            **last_result,
+            "success": False,
+            "message": f"RAG ingestion job {job_id} timed out after {timeout:.0f}s",
+        }
+
+    def stream_path(self, conversation_id: str, last_seq: int = 0) -> str:
+        session_id = self.session_for_conversation(conversation_id)
+        if session_id is None:
+            raise AffinityProtocolError(
+                f"No Session affinity is registered for Conversation {conversation_id}"
+            )
+        path = self._get_endpoint(
+            "conversation",
+            "stream",
+            conversation_id=conversation_id,
+        )
+        separator = "&" if "?" in path else "?"
+        return (
+            f"{path}{separator}"
+            f"{urlencode({'affinity_key': session_id, 'last_seq': last_seq})}"
+        )
 
     async def stream_message(self, conversation_id: str, last_seq: int = 0, use_v2: bool = False):
+        session_id = self.session_for_conversation(conversation_id)
+        if session_id is None:
+            raise AffinityProtocolError(
+                f"No Session affinity is registered for Conversation {conversation_id}"
+            )
         if use_v2:
             path = self._get_endpoint("conversation", "stream_v2", conversation_id=conversation_id)
+            separator = "&" if "?" in path else "?"
+            path = (
+                f"{path}{separator}"
+                f"{urlencode({'affinity_key': session_id, 'last_seq': last_seq})}"
+            )
         else:
-            path = self._get_endpoint("conversation", "stream", conversation_id=conversation_id)
-            path = f"{path}?last_seq={last_seq}"
+            path = self.stream_path(conversation_id, last_seq)
         
-        client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, read=30.0))
+        client = httpx.AsyncClient(timeout=self.timeout)
         try:
             method = "POST" if use_v2 else "GET"
-            async with client.stream(method, f"{self.base_url}{path}", headers=self._headers()) as response:
+            async with client.stream(
+                method,
+                f"{self.base_url}{path}",
+                headers=self._headers(session_id),
+            ) as response:
+                self._observe_instance(
+                    session_id,
+                    response.headers.get("X-AgentB-Instance-ID"),
+                )
                 if response.status_code != 200:
-                    try:
-                        error = await response.aread()
-                        yield {"type": "error", "raw": error.decode(), "status_code": response.status_code}
-                    except Exception as e:
-                        yield {"type": "error", "raw": str(e), "status_code": response.status_code}
-                    return
+                    error = await response.aread()
+                    raise RuntimeError(
+                        f"SSE HTTP {response.status_code}: {error.decode(errors='replace')}"
+                    )
 
                 async for line in response.aiter_lines():
                     yield {"raw_line": line}
@@ -582,11 +841,13 @@ async def wait_for_conversation_state(
 ) -> dict:
     deadline = time.time() + timeout
     last_result = None
+    last_state = None
     while time.time() < deadline:
         conversation_result = await api.get_conversation(conversation_id)
         last_result = conversation_result
         data = conversation_result.get("data") or {}
         current_state = data.get("state")
+        last_state = current_state
         
         if current_state == expected_state:
             return conversation_result
@@ -594,9 +855,23 @@ async def wait_for_conversation_state(
             return conversation_result
         if expected_state == "processing" and current_state == "completed":
             return conversation_result
+
+        if current_state in {"failed", "cancelled"}:
+            raise RuntimeError(
+                f"Conversation {conversation_id} reached terminal state "
+                f"{current_state!r} while waiting for {expected_state!r}"
+            )
         
         await asyncio.sleep(poll_interval)
-    return last_result
+
+    message = None
+    if isinstance(last_result, dict):
+        message = last_result.get("message")
+    detail = f"; last response: {message}" if message else ""
+    raise TimeoutError(
+        f"Conversation {conversation_id} did not reach {expected_state!r} "
+        f"within {timeout:.1f}s (last state: {last_state!r}){detail}"
+    )
 
 
 def extract_response_text(conversation_result: dict) -> str:
@@ -638,16 +913,20 @@ async def collect_stream_output(
     duplicate_count: int = 0
 
     deadline = time.time() + timeout
+    started_at = time.time()
     max_retries = 3
     retry_count = 0
     retry_delay = 2.0
+    last_seq = 0
+    completed_without_terminal_since: Optional[float] = None
+    terminal_event_grace_seconds = 10.0
     
     stream_log_fh = None
     if stream_log_file:
         try:
             log_path = Path(stream_log_file)
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            stream_log_fh = open(log_path, "w", encoding="utf-8")
+            stream_log_fh = open(log_path, "a", encoding="utf-8")
             
             header = "=" * 80 + "\n"
             header += f"E2E Stream Trace Log\n"
@@ -661,10 +940,43 @@ async def collect_stream_output(
             print(f"{Colors.RED}[stream_log] ERROR: Failed to open log file: {str(e)}{Colors.ENDC}")
             print(f"{Colors.RED}{traceback.format_exc()}{Colors.ENDC}")
             stream_log_fh = None
+
+    log_finished = False
+
+    def finish_stream_log() -> None:
+        nonlocal log_finished
+        if log_finished or stream_log_fh is None or stream_log_fh.closed:
+            return
+        log_finished = True
+        elapsed = time.time() - started_at
+        footer = "\n" + "=" * 80 + "\n"
+        footer += f"Ended: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        footer += f"Total Events: {result.event_count} | Tools: {result.tool_calls}\n"
+        footer += f"Last SSE ID: {last_seq} | Duration: {elapsed:.1f}s\n"
+        footer += "=" * 80 + "\n"
+        try:
+            _write_stream_log(stream_log_fh, footer)
+            stream_log_fh.close()
+            print(
+                f"{Colors.GREEN}[stream_log] Log saved: {stream_log_file} "
+                f"({result.event_count} events){Colors.ENDC}"
+            )
+        except Exception as e:
+            print(f"{Colors.YELLOW}[stream_log] Error closing log: {str(e)}{Colors.ENDC}")
+
+    async def close_pending(task) -> None:
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
     
     while retry_count <= max_retries and time.time() < deadline:
         try:
-            stream_iter = api.stream_message(conversation_id, use_v2=use_v2)
+            stream_iter = api.stream_message(
+                conversation_id,
+                last_seq=last_seq,
+                use_v2=use_v2,
+            )
             pending_item = None
             loop_count = 0
             consecutive_timeouts = 0
@@ -688,6 +1000,18 @@ async def collect_stream_output(
                     
                     if not done:
                         consecutive_timeouts += 1
+
+                        if (
+                            completed_without_terminal_since is not None
+                            and time.time() - completed_without_terminal_since
+                            >= terminal_event_grace_seconds
+                        ):
+                            result.errors.append(
+                                "conversation completed without terminal SSE event"
+                            )
+                            await close_pending(pending_item)
+                            finish_stream_log()
+                            return
                         
                         if verbose and consecutive_timeouts % 10 == 0:
                             print(f"{Colors.DIM}[wait timeout] checking conversation state... ({consecutive_timeouts}s idle){Colors.ENDC}")
@@ -701,10 +1025,9 @@ async def collect_stream_output(
                                 print(f"{Colors.DIM}[idle check] state={conv_state}{Colors.ENDC}")
                             if conv_state == "completed":
                                 if verbose:
-                                    print(f"{Colors.GREEN}[idle] Conversation completed, ending stream{Colors.ENDC}")
-                                result.done = True
-                                pending_item.cancel()
-                                return
+                                    print(f"{Colors.YELLOW}[idle] Conversation completed; waiting for terminal SSE event{Colors.ENDC}")
+                                if completed_without_terminal_since is None:
+                                    completed_without_terminal_since = time.time()
                             consecutive_timeouts = 0
                         continue
                     
@@ -714,23 +1037,43 @@ async def collect_stream_output(
                     
                 except StopAsyncIteration:
                     if verbose:
-                        print(f"{Colors.GREEN}[StopAsyncIteration] Stream ended{Colors.ENDC}")
-                    return
+                        print(f"{Colors.YELLOW}[StopAsyncIteration] Stream ended before terminal event{Colors.ENDC}")
+                    pending_item = None
+                    retry_count += 1
+                    if retry_count > max_retries:
+                        result.errors.append("stream ended without terminal SSE event")
+                        finish_stream_log()
+                        return
+                    if verbose:
+                        print(
+                            f"{Colors.YELLOW}[reconnect] Attempt "
+                            f"{retry_count}/{max_retries} from SSE id {last_seq}{Colors.ENDC}"
+                        )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                    break
                 except Exception as e:
                     error_str = str(e)
                     if verbose:
                         print(f"{Colors.RED}[stream error] {error_str}{Colors.ENDC}")
                     
-                    fatal_errors = ["404", "403", "401", "not found", "unauthorized"]
+                    fatal_errors = [
+                        "400", "401", "403", "404", "409",
+                        "not found", "unauthorized",
+                    ]
                     if any(err in error_str.lower() for err in fatal_errors):
                         if verbose:
                             print(f"{Colors.RED}[fatal] Fatal error, stopping{Colors.ENDC}")
+                        result.errors.append(f"stream fatal error: {error_str}")
+                        finish_stream_log()
                         return
                     
                     retry_count += 1
                     if retry_count > max_retries:
                         if verbose:
                             print(f"{Colors.RED}[retry exhausted] Max retries reached{Colors.ENDC}")
+                        result.errors.append(f"stream retries exhausted: {error_str}")
+                        finish_stream_log()
                         return
                     
                     if verbose:
@@ -776,12 +1119,19 @@ async def collect_stream_output(
                                 conv_state = conv_data.get("state")
                                 if conv_state == "completed":
                                     if verbose:
-                                        print(f"{Colors.GREEN}[heartbeat] Conversation completed{Colors.ENDC}")
-                                    result.done = True
-                                    return
+                                        print(f"{Colors.YELLOW}[heartbeat] Conversation completed; waiting for terminal SSE event{Colors.ENDC}")
+                                    if completed_without_terminal_since is None:
+                                        completed_without_terminal_since = time.time()
                     except Exception as heartbeat_err:
                         if verbose:
                             print(f"{Colors.DIM}[heartbeat error] {heartbeat_err}{Colors.ENDC}")
+                    continue
+
+                if raw_line.startswith("id:"):
+                    try:
+                        last_seq = max(last_seq, int(raw_line[3:].strip()))
+                    except ValueError:
+                        result.errors.append(f"invalid SSE id: {raw_line[3:].strip()}")
                     continue
 
                 if not raw_line.startswith("data: "):
@@ -795,6 +1145,10 @@ async def collect_stream_output(
                 # [FIX] 事件去重：根据 type + seq/id 组合去重
                 # 后端MQ有多订阅者，会发送重复事件，这里过滤掉重复事件
                 event_type = data.get("type", "unknown")
+                try:
+                    last_seq = max(last_seq, int(data.get("seq") or 0))
+                except (TypeError, ValueError):
+                    pass
                 event_key = data.get("seq") or data.get("id") or data.get("event_id") or f"{event_type}_{data.get('content', '')[:50]}"
                 dedup_key = f"{event_type}:{event_key}"
                 if dedup_key in seen_event_keys:
@@ -905,6 +1259,10 @@ async def collect_stream_output(
                     
                     if auto_approved and next_conv_id:
                         result.next_conversation_id = next_conv_id
+                    if next_conv_id:
+                        session_id = api.session_for_conversation(conversation_id)
+                        if session_id is not None:
+                            api.bind_conversation(next_conv_id, session_id)
                     
                     _write_stream_log(stream_log_fh, f"  Handoff: approved={auto_approved}, next={next_conv_id}\n")
                     if verbose:
@@ -914,6 +1272,7 @@ async def collect_stream_output(
                     _write_stream_log(stream_log_fh, f"  → Stream completed ✓\n")
                     if verbose:
                         print(f"{Colors.GREEN}[done] Stream completed{Colors.ENDC}")
+                    finish_stream_log()
                     return
                 elif event_type == "error":
                     error_content = data.get("content", "Unknown error")
@@ -921,6 +1280,15 @@ async def collect_stream_output(
                     _write_stream_log(stream_log_fh, f"  ✗ ERROR: {error_content}\n")
                     if verbose:
                         safe_print(f"{Colors.RED}[error] {error_content}{Colors.ENDC}")
+                    finish_stream_log()
+                    return
+                elif event_type == "cancelled":
+                    result.errors.append("conversation cancelled")
+                    _write_stream_log(stream_log_fh, "  ✗ Conversation cancelled\n")
+                    if verbose:
+                        print(f"{Colors.RED}[cancelled] Conversation cancelled{Colors.ENDC}")
+                    finish_stream_log()
+                    return
                 else:
                     preview = json.dumps(data, ensure_ascii=False)[:200]
                     _write_stream_log(stream_log_fh, f"  Raw: {preview}\n")
@@ -930,13 +1298,25 @@ async def collect_stream_output(
             if time.time() >= deadline:
                 if verbose:
                     print(f"{Colors.YELLOW}[timeout] Stream collection timeout after {timeout:.0f}s{Colors.ENDC}")
+                await close_pending(pending_item)
+                result.errors.append(f"stream timeout after {timeout:.0f}s")
+                finish_stream_log()
                 return
-        
+        except asyncio.CancelledError:
+            await close_pending(locals().get("pending_item"))
+            try:
+                await stream_iter.aclose()
+            except Exception:
+                pass
+            finish_stream_log()
+            raise
         except Exception as e:
             retry_count += 1
             if retry_count > max_retries:
                 if verbose:
                     print(f"{Colors.RED}[connection failed] Max retries exceeded: {str(e)}{Colors.ENDC}")
+                result.errors.append(f"stream connection failed: {e}")
+                finish_stream_log()
                 return
             
             if verbose:
@@ -944,23 +1324,14 @@ async def collect_stream_output(
             await asyncio.sleep(retry_delay)
             retry_delay *= 2
     
+    if not result.done and not result.errors:
+        result.errors.append("stream ended without terminal SSE event")
+
     if verbose:
         elapsed = time.time() - (deadline - timeout)
         print(f"{Colors.DIM}[completed] Stream collection ended after {elapsed:.0f}s, events={result.event_count}, tools={result.tool_calls}, duplicates_skipped={duplicate_count}{Colors.ENDC}")
     
-    if stream_log_fh and not stream_log_fh.closed:
-        footer = "\n" + "=" * 80 + "\n"
-        footer += f"Ended: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        footer += f"Total Events: {result.event_count} | Tools: {result.tool_calls}\n"
-        footer += f"Duration: {elapsed:.1f}s\n"
-        footer += "=" * 80 + "\n"
-        
-        try:
-            _write_stream_log(stream_log_fh, footer)
-            stream_log_fh.close()
-            print(f"{Colors.GREEN}[stream_log] Log saved: {stream_log_file} ({result.event_count} events){Colors.ENDC}")
-        except Exception as e:
-            print(f"{Colors.YELLOW}[stream_log] Error closing log: {str(e)}{Colors.ENDC}")
+    finish_stream_log()
 
 
 def _write_stream_log(fh, content: str):

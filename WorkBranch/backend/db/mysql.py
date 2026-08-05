@@ -184,7 +184,7 @@ class MySQLDatabase:
                         idempotency_key VARCHAR(128),
                         running_session_id INTEGER GENERATED ALWAYS AS (
                             CASE WHEN state = 'running' THEN session_id ELSE NULL END
-                        ) STORED,
+                        ) VIRTUAL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -197,7 +197,7 @@ class MySQLDatabase:
                     "idempotency_key": "ALTER TABLE conversations ADD COLUMN idempotency_key VARCHAR(128)",
                     "running_session_id": (
                         "ALTER TABLE conversations ADD COLUMN running_session_id INTEGER "
-                        "GENERATED ALWAYS AS (CASE WHEN state = 'running' THEN session_id ELSE NULL END) STORED"
+                        "GENERATED ALWAYS AS (CASE WHEN state = 'running' THEN session_id ELSE NULL END) VIRTUAL"
                     ),
                 }
                 for column_name, statement in column_migrations.items():
