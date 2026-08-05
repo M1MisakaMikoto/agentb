@@ -149,6 +149,9 @@ async def run_mq_resume_test(api: APIClient, scenario_config: dict, verbose: boo
     
     all_messages = first_messages + resumed_part.messages
     unique_seqs = set(msg.seq for msg in all_messages)
+
+    if not all_messages:
+        result.errors.append("No SSE messages received before or after resume")
     
     if len(unique_seqs) == len(all_messages):
         print_success("No duplicate messages - resume works correctly")
@@ -159,16 +162,22 @@ async def run_mq_resume_test(api: APIClient, scenario_config: dict, verbose: boo
     if resumed_part.done:
         print_success("Stream completed successfully after resume")
     else:
-        print_dim("Stream may not have completed (check conversation state)")
+        print_error("Resumed stream did not include a terminal event")
+        result.errors.append("Resumed stream did not include a terminal event")
     
     print_step(8, "Testing reconnection after completion...", Colors.CYAN)
     await asyncio.sleep(0.5)
     
     reconnect_part = await collect_stream_with_seq(api, conversation_id, last_seq=0, verbose=False)
-    if len(reconnect_part.messages) > 0:
-        print_success(f"Reconnection successful: {len(reconnect_part.messages)} messages received")
+    if reconnect_part.messages and reconnect_part.done:
+        print_success(
+            f"Completed stream replayed: {len(reconnect_part.messages)} messages received"
+        )
     else:
-        print_dim("No messages on reconnection (expected for completed conversation)")
+        print_error("Completed stream was not durably replayable from sequence 0")
+        result.errors.append(
+            "Completed stream was not durably replayable from sequence 0"
+        )
     
     result.response_text = f"First part: {len(first_messages)} messages\nResumed: {len(resumed_part.messages)} messages"
     result.event_count = len(all_messages)

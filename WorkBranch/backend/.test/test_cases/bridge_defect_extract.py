@@ -3,7 +3,7 @@
 Bridge Defect Extraction Test
 
 从桥梁检测报告中提取病害数据
-测试文件: .dev/table/桥梁检测报告/2020/07 朝阳寺立交桥.doc
+测试文件: .dev/fixture/07 朝阳寺立交桥.doc
 """
 
 import asyncio
@@ -37,7 +37,7 @@ from .base import (
 # ============================================================
 
 # 测试文件路径 - 陈家湾桥 2020年检测报告
-TEST_FILE_PATH = Path(".dev/table/桥梁检测报告/2020/09 陈家湾桥.doc")
+TEST_FILE_PATH = Path(".dev/fixture/09 陈家湾桥.doc")
 
 # 病害提取提示词 - 要求完整结构化输出
 DEFECT_EXTRACTION_PROMPT = """请分析这份桥梁检测报告，逐项提取病害信息。
@@ -309,22 +309,16 @@ async def run_defect_extraction_test(
                 print(f"{Colors.YELLOW}[Follow-up #{followup_count}] Auto-approved plan detected{Colors.ENDC}")
             next_conv_id = result.next_conversation_id
             result.next_conversation_id = None
+            result.detected_mode = None
             conversation_id = next_conv_id
             result.conversation_id = conversation_id
             await wait_for_conversation_state(api, conversation_id, "processing", timeout=10.0)
             await collect_stream_output(api, conversation_id, result, verbose=verbose, timeout=extraction_timeout, stream_log_file=stream_log_file)
         elif result.detected_mode == "PLAN":
             if verbose:
-                print(f"{Colors.YELLOW}[Follow-up #{followup_count}] PLAN mode detected, sending approval...{Colors.ENDC}")
-            try:
-                approve_result = await api.approve_plan(result.workspace_id, approved=True)
-                if verbose:
-                    print(f"{Colors.DIM}[Follow-up #{followup_count}] Plan approval result: {approve_result.get('message', 'ok')}{Colors.ENDC}")
-            except Exception as e:
-                if verbose:
-                    print(f"{Colors.DIM}[Follow-up #{followup_count}] Approve plan failed: {e}{Colors.ENDC}")
+                print(f"{Colors.YELLOW}[Follow-up #{followup_count}] PLAN mode detected, sending approval conversation...{Colors.ENDC}")
             conv_result = await api.create_conversation(session_id, "可以")
-            if conv_result.get("success", True):
+            if conv_result.get("success", False):
                 next_conv_id = conv_result.get("data", {}).get("conversation_id")
                 if next_conv_id:
                     conversation_id = next_conv_id
@@ -332,9 +326,16 @@ async def run_defect_extraction_test(
                     result.detected_mode = None
                     await wait_for_conversation_state(api, conversation_id, "processing", timeout=10.0)
                     await collect_stream_output(api, conversation_id, result, verbose=verbose, timeout=extraction_timeout, stream_log_file=stream_log_file)
+            else:
+                error = f"Failed to create follow-up: {conv_result.get('message')}"
+                print_error(error)
+                result.errors.append(error)
+                break
 
     if followup_count > 0 and verbose:
         print_success(f"Completed {followup_count} follow-up conversation(s)")
+    if result.next_conversation_id or result.detected_mode == "PLAN":
+        result.errors.append(f"Follow-up limit reached ({max_followups})")
 
     # 检查流输出状态
     print_step(6.5, "Checking stream output status...", Colors.CYAN)

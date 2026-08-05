@@ -1,0 +1,11 @@
+.git
+.dev
+.venv
+.vscode
+node_modules
+__pycache__
+*.pyc
+workspaces
+WorkBranch/backend/.test/logs
+deploy/e2e/__pycache__
+*.log

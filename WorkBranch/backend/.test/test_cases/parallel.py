@@ -75,6 +75,7 @@ async def run_single_parallel_test(
                 
                 result = TestResult(f"parallel_{process_id}", {})
                 await collect_stream_output(test_api, conversation_id, result, verbose=False)
+                errors.extend(result.errors)
                 
                 final_result = await wait_for_conversation_state(test_api, conversation_id, "completed", timeout=120.0)
                 response_text = extract_response_text(final_result)
@@ -86,6 +87,10 @@ async def run_single_parallel_test(
     
     keywords_found = [kw for kw in keywords if kw in response_text]
     keywords_missing = [kw for kw in keywords if kw not in response_text]
+    if not response_text:
+        errors.append("No response text found")
+    if keywords_missing:
+        errors.append(f"Missing keywords: {', '.join(keywords_missing)}")
     
     return ParallelTestResult(
         process_id=process_id,
@@ -144,6 +149,9 @@ async def run_parallel_test(api: APIClient, scenario_config: dict, verbose: bool
         
         if res.errors:
             print_error(f"    Errors: {res.errors}")
+            result.errors.extend(
+                f"{res.process_id}: {error}" for error in res.errors
+            )
             all_passed = False
         else:
             print_success(f"    Completed successfully")

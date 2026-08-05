@@ -106,7 +106,8 @@ def get_conversation_dao():
 
 @lru_cache(maxsize=1)
 def get_message_queue() -> MessageQueue:
-    from service.session_service.mq import HybridMessageQueue
+    import os
+
     settings = get_settings_service()
     try:
         db_path = settings.get("mq:db_path")
@@ -118,6 +119,18 @@ def get_message_queue() -> MessageQueue:
     except KeyError:
         max_size = 1000
     
+    redis_url = os.getenv("AGENTB_REDIS_URL", "").strip()
+    if redis_url:
+        from service.session_service.redis_mq import RedisStreamMessageQueue
+
+        return RedisStreamMessageQueue(
+            redis_url=redis_url,
+            prefix=os.getenv("AGENTB_REDIS_PREFIX", "agentb:dev:"),
+            max_size=int(os.getenv("AGENTB_STREAM_MAXLEN", str(max_size))),
+            retention_seconds=int(os.getenv("AGENTB_STREAM_RETENTION_SECONDS", "86400")),
+        )
+
+    from service.session_service.mq import HybridMessageQueue
     return HybridMessageQueue(db_path=db_path, max_size=max_size)
 
 
@@ -139,6 +152,12 @@ async def clear_all_singletons_async():
     """清除所有单例缓存并关闭已打开的资源。"""
     global _mysql_pool_instance
     global _mysql_sync_instance
+
+    if get_message_queue.cache_info().currsize:
+        try:
+            await get_message_queue().stop_consumer()
+        except Exception:
+            pass
 
     try:
         get_logging_runtime().shutdown()

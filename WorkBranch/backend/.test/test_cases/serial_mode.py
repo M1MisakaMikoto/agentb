@@ -77,6 +77,9 @@ async def run_serial_mode_test(api: APIClient, scenario_config: dict, verbose: b
     print_step(8, "Streaming second response...", Colors.CYAN)
     second_result = TestResult("serial_mode_2", scenario_config)
     await collect_stream_output(api, conversation_id2, second_result, verbose=verbose)
+    result.errors.extend(
+        f"second_stream: {error}" for error in second_result.errors
+    )
     
     print_step(9, "Waiting for second conversation to complete...", Colors.CYAN)
     second_final = await wait_for_conversation_state(api, conversation_id2, "completed", timeout=60.0)

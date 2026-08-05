@@ -144,13 +144,6 @@ class HybridMessageQueue:
 
     def _cleanup_conversation(self, conversation_id: str) -> None:
         try:
-            with sqlite3.connect(self._db_path) as conn:
-                conn.execute(
-                    "DELETE FROM message_stream WHERE conversation_id = ?",
-                    (conversation_id,)
-                )
-                conn.commit()
-
             with self._stream_states_lock:
                 if conversation_id in self._stream_states:
                     self._stream_states[conversation_id].is_completed = True
@@ -186,6 +179,7 @@ class HybridMessageQueue:
             SILENT_MODE_ALLOWED_TYPES = {
                 "done",           # 最终结果（必须）
                 "error",          # 错误信息（必须）
+                "cancelled",      # 取消终态（必须）
                 "heartbeat",      # 心跳信号（保持连接）
                 "conversation_handoff",  # 会话交接（可选，视业务需求）
             }
@@ -231,7 +225,7 @@ class HybridMessageQueue:
 
             print(f"[MQ] publish_sync: conv={message.conversation_id}, type={message.type.value}, seq={seq}, subscribers={len(self._subscribers.get(message.conversation_id, []))}")
 
-            if message.type == SegmentType.DONE:
+            if message.type in {SegmentType.DONE, SegmentType.ERROR, SegmentType.CANCELLED}:
                 with self._stream_states_lock:
                     if message.conversation_id in self._stream_states:
                         self._stream_states[message.conversation_id].is_completed = True
@@ -262,7 +256,7 @@ class HybridMessageQueue:
             self._save_to_sqlite(message, seq)
             await self._async_queue.put((message, seq))
 
-            if message.type == SegmentType.DONE:
+            if message.type in {SegmentType.DONE, SegmentType.ERROR, SegmentType.CANCELLED}:
                 with self._stream_states_lock:
                     if message.conversation_id in self._stream_states:
                         self._stream_states[message.conversation_id].is_completed = True
@@ -326,7 +320,11 @@ class HybridMessageQueue:
         if row and row[0]:
             return {
                 "last_seq": row[0],
-                "is_completed": row[1] == SegmentType.DONE.value,
+                "is_completed": row[1] in {
+                    SegmentType.DONE.value,
+                    SegmentType.ERROR.value,
+                    SegmentType.CANCELLED.value,
+                },
                 "session_id": row[2] or "",
                 "workspace_id": row[3] or ""
             }

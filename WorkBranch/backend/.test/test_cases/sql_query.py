@@ -52,6 +52,8 @@ async def run_sql_query_test(api: APIClient, scenario_config: dict, verbose: boo
 
             local_result = TestResult(f"sub_{name}", {})
             await collect_stream_output(api, conv_id, local_result, verbose=verbose, timeout=timeout)
+            if local_result.errors:
+                raise RuntimeError("; ".join(local_result.errors))
             final = await wait_for_conversation_state(api, conv_id, "completed", timeout=timeout)
 
             final_text = extract_response_text(final)
@@ -84,9 +86,9 @@ async def run_sql_query_test(api: APIClient, scenario_config: dict, verbose: boo
         if has_crash:
             return False, f"Server crash: {response[:200]}"
         sql_called = any("sql" in t.lower() for t in local_result.tool_calls)
-        if len(response) > 10 or sql_called:
+        if sql_called and response:
             return True, f"SHOW DATABASES flow OK (sql_called={sql_called}), len={len(response)}"
-        return False, f"Response too short, tools={local_result.tool_calls}"
+        return False, f"SQL tool not called or response empty, tools={local_result.tool_calls}"
 
     await run_subtest(
         "T1_show_databases_flow",
@@ -103,9 +105,7 @@ async def run_sql_query_test(api: APIClient, scenario_config: dict, verbose: boo
         sql_called = any("sql" in t.lower() for t in local_result.tool_calls)
         if sql_called:
             return True, f"SQL tool called successfully, len={len(response)}"
-        if len(response) > 20:
-            return True, f"Response received, len={len(response)}"
-        return False, f"No SQL tool call and short response, tools={local_result.tool_calls}"
+        return False, f"SQL tool was not called, tools={local_result.tool_calls}"
 
     await run_subtest(
         "T2_select_query_flow",
@@ -123,9 +123,9 @@ async def run_sql_query_test(api: APIClient, scenario_config: dict, verbose: boo
         has_crash = any(k in response_lower for k in crash_keywords)
         if has_crash:
             return False, f"Server crash: {response[:200]}"
-        if has_block or len(response) > 0:
+        if has_block:
             return True, f"Dangerous operation blocked OK, len={len(response)}"
-        return True, f"Dangerous operation handled (no crash)"
+        return False, f"No write-blocking response found: {response[:200]}"
 
     await run_subtest(
         "T3_write_operation_blocked",
@@ -191,6 +191,11 @@ async def run_sql_agent_bridge_test(api: APIClient, scenario_config: dict, verbo
         print_success(f"Response length: {len(result.response_text)} chars")
     else:
         print_error("No response text found")
+        result.errors.append("No response text found")
+
+    if not any("sql" in tool_name.lower() for tool_name in result.tool_calls):
+        print_error("SQL tool was not called")
+        result.errors.append(f"SQL tool was not called; tools={result.tool_calls}")
 
     print(f"\n{Colors.GREEN}{'='*60}{Colors.ENDC}")
     print(f"{Colors.GREEN}  SQL Agent Bridge Test Completed{Colors.ENDC}")

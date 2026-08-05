@@ -4,16 +4,15 @@ PDF Generate Test
 
 测试 agent 通过 document 工具 w 操作生成结构化报告 PDF 的能力。
 验证内容：标题 / 段落 / 列表 / 表格 / 中英文混排。
-成品 PDF 输出到 .test/output/ 供人工打开核验。
+成品 PDF 输出到 Session workspace，并通过 workspace API 校验。
 """
 
-from pathlib import Path
+import asyncio
 
 from .base import (
     APIClient,
     TestResult,
     Colors,
-    get_project_root,
     get_timestamp,
     print_test_header,
     print_step,
@@ -30,15 +29,12 @@ from .base import (
 # 测试配置
 # ============================================================
 
-# 默认输出目录（相对项目根）
-DEFAULT_OUTPUT_DIR = ".test/output"
-
-# Prompt 模板：强制 agent 调用 document w 生成 PDF 到指定绝对路径
+# Prompt 模板：使用相对路径，让后端将文件解析到当前 Session workspace。
 DEFAULT_PROMPT_TEMPLATE = """请调用 document 工具（operation=w）生成一份结构化的桥梁定期检查报告 PDF 文件。
 
 要求：
-1. file_path 必须使用以下绝对路径（不要修改、不要使用其他路径）：
-{pdf_path}
+1. file_path 必须使用以下工作区相对路径（不要修改、不要使用其他路径）：
+{pdf_name}
 
 2. content 参数必须是 Markdown 格式，至少包含以下结构：
    - 一级标题：# 桥梁定期检查报告
@@ -56,38 +52,28 @@ DEFAULT_PROMPT_TEMPLATE = """请调用 document 工具（operation=w）生成一
 # 工具函数
 # ============================================================
 
-def _build_pdf_path() -> Path:
-    """构造 PDF 输出绝对路径：{project_root}/.test/output/pdf_generate_<timestamp>.pdf
-
-    并确保父目录存在。
-    """
-    project_root = get_project_root()
-    output_dir = project_root / DEFAULT_OUTPUT_DIR
-    output_dir.mkdir(parents=True, exist_ok=True)
-    pdf_name = f"pdf_generate_{get_timestamp()}.pdf"
-    return output_dir / pdf_name
-
-
-def _verify_pdf(pdf_path: Path) -> dict:
-    """校验 PDF 文件，返回 {exists, size, page_count, error}"""
-    info = {"exists": False, "size": 0, "page_count": 0, "error": None}
-    if not pdf_path.exists():
-        info["error"] = f"PDF 文件不存在: {pdf_path}"
-        return info
-    info["exists"] = True
-    info["size"] = pdf_path.stat().st_size
-    if info["size"] == 0:
-        info["error"] = f"PDF 文件大小为 0: {pdf_path}"
-        return info
-    try:
-        from pypdf import PdfReader
-        reader = PdfReader(str(pdf_path))
-        info["page_count"] = len(reader.pages)
-        if info["page_count"] < 1:
-            info["error"] = f"PDF 页数为 0: {pdf_path}"
-    except Exception as e:
-        info["error"] = f"PDF 读取失败（pypdf）: {e}"
-    return info
+async def _wait_for_workspace_pdf(
+    api: APIClient,
+    workspace_id: str,
+    pdf_name: str,
+    timeout: float,
+) -> dict | None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        files_result = await api.list_workspace_files(workspace_id)
+        if not files_result.get("success", True):
+            raise RuntimeError(
+                f"list_workspace_files: {files_result.get('message')}"
+            )
+        for file_info in files_result.get("data") or []:
+            if (
+                file_info.get("name") == pdf_name
+                and not file_info.get("is_dir", False)
+                and int(file_info.get("size") or 0) > 0
+            ):
+                return file_info
+        await asyncio.sleep(2.0)
+    return None
 
 
 # ============================================================
@@ -103,13 +89,12 @@ async def run_pdf_generate_test(
     验证 agent 调用 document w 生成结构化报告 PDF。
 
     流程：
-      1. 构造 PDF 输出绝对路径（.test/output/）
+      1. 构造 workspace 相对 PDF 文件名
       2. 创建 session
       3. 发起对话（prompt 要求 agent 调 document w 生成 PDF）
       4. 流式收集响应
       5. 等待对话完成
-      6. 校验：document 工具被调用 + PDF 文件存在 + size>0 + 页数>=1
-      7. 醒目打印 PDF 绝对路径供人工核验
+      6. 校验：document 工具被调用 + workspace 中 PDF 存在且 size>0
     """
     result = TestResult("pdf_generate", scenario_config)
 
@@ -118,10 +103,10 @@ async def run_pdf_generate_test(
         "PDF Generate Test (agent 通过 document w 生成结构化报告 PDF)",
     ))
 
-    # ---------- Step 1: 构造 PDF 输出绝对路径 ----------
-    print_step(1, "Building PDF output path...", Colors.CYAN)
-    pdf_path = _build_pdf_path()
-    print_success(f"PDF target path: {pdf_path}")
+    # ---------- Step 1: 构造 workspace 相对文件名 ----------
+    print_step(1, "Building workspace PDF name...", Colors.CYAN)
+    pdf_name = f"pdf_generate_{get_timestamp()}.pdf"
+    print_success(f"PDF workspace target: {pdf_name}")
 
     # ---------- Step 2: 创建 session ----------
     print_step(2, "Creating session...", Colors.CYAN)
@@ -132,13 +117,15 @@ async def run_pdf_generate_test(
         return result
 
     session_id = session_result.get("data", {}).get("id")
+    workspace_id = session_result.get("data", {}).get("workspace_id")
     result.session_id = session_id
+    result.workspace_id = workspace_id
     print_success(f"Session created: {session_id}")
 
     # ---------- Step 3: 创建对话 ----------
     print_step(3, "Creating conversation with PDF generate prompt...", Colors.CYAN)
     prompt_template = scenario_config.get("prompt_template", DEFAULT_PROMPT_TEMPLATE)
-    prompt = prompt_template.format(pdf_path=str(pdf_path))
+    prompt = prompt_template.format(pdf_name=pdf_name, pdf_path=pdf_name)
     print_dim(f"Prompt length: {len(prompt)} chars")
 
     conv_result = await api.create_conversation(session_id, prompt)
@@ -184,35 +171,41 @@ async def run_pdf_generate_test(
         result.errors.append("document tool not called")
         validation_passed = False
 
-    # 校验 2: PDF 文件存在 + size>0 + 页数>=1
-    pdf_info = _verify_pdf(pdf_path)
-    if pdf_info["exists"]:
-        print_success(f"PDF exists: {pdf_path}")
-        print_dim(f"  size={pdf_info['size']} bytes, pages={pdf_info['page_count']}")
-    else:
-        print_error(pdf_info["error"])
+    # 校验 2: 共享 workspace 中 PDF 文件存在且非空
+    try:
+        pdf_info = await _wait_for_workspace_pdf(
+            api,
+            workspace_id,
+            pdf_name,
+            timeout=min(extraction_timeout, 120.0),
+        )
+    except Exception as exc:
+        pdf_info = None
+        result.errors.append(str(exc))
 
-    if pdf_info["error"]:
-        # 已存在的 error 不重复 append
-        if pdf_info["error"] not in result.errors:
-            result.errors.append(pdf_info["error"])
+    if pdf_info:
+        print_success(f"PDF exists in workspace: {pdf_info.get('path', pdf_name)}")
+        print_dim(f"  size={pdf_info.get('size', 0)} bytes")
+    else:
+        error = f"PDF not found or empty in workspace: {pdf_name}"
+        print_error(error)
+        if error not in result.errors:
+            result.errors.append(error)
         validation_passed = False
 
     # 记录到 result 供 summary 查看
     result.workspace_files_checked = True
-    result.prediction_report_found = pdf_info["exists"] and not pdf_info["error"]
-    result.prediction_report_name = str(pdf_path) if pdf_info["exists"] else None
-    result.prediction_report_size = pdf_info["size"]
+    result.prediction_report_found = pdf_info is not None
+    result.prediction_report_name = pdf_info.get("path") if pdf_info else None
+    result.prediction_report_size = pdf_info.get("size", 0) if pdf_info else 0
 
     # 汇总
     if validation_passed:
         print_success("All validations passed")
-        # 醒目打印 PDF 绝对路径供人工核验
         print(f"\n{Colors.GREEN}{'='*60}{Colors.ENDC}")
         print(f"{Colors.GREEN}  PDF generated successfully{Colors.ENDC}")
-        print(f"{Colors.GREEN}  Path:  {pdf_path}{Colors.ENDC}")
-        print(f"{Colors.GREEN}  Size:  {pdf_info['size']} bytes{Colors.ENDC}")
-        print(f"{Colors.GREEN}  Pages: {pdf_info['page_count']}{Colors.ENDC}")
+        print(f"{Colors.GREEN}  Workspace path: {pdf_info.get('path', pdf_name)}{Colors.ENDC}")
+        print(f"{Colors.GREEN}  Size: {pdf_info.get('size', 0)} bytes{Colors.ENDC}")
         print(f"{Colors.GREEN}{'='*60}{Colors.ENDC}\n")
     else:
         print_error("Some validations failed")

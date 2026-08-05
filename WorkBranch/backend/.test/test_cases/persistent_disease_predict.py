@@ -44,7 +44,7 @@ from .base import (
 # 测试配置 - 周家堰桥三年报告
 # ============================================================
 
-BRIDGE_REPORT_ROOT_DIR2 = Path(r"E:\PythonProject\agentb\.dev\table\桥梁检测报告2")
+BRIDGE_REPORT_ROOT_DIR2 = get_project_root() / ".dev" / "fixture"
 
 # 周家堰桥配置 - 有明显的病害演变历程
 PERSISTENT_DISEASE_CONFIG = {
@@ -52,17 +52,17 @@ PERSISTENT_DISEASE_CONFIG = {
     "bridge_id": "周家堰桥",
     "historical": {
         "2023": {
-            "file": BRIDGE_REPORT_ROOT_DIR2 / "2023年定检报告扫描版" / "周家堰桥+A级.pdf",
+            "file": BRIDGE_REPORT_ROOT_DIR2 / "周家堰桥+A级.pdf",
             "grade": "A",
             "description": "良好状态，作为基线"
         },
         "2024": {
-            "file": BRIDGE_REPORT_ROOT_DIR2 / "2024年大渡口区定期检查报告扫描件" / "069周家堰桥+C级.pdf",
+            "file": BRIDGE_REPORT_ROOT_DIR2 / "069周家堰桥+C级.pdf",
             "grade": "C",
             "description": "显著恶化，表明出现新的或加重的病害"
         },
         "2025": {
-            "file": BRIDGE_REPORT_ROOT_DIR2 / "2025大渡口定检0822" / "001周家堰桥+B级.doc",
+            "file": BRIDGE_REPORT_ROOT_DIR2 / "001周家堰桥+B级.doc",
             "grade": "B",
             "description": "部分恢复但仍未回到A级，存在持续病害"
         }
@@ -349,37 +349,12 @@ async def upload_historical_reports(
 ) -> List[str]:
     """上传多年的历史检测报告"""
     uploaded_files = []
-    backend_dir = str(Path(__file__).resolve().parents[2])
-    if backend_dir not in sys.path:
-        sys.path.insert(0, backend_dir)
-
-    from service.agent_service.tools.document_tools import _convert_doc_to_docx
-
-    cache_dir = Path(tempfile.gettempdir())
 
     for year, year_config in config["historical"].items():
         try:
             full_path = resolve_source_file(year_config["file"])
 
             upload_file = full_path
-            if full_path.suffix.lower() == ".doc":
-                cache_name = f"persistent_{year}_{full_path.stem}.docx"
-                cache_path = cache_dir / cache_name
-
-                if cache_path.exists() and cache_path.stat().st_size > 1000:
-                    upload_file = cache_path
-                    if verbose:
-                        print_success(f"Using cached {year}: {upload_file.name}")
-                else:
-                    if verbose:
-                        print_dim(f"Converting {year} .doc to .docx")
-                    docx_path = _convert_doc_to_docx(str(full_path))
-                    if docx_path:
-                        import shutil
-                        shutil.copy2(docx_path, str(cache_path))
-                        upload_file = cache_path
-                        if verbose:
-                            print_success(f"Converted & cached {year}: {upload_file.name}")
 
             if verbose:
                 print_dim(f"Uploading {year} report: {upload_file.name}")

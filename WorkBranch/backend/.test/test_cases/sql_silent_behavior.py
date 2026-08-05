@@ -67,6 +67,8 @@ async def run_sql_silent_behavior_test(api: APIClient, scenario_config: dict, ve
 
             local_result = TestResult(f"sub_{test_name}", {})
             await collect_stream_output(api, conv_id, local_result, verbose=verbose, timeout=timeout)
+            if local_result.errors:
+                raise RuntimeError("; ".join(local_result.errors))
             final = await wait_for_conversation_state(api, conv_id, "completed", timeout=timeout)
             final_response = extract_response_text(final)
             full_response = get_full_response(local_result, final_response)

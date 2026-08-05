@@ -108,7 +108,7 @@ async def run_cross_lifecycle_test(api: APIClient, scenario_config: dict, verbos
     
     print_step(8, "Verifying session persistence...", Colors.CYAN)
     session_check = await api.get_session(session_id)
-    if session_check.get("code") == 0:
+    if session_check.get("success", False):
         print_success("Session still exists after restart simulation")
     else:
         print_error(f"Session not found: {session_check.get('message')}")
@@ -117,7 +117,7 @@ async def run_cross_lifecycle_test(api: APIClient, scenario_config: dict, verbos
     print_step(9, "Second conversation - asking for secret code...", Colors.CYAN)
     second_prompt = scenario_config.get("second_prompt", "上一轮对话中的暗号是什么？请告诉我。")
     conv_result2 = await api.create_conversation(session_id, second_prompt)
-    if conv_result2.get("code") != 0:
+    if not conv_result2.get("success", False):
         print_error(f"Failed to create second conversation: {conv_result2.get('message')}")
         result.errors.append(f"create_conversation_2: {conv_result2.get('message')}")
         return result
@@ -131,6 +131,9 @@ async def run_cross_lifecycle_test(api: APIClient, scenario_config: dict, verbos
     print_step(11, "Streaming second response...", Colors.CYAN)
     second_result = TestResult("cross_lifecycle_2", scenario_config)
     await collect_stream_output(api, conversation_id2, second_result, verbose=verbose)
+    result.errors.extend(
+        f"second_stream: {error}" for error in second_result.errors
+    )
     
     print_step(12, "Waiting for second conversation to complete...", Colors.CYAN)
     second_final = await wait_for_conversation_state(api, conversation_id2, "completed", timeout=60.0)

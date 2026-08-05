@@ -24,6 +24,8 @@ class Conversation:
     thinking_content: Optional[str]
     state: str
     error: Optional[str]
+    owner_instance_id: Optional[str]
+    idempotency_key: Optional[str]
     created_at: str
     updated_at: str
 
@@ -79,14 +81,37 @@ class ConversationDAO:
         conversation_id: str,
         session_id: int,
         user_content: str,
-    ) -> None:
+        idempotency_key: Optional[str] = None,
+    ) -> bool:
         if not isinstance(user_content, str):
             user_content = serialize_parts(user_content)
         sql = '''
-            INSERT INTO conversations (id, session_id, user_content, state)
-            VALUES (%s, %s, %s, 'pending')
+            INSERT INTO conversations
+                (id, session_id, user_content, state, idempotency_key)
+            VALUES (%s, %s, %s, 'pending', %s)
         '''
-        await self._db.execute(sql, (conversation_id, session_id, user_content))
+        try:
+            await self._db.execute(
+                sql, (conversation_id, session_id, user_content, idempotency_key)
+            )
+            return True
+        except Exception as exc:
+            if idempotency_key and "Duplicate" in str(exc):
+                return False
+            raise
+
+    async def get_conversation_by_idempotency_key(
+        self, session_id: int, idempotency_key: str
+    ) -> Optional[Conversation]:
+        sql = '''
+            SELECT id, session_id, user_content, assistant_content,
+                   thinking_content, state, error, owner_instance_id,
+                   idempotency_key, created_at, updated_at
+            FROM conversations
+            WHERE session_id = %s AND idempotency_key = %s
+        '''
+        row = await self._db.fetch_one(sql, (session_id, idempotency_key))
+        return Conversation(**dict(row)) if row else None
 
     async def update_conversation(
         self,
@@ -97,6 +122,7 @@ class ConversationDAO:
         thinking_content: Optional[str] = None,
         state: Optional[str] = None,
         error: Optional[str] = None,
+        owner_instance_id: Optional[str] = None,
     ) -> None:
         updates = []
         params = []
@@ -118,6 +144,9 @@ class ConversationDAO:
         if error is not None:
             updates.append('error = %s')
             params.append(error)
+        if owner_instance_id is not None:
+            updates.append('owner_instance_id = %s')
+            params.append(owner_instance_id)
 
         if not updates:
             return
@@ -126,10 +155,60 @@ class ConversationDAO:
         sql = f"UPDATE conversations SET {', '.join(updates)} WHERE id = %s"
         await self._db.execute(sql, tuple(params))
 
+    async def transition_conversation_state(
+        self,
+        conversation_id: str,
+        expected_states: List[str],
+        new_state: str,
+        *,
+        owner_instance_id: Optional[str] = None,
+        assistant_content: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> bool:
+        if not expected_states:
+            return False
+        updates = ["state = %s"]
+        params: list = [new_state]
+        if owner_instance_id is not None:
+            updates.append("owner_instance_id = %s")
+            params.append(owner_instance_id)
+        if assistant_content is not None:
+            updates.append("assistant_content = %s")
+            params.append(assistant_content)
+        if error is not None:
+            updates.append("error = %s")
+            params.append(error)
+        placeholders = ", ".join(["%s"] * len(expected_states))
+        params.extend([conversation_id, *expected_states])
+        sql = (
+            f"UPDATE conversations SET {', '.join(updates)} "
+            f"WHERE id = %s AND state IN ({placeholders})"
+        )
+        return await self._db.execute_affected(sql, tuple(params)) == 1
+
+    async def fail_stale_running_conversations(
+        self, session_id: int, owner_instance_id: str
+    ) -> int:
+        sql = '''
+            UPDATE conversations
+            SET state = 'failed', error = %s
+            WHERE session_id = %s AND state = 'running'
+              AND (owner_instance_id IS NULL OR owner_instance_id <> %s)
+        '''
+        return await self._db.execute_affected(
+            sql,
+            (
+                "Previous owner lease expired before the task completed",
+                session_id,
+                owner_instance_id,
+            ),
+        )
+
     async def get_conversation_by_id(self, conversation_id: str) -> Optional[Conversation]:
         sql = '''
             SELECT id, session_id, user_content, assistant_content,
-                   thinking_content, state, error, created_at, updated_at
+                   thinking_content, state, error, owner_instance_id,
+                   idempotency_key, created_at, updated_at
             FROM conversations
             WHERE id = %s
         '''
@@ -141,7 +220,8 @@ class ConversationDAO:
     async def list_conversations_by_session(self, session_id: int) -> List[Conversation]:
         sql = '''
             SELECT id, session_id, user_content, assistant_content,
-                   thinking_content, state, error, created_at, updated_at
+                   thinking_content, state, error, owner_instance_id,
+                   idempotency_key, created_at, updated_at
             FROM conversations
             WHERE session_id = %s
             ORDER BY created_at ASC

@@ -126,10 +126,9 @@ def create_table_test_document(output_path: str) -> bool:
 
 
 if __name__ == '__main__':
-    # 默认输出路径
-    script_dir = Path(__file__).parent
-    test_data_dir = script_dir / 'test_data'
-    output_file = test_data_dir / 'table_test_document.docx'
+    # 默认输出到统一的本地 E2E fixture 目录。
+    project_root = Path(__file__).resolve().parents[3]
+    output_file = project_root / '.dev' / 'fixture' / 'table_test_document.docx'
 
     success = create_table_test_document(str(output_file))
     exit(0 if success else 1)

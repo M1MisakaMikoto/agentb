@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentB E2E Console</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: #f5f6f8;
+      color: #18202a;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; }
+    header {
+      height: 58px;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #17212b;
+      color: #fff;
+      border-bottom: 3px solid #d7a928;
+    }
+    h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: 0; }
+    .repo { max-width: 58vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #bac5d1; font: 12px Consolas, monospace; }
+    main { padding: 18px 24px 28px; max-width: 1600px; margin: 0 auto; }
+    .status-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1px;
+      border: 1px solid #cfd5dc;
+      background: #cfd5dc;
+    }
+    .metric { min-height: 70px; background: #fff; padding: 12px 14px; }
+    .metric-label { color: #66717d; font-size: 12px; }
+    .metric-value { margin-top: 8px; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+    .ok { color: #167247; }
+    .bad { color: #b2342d; }
+    .warn { color: #936a00; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 16px 0; border-bottom: 1px solid #d6dbe1; }
+    button {
+      min-height: 36px;
+      padding: 7px 12px;
+      border: 1px solid #aeb7c1;
+      border-radius: 4px;
+      background: #fff;
+      color: #1d2732;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #eef1f4; border-color: #7d8996; }
+    button:disabled { opacity: .48; cursor: not-allowed; }
+    button.primary { background: #176b52; border-color: #176b52; color: #fff; }
+    button.primary:hover { background: #105742; }
+    button.danger { color: #a12d28; border-color: #cfaaa7; }
+    .workspace { display: grid; grid-template-columns: minmax(360px, .85fr) minmax(480px, 1.45fr); gap: 20px; padding-top: 18px; }
+    section { min-width: 0; }
+    h2 { margin: 0 0 10px; font-size: 14px; letter-spacing: 0; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d2d8df; table-layout: fixed; }
+    th, td { padding: 9px 10px; border-bottom: 1px solid #e0e4e8; text-align: left; font-size: 12px; overflow-wrap: anywhere; }
+    th { color: #596572; background: #f0f2f4; font-weight: 650; }
+    th:nth-child(1) { width: 31%; }
+    th:nth-child(2) { width: 18%; }
+    th:nth-child(3) { width: 18%; }
+    tr:last-child td { border-bottom: 0; }
+    .log-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .job-meta { color: #66717d; font-size: 12px; text-align: right; }
+    pre {
+      margin: 0;
+      height: min(62vh, 680px);
+      min-height: 360px;
+      padding: 14px;
+      overflow: auto;
+      border: 1px solid #323c46;
+      background: #10161c;
+      color: #d7e0e8;
+      font: 12px/1.55 Consolas, "Cascadia Mono", monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .empty { color: #7c8792; }
+    #notice { min-height: 22px; margin-top: 10px; color: #a12d28; font-size: 12px; }
+    @media (max-width: 900px) {
+      header { padding: 0 14px; }
+      main { padding: 14px; }
+      .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .workspace { grid-template-columns: 1fr; }
+      pre { height: 52vh; min-height: 320px; }
+      .repo { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AgentB E2E Console</h1>
+    <div class="repo" id="repo">loading</div>
+  </header>
+  <main>
+    <div class="status-strip">
+      <div class="metric"><div class="metric-label">Router</div><div class="metric-value" id="router">checking</div></div>
+      <div class="metric"><div class="metric-label">API</div><div class="metric-value" id="api">checking</div></div>
+      <div class="metric"><div class="metric-label">WSL keepalive</div><div class="metric-value" id="keepalive">stopped</div></div>
+      <div class="metric"><div class="metric-label">Active job</div><div class="metric-value" id="active-job">none</div></div>
+    </div>
+
+    <div class="toolbar">
+      <button id="keepalive-toggle" data-keepalive="start">Start WSL keepalive</button>
+      <button class="primary action" data-action="compose_up">Start stack</button>
+      <button class="action" data-action="compose_build">Build and start</button>
+      <button class="danger action" data-action="compose_stop">Stop stack</button>
+      <button class="action" data-action="regression">Run regression</button>
+      <button class="action" data-action="compose_logs">Capture logs</button>
+      <button id="refresh">Refresh</button>
+    </div>
+
+    <div class="workspace">
+      <section>
+        <h2>Compose services</h2>
+        <table>
+          <thead><tr><th>Service</th><th>State</th><th>Health</th><th>Status</th></tr></thead>
+          <tbody id="services"><tr><td colspan="4" class="empty">No status yet</td></tr></tbody>
+        </table>
+        <div id="notice"></div>
+      </section>
+      <section>
+        <div class="log-head"><h2>Job log</h2><div class="job-meta" id="job-meta">No jobs</div></div>
+        <pre id="log">Waiting for an operation.</pre>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    let token = "";
+    let state = null;
+    let refreshBusy = false;
+
+    const text = (id, value, klass = "") => {
+      const element = document.getElementById(id);
+      element.textContent = value;
+      element.className = `metric-value ${klass}`;
+    };
+
+    async function request(path, options = {}) {
+      const headers = { ...(options.headers || {}) };
+      if (options.method === "POST") headers["X-Control-Token"] = token;
+      const response = await fetch(path, { ...options, headers });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload;
+    }
+
+    function healthLabel(item) {
+      if (item.ok) return [`HTTP ${item.status} · ${item.latency_ms} ms`, "ok"];
+      return [item.body || "unreachable", "bad"];
+    }
+
+    function render(next) {
+      state = next;
+      const [routerValue, routerClass] = healthLabel(next.router);
+      const [apiValue, apiClass] = healthLabel(next.api);
+      text("router", routerValue, routerClass);
+      text("api", apiValue, apiClass);
+      text("keepalive", next.keepalive.running ? "running" : "stopped", next.keepalive.running ? "ok" : "warn");
+      const active = next.active_job;
+      text("active-job", active ? `${active.action} · ${active.status}` : "none", active ? "warn" : "ok");
+
+      const toggle = document.getElementById("keepalive-toggle");
+      toggle.dataset.keepalive = next.keepalive.running ? "stop" : "start";
+      toggle.textContent = next.keepalive.running ? "Stop WSL keepalive" : "Start WSL keepalive";
+      toggle.disabled = Boolean(active);
+      document.querySelectorAll(".action").forEach(button => { button.disabled = Boolean(active); });
+
+      const services = next.compose.services || [];
+      const body = document.getElementById("services");
+      body.replaceChildren();
+      if (!services.length) {
+        const row = body.insertRow();
+        const cell = row.insertCell();
+        cell.colSpan = 4;
+        cell.className = "empty";
+        cell.textContent = next.compose.error || "No running services";
+      } else {
+        for (const service of services) {
+          const row = body.insertRow();
+          for (const value of [service.service || service.name, service.state || "-", service.health || "-", service.status || "-"]) {
+            row.insertCell().textContent = value;
+          }
+        }
+      }
+
+      const jobs = next.jobs || [];
+      const selected = active || jobs[jobs.length - 1];
+      const log = document.getElementById("log");
+      const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+      log.textContent = selected ? (selected.log || "Waiting for output.") : "Waiting for an operation.";
+      document.getElementById("job-meta").textContent = selected
+        ? `#${selected.id} · ${selected.action} · ${selected.status}${selected.exit_code === null ? "" : ` · exit ${selected.exit_code}`}`
+        : "No jobs";
+      if (nearBottom) log.scrollTop = log.scrollHeight;
+    }
+
+    async function refresh() {
+      if (refreshBusy) return;
+      refreshBusy = true;
+      try {
+        render(await request("/api/state"));
+        document.getElementById("notice").textContent = "";
+      } catch (error) {
+        document.getElementById("notice").textContent = error.message;
+      } finally {
+        refreshBusy = false;
+      }
+    }
+
+    document.querySelectorAll(".action").forEach(button => {
+      button.addEventListener("click", async () => {
+        try {
+          await request(`/api/actions/${button.dataset.action}`, { method: "POST" });
+          await refresh();
+        } catch (error) {
+          document.getElementById("notice").textContent = error.message;
+        }
+      });
+    });
+
+    document.getElementById("keepalive-toggle").addEventListener("click", async event => {
+      try {
+        await request(`/api/keepalive/${event.currentTarget.dataset.keepalive}`, { method: "POST" });
+        await refresh();
+      } catch (error) {
+        document.getElementById("notice").textContent = error.message;
+      }
+    });
+    document.getElementById("refresh").addEventListener("click", refresh);
+
+    (async () => {
+      const bootstrap = await request("/api/bootstrap");
+      token = bootstrap.token;
+      document.getElementById("repo").textContent = bootstrap.repo;
+      await refresh();
+      setInterval(refresh, 2500);
+    })().catch(error => { document.getElementById("notice").textContent = error.message; });
+  </script>
+</body>
+</html>
