@@ -3,6 +3,7 @@
 import hashlib
 import mimetypes
 from pathlib import Path
+import os
 from urllib.parse import quote
 from typing import Literal, Optional
 
@@ -44,13 +45,16 @@ from rag.service.document_delete_service import DocumentDeleteService
 from rag.service.file_system_service import FileSystemService
 from rag.service.ingestion import IngestionService
 from rag.service.ingestion.ingest_queue_service import IngestQueueService
+from rag.service.ingestion.redis_queue import RedisIngestQueueProducer
 
 _DEFAULT_APP_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = _DEFAULT_APP_ROOT if (_DEFAULT_APP_ROOT / "backend").exists() else Path(__file__).resolve().parents[3]
-DOCS_ROOT = (APP_ROOT / "DOCS").resolve()
+DOCS_ROOT = Path(os.getenv("AGENTB_RAG_DOCS_ROOT", str(APP_ROOT / "DOCS"))).resolve()
 MANAGED_ROOT = (DOCS_ROOT / "raw").resolve()
 UI_PATH = (APP_ROOT / "rag" / "ui" / "file_manager.html").resolve()
-META_DB = (APP_ROOT / "rag" / "file_meta.sqlite3").resolve()
+META_DB = Path(
+    os.getenv("AGENTB_RAG_META_DB", str(APP_ROOT / "rag" / "file_meta.sqlite3"))
+).resolve()
 FILE_META_DAO = FileMetaDAO(META_DB)
 KNOWLEDGE_BASE_DAO = KnowledgeBaseDAO(META_DB)
 FILE_SYSTEM_SERVICE = FileSystemService(MANAGED_ROOT)
@@ -66,7 +70,7 @@ LOGGER = get_logger(__name__)
 
 # --- IngestionService / Queue 单例模式 ---
 _INGESTION_SERVICE: Optional[IngestionService] = None
-_INGEST_QUEUE_SERVICE: Optional[IngestQueueService] = None
+_INGEST_QUEUE_SERVICE: Optional[object] = None
 
 
 def _get_ingestion_service() -> IngestionService:
@@ -76,10 +80,19 @@ def _get_ingestion_service() -> IngestionService:
     return _INGESTION_SERVICE
 
 
-def _get_ingest_queue_service() -> IngestQueueService:
+def _get_ingest_queue_service():
     global _INGEST_QUEUE_SERVICE
     if _INGEST_QUEUE_SERVICE is None:
-        _INGEST_QUEUE_SERVICE = IngestQueueService(worker=_get_ingestion_service())
+        import os
+
+        redis_url = os.getenv("AGENTB_REDIS_URL", "").strip()
+        if redis_url:
+            _INGEST_QUEUE_SERVICE = RedisIngestQueueProducer(redis_url)
+        else:
+            # Explicit single-process development fallback.
+            queue_service = IngestQueueService(worker=_get_ingestion_service())
+            queue_service.start()
+            _INGEST_QUEUE_SERVICE = queue_service
     return _INGEST_QUEUE_SERVICE
 
 
@@ -109,16 +122,17 @@ def _ensure_schema() -> None:
 def on_rag_startup() -> None:
     """Called by backend app lifespan to initialize RAG storage."""
     _ensure_schema()
-    queue_service = _get_ingest_queue_service()
-    queue_service.start()
-    for job_id in _get_ingestion_service().recover_pending_jobs():
-        queue_service.enqueue(job_id)
 
 
 def on_rag_shutdown() -> None:
     queue_service = _INGEST_QUEUE_SERVICE
     if queue_service is not None:
-        queue_service.stop()
+        stop = getattr(queue_service, "stop", None)
+        close = getattr(queue_service, "close", None)
+        if callable(stop):
+            stop()
+        if callable(close):
+            close()
 
 
 @router.get("/")
@@ -240,8 +254,13 @@ async def upload_document(
             converted_from_doc = True
             LOGGER.info("upload_doc_converted display_name=%s size_bytes=%s", display_name, len(content))
         except DocConvertError as exc:
-            LOGGER.warning("upload_doc_convert_failed filename=%s error=%s", file.filename, exc)
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # 无 LibreOffice/Word 时降级：保留原始 .doc 由 DocChunkEngine 解析，避免上传被阻塞
+            LOGGER.warning(
+                "upload_doc_convert_failed_keep_legacy filename=%s error=%s mime=%s",
+                file.filename,
+                exc,
+                mime,
+            )
 
     size = len(content)
     hash_sha = _sha256_bytes(content)
@@ -545,8 +564,8 @@ def read_file(
                     name = docx_display_name(name)
                     LOGGER.info("read_file_doc_converted path=%s out_name=%s", path, name)
                 except DocConvertError as exc:
-                    LOGGER.warning("read_file_doc_convert_failed path=%s error=%s", path, exc)
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                    # 与上传降级保持一致：无 LibreOffice/Word 时返回原始 .doc 字节，由前端 CFB 解析
+                    LOGGER.warning("read_file_doc_convert_failed_keep_legacy path=%s error=%s", path, exc)
             media_type = _media_type_for_binary_download(name)
             headers = {
                 **_deprecation_headers(),

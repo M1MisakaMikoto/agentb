@@ -27,6 +27,8 @@ from controller.settings_api import router as settings_router
 from core.logging import bind_ctx, get_ctx, initialize_trace_writer
 from singleton import clear_all_singletons_async, get_logging_runtime, get_settings_service, get_user_service
 from middleware.auth import AuthMiddleware
+from middleware.affinity import AffinityMiddleware
+from service.runtime import OwnerConflictError, get_runtime_state
 from rag.controller.file_controller import router as rag_router, on_rag_shutdown, on_rag_startup
 
 
@@ -45,6 +47,7 @@ async def lifespan(app: FastAPI):
     from singleton import get_mysql_database
     db = await get_mysql_database()
     await db.init_tables()
+    await get_runtime_state().start()
 
     runtime = get_logging_runtime()
     app_logger = runtime.get_logger("app")
@@ -60,6 +63,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await get_runtime_state().stop()
         on_rag_shutdown()
         app_logger.info(
             event="app.stopping",
@@ -133,6 +137,7 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 app.add_middleware(AuthMiddleware)
+app.add_middleware(AffinityMiddleware)
 
 FRONTEND_LOG_ALLOWED_EVENTS = {
     "create_conversation",
@@ -427,6 +432,19 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     return response
 
 
+@app.exception_handler(OwnerConflictError)
+async def owner_conflict_handler(request: Request, exc: OwnerConflictError):
+    return JSONResponse(
+        status_code=409,
+        content={
+            "code": 409,
+            "message": str(exc),
+            "data": {"session_id": exc.session_id, "owner_instance_id": exc.owner_instance_id},
+        },
+        headers={"X-AgentB-Owner-ID": exc.owner_instance_id},
+    )
+
+
 @app.get("/health", tags=["health"])
 def health_check():
     """增强的健康检查端点 - 返回资源使用情况"""
@@ -437,8 +455,13 @@ def health_check():
         process = psutil.Process(os.getpid())
         memory_info = process.memory_info()
         
+        runtime_state = get_runtime_state()
         return {
             "status": "ok",
+            "instance_id": runtime_state.instance_id,
+            "draining": runtime_state.draining,
+            "active_tasks": runtime_state.active_task_count,
+            "active_sessions": runtime_state.active_session_count,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "resources": {
                 "memory_mb": round(memory_info.rss / 1024 / 1024, 2),
@@ -449,9 +472,40 @@ def health_check():
             "uptime_seconds": int(time.time() - _start_time) if '_start_time' in dir() else None,
         }
     except ImportError:
-        return {"status": "ok", "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")}
+        runtime_state = get_runtime_state()
+        return {"status": "ok", "instance_id": runtime_state.instance_id, "draining": runtime_state.draining, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")}
     except Exception as e:
         return {"status": "warning", "message": str(e), "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+
+@app.get("/health/ready", tags=["health"])
+def readiness_check():
+    runtime_state = get_runtime_state()
+    if runtime_state.draining:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "draining",
+                "instance_id": runtime_state.instance_id,
+                "active_tasks": runtime_state.active_task_count,
+            },
+        )
+    return {
+        "status": "ready",
+        "instance_id": runtime_state.instance_id,
+        "active_tasks": runtime_state.active_task_count,
+    }
+
+
+@app.post("/admin/drain", tags=["health"])
+async def begin_drain():
+    runtime_state = get_runtime_state()
+    await runtime_state.begin_drain()
+    return {
+        "status": "draining",
+        "instance_id": runtime_state.instance_id,
+        "active_tasks": runtime_state.active_task_count,
+    }
 
 
 app.include_router(user_router)

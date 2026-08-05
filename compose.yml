@@ -1,0 +1,103 @@
+x-agentb-environment: &agentb-environment
+  GUNICORN_BIND: 0.0.0.0:8000
+  GUNICORN_WORKERS: "1"
+  GUNICORN_LOG_LEVEL: ${GUNICORN_LOG_LEVEL:-info}
+  AGENTB_REDIS_URL: ${AGENTB_REDIS_URL:-redis://redis:6379/0}
+  AGENTB_REDIS_PREFIX: ${AGENTB_REDIS_PREFIX:-agentb:dev:}
+  AGENTB_OWNER_LEASE_SECONDS: ${AGENTB_OWNER_LEASE_SECONDS:-60}
+  AGENTB_HEARTBEAT_SECONDS: ${AGENTB_HEARTBEAT_SECONDS:-15}
+  AGENTB_DRAIN_TIMEOUT_SECONDS: ${AGENTB_DRAIN_TIMEOUT_SECONDS:-30}
+  AGENTB_STREAM_MAXLEN: ${AGENTB_STREAM_MAXLEN:-10000}
+  AGENTB_STREAM_RETENTION_SECONDS: ${AGENTB_STREAM_RETENTION_SECONDS:-86400}
+  AGENTB_WORKSPACE_DIR: /app/workspaces
+  AGENTB_RAG_META_DB: /app/rag-data/file_meta.sqlite3
+  AGENTB_RAG_DOCS_ROOT: /app/rag-docs
+  AGENTB_EMBEDDING_DISABLED: ${AGENTB_EMBEDDING_DISABLED:-1}
+  MYSQL_HOST: ${MYSQL_HOST:-mysql}
+  MYSQL_PORT: ${MYSQL_PORT:-3306}
+  MYSQL_USER: ${MYSQL_USER:-agentb}
+  MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change_me}
+  MYSQL_DATABASE: ${MYSQL_DATABASE:-agentb}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  LLM_MODEL: ${LLM_MODEL:-}
+
+x-agentb-backend: &agentb-backend
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  expose:
+    - "8000"
+  stop_grace_period: ${AGENTB_STOP_GRACE_PERIOD:-45s}
+  environment: *agentb-environment
+  volumes:
+    - ${AGENTB_SETTING_FILE:-./.dev/setting.json}:/app/setting.json:ro
+    - agentb-workspaces:/app/workspaces
+    - agentb-logs:/app/logs
+    - agentb-rag-data:/app/rag-data
+    - agentb-rag-docs:/app/rag-docs
+  healthcheck:
+    test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health/ready || exit 1"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 90s
+  deploy:
+    resources:
+      limits:
+        cpus: ${AGENTB_API_CPU_LIMIT:-2.0}
+        memory: ${AGENTB_API_MEMORY_LIMIT:-2G}
+      reservations:
+        memory: ${AGENTB_API_MEMORY_RESERVATION:-512M}
+
+services:
+  agentb-1:
+    <<: *agentb-backend
+    environment:
+      <<: *agentb-environment
+      AGENTB_INSTANCE_ID: agentb-1
+
+  agentb-2:
+    <<: *agentb-backend
+    environment:
+      <<: *agentb-environment
+      AGENTB_INSTANCE_ID: agentb-2
+
+  agentb-3:
+    <<: *agentb-backend
+    environment:
+      <<: *agentb-environment
+      AGENTB_INSTANCE_ID: agentb-3
+
+  agentb-rag-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_RAG_DEPS: "1"
+    restart: unless-stopped
+    command: ["python", "-m", "rag.worker"]
+    working_dir: /app/WorkBranch
+    stop_grace_period: 30s
+    environment:
+      <<: *agentb-environment
+      AGENTB_INSTANCE_ID: agentb-rag-worker
+      AGENTB_RAG_LEASE_SECONDS: ${AGENTB_RAG_LEASE_SECONDS:-1800}
+    volumes:
+      - ${AGENTB_SETTING_FILE:-./.dev/setting.json}:/app/setting.json:ro
+      - agentb-rag-data:/app/rag-data
+      - agentb-rag-docs:/app/rag-docs
+      - agentb-easyocr-models:/root/.EasyOCR
+    deploy:
+      resources:
+        limits:
+          cpus: ${AGENTB_RAG_CPU_LIMIT:-4.0}
+          memory: ${AGENTB_RAG_MEMORY_LIMIT:-4G}
+
+volumes:
+  agentb-workspaces:
+  agentb-logs:
+  agentb-rag-data:
+  agentb-rag-docs:
+  agentb-easyocr-models:

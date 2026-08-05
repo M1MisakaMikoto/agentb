@@ -13,6 +13,7 @@ from rag.DAO.RAG_DAO import RAG_DAO
 from rag.DAO.base_dao import BaseRAGDAO
 from rag.DAO.knowledge_base_dao import KnowledgeBaseDAO
 from rag.service.ingestion.embedding_engine.OllamaEmbeddingEngine import OllamaEmbeddingEngine
+from rag.service.ingestion.embedding_engine.dummy_embedding_engine import DummyEmbeddingEngine
 from rag.service.rerank_strategy import (
     ChunkDocTwoStageRerankStrategy,
     ChunkScoreRerankStrategy,
@@ -42,7 +43,12 @@ class RAG_service:
     ) -> None:
         self.dao = dao or RAG_DAO()
         self.document_meta_dao = document_meta_dao or DocumentMetaDAO()
-        self.embedding_engine = OllamaEmbeddingEngine(base_url="http://127.0.0.1:11434", model="bge-m3:latest")
+        if os.getenv("AGENTB_EMBEDDING_DISABLED") == "1":
+            self.embedding_engine = DummyEmbeddingEngine()
+        else:
+            self.embedding_engine = OllamaEmbeddingEngine(
+                base_url="http://127.0.0.1:11434", model="bge-m3:latest"
+            )
         self.rerank_registry = RerankStrategyRegistry()
         self.rerank_registry.register(ChunkScoreRerankStrategy())
         self.rerank_registry.register(TitleBoostRerankStrategy())

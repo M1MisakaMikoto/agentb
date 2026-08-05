@@ -192,7 +192,7 @@ async def run_workspace_upload_extract_write_test(
     print_success(f"Session created: {session_id}")
     
     print_step(2, "Creating conversation with file upload...", Colors.CYAN)
-    source_file = scenario_config.get("source_file", ".dev/table/我是测试知识文件.txt")
+    source_file = scenario_config.get("source_file", ".dev/fixture/我是测试知识文件.txt")
     prompt = scenario_config.get("prompt", "请查看工作区中的文件并总结内容。")
     
     try:
@@ -266,7 +266,7 @@ async def run_workspace_upload_read_document_test(
     print_success(f"Workspace ID: {workspace_id}")
     
     print_step(2, "Uploading file to workspace...", Colors.CYAN)
-    source_files = scenario_config.get("source_files", [".dev/table/城市桥梁养护技术规程（标准文本）.pdf"])
+    source_files = scenario_config.get("source_files", [".dev/fixture/城市桥梁养护技术规程（标准文本）.pdf"])
     prompt = scenario_config.get("prompt", "请读取文档并总结内容。")
     
     try:
@@ -379,7 +379,7 @@ async def run_workspace_upload_image_understanding_test(
     print_success(f"Workspace ID: {workspace_id}")
 
     print_step(2, "Uploading image to workspace...", Colors.CYAN)
-    source_file = scenario_config.get("source_file", ".dev/table/测试图片.png")
+    source_file = scenario_config.get("source_file", ".dev/fixture/测试图片.png")
     prompt = scenario_config.get("prompt", "请分析这张图片。")
 
     try:
@@ -434,8 +434,10 @@ async def run_workspace_upload_image_understanding_test(
             print_success(f"Image-related keywords found: {found_keywords}")
         else:
             print_error("No image-related keywords found in response")
+            result.errors.append("No image-related keywords found in response")
     else:
         print_error("No response text found")
+        result.errors.append("No response text found")
     
     print(f"\n{Colors.GREEN}{'='*60}{Colors.ENDC}")
     print(f"{Colors.GREEN}  Workspace Upload Image Understanding Test Completed{Colors.ENDC}")
@@ -509,7 +511,7 @@ async def run_workspace_upload_read_table_document_test(
     print_step(2, "Uploading table test document...", Colors.CYAN)
     source_file = scenario_config.get(
         "source_file",
-        ".test/test_data/table_test_document.docx"
+        ".dev/fixture/table_test_document.docx"
     )
     prompt = scenario_config.get(
         "prompt",
@@ -634,6 +636,10 @@ async def run_workspace_upload_read_table_document_test(
     # 设置验证结果
     result.table_extraction_passed = validation_passed
     result.missing_keywords = missing_keywords if 'missing_keywords' in dir() else []
+    if result.missing_keywords:
+        result.errors.append(
+            f"Missing table keywords: {', '.join(result.missing_keywords)}"
+        )
     
     print(f"\n{Colors.GREEN}{'='*60}{Colors.ENDC}")
     if validation_passed:

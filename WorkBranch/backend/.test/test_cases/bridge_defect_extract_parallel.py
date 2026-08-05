@@ -5,8 +5,8 @@ Bridge Defect Extraction Parallel Test
 双开测试：同时运行两个桥梁病害提取测试，验证 MQ bridge 的并发处理能力
 
 测试文件:
-  - 测试A: .dev/table/桥梁检测报告/2020/07 朝阳寺立交桥.doc
-  - 测试B: .dev/table/桥梁检测报告/2020/09 陈家湾桥.doc
+  - 测试A: .dev/fixture/07 朝阳寺立交桥.doc
+  - 测试B: .dev/fixture/09 陈家湾桥.doc
 """
 
 import asyncio
@@ -40,8 +40,8 @@ from .bridge_defect_extract import (
 # ============================================================
 
 # 双开测试使用两个不同的文档
-PARALLEL_TEST_FILE_A = Path(".dev/table/桥梁检测报告/2020/07 朝阳寺立交桥.doc")
-PARALLEL_TEST_FILE_B = Path(".dev/table/桥梁检测报告/2020/09 陈家湾桥.doc")
+PARALLEL_TEST_FILE_A = Path(".dev/fixture/07 朝阳寺立交桥.doc")
+PARALLEL_TEST_FILE_B = Path(".dev/fixture/09 陈家湾桥.doc")
 
 
 # ============================================================
@@ -226,8 +226,7 @@ async def main():
         from .base import load_config
         config = load_config()
 
-    api_url = config.get("api_url", "http://127.0.0.1:8000")
-    api = APIClient(base_url=api_url)
+    api = APIClient(config)
 
     # 检查后端
     from .base import wait_for_backend

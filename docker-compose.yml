@@ -5,10 +5,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: agentb-backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${AGENTB_PORT:-8152}:8000"
     env_file:
       - .env
     environment:
@@ -16,11 +15,13 @@ services:
       GUNICORN_WORKERS: 1
       GUNICORN_LOG_LEVEL: info
       LLM_TRACE_LOG_PATH: /app/logs/llm_decision_trace.log
+      AGENTB_WORKSPACE_DIR: /app/workspaces
     volumes:
       - ./logs:/app/logs
       - ./workspaces:/app/workspaces
       - ./db:/app/WorkBranch/backend/data/db
       - ./setting.json:/app/setting.json:ro
+      - ./docs:/app/WorkBranch/DOCS
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
       interval: 30s
