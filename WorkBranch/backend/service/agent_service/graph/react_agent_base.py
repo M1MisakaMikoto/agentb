@@ -1,8 +1,6 @@
 import datetime
 from typing import Dict, Any, Optional, Callable, List
 
-from pydantic import ValidationError
-
 from .agent_definition import AgentDefinition
 from core.logging import console, open_trace_log
 from ..state import AgentState
@@ -12,10 +10,7 @@ from service.agent_service.prompts.error_injection import (
     create_json_format_error,
     create_tool_name_error,
 )
-from .decision.response_schema import (
-    format_decision_validation_error,
-    parse_decision_response,
-)
+from .decision.tool_call_parser import DecisionParseError, parse_tool_decision_response
 
 
 class MemoryManager:
@@ -899,10 +894,20 @@ class ReActAgentBase:
 
             try:
                 # 使用厂商 JSON Mode 强制返回纯 JSON，避免手工剥 ```json 包裹
-                response = llm_service.chat_with_json_mode(
-                    messages=[{"role": "user", "content": context_prompt}],
-                    system_prompt=system_prompt,
-                )
+                from .decision.response_schema import decision_json_schema
+
+                chat_method = getattr(llm_service, "chat_with_structured_output", None)
+                if chat_method is not None:
+                    response = chat_method(
+                        messages=[{"role": "user", "content": context_prompt}],
+                        system_prompt=system_prompt,
+                        schema=decision_json_schema(),
+                    )
+                else:
+                    response = llm_service.chat_with_json_mode(
+                        messages=[{"role": "user", "content": context_prompt}],
+                        system_prompt=system_prompt,
+                    )
 
                 response_text = response.strip()
 
@@ -916,7 +921,7 @@ class ReActAgentBase:
                 if not response_text:
                     raise ValueError("LLM 返回了空响应，可能是 API 超时或模型异常")
 
-                decision_data = parse_decision_response(response_text)
+                decision_data = parse_tool_decision_response(response_text)
             except Exception as e:
                 # 记录完整的异常信息
                 import traceback as _tb
@@ -944,11 +949,7 @@ class ReActAgentBase:
                         _f.flush()
 
                     # 设置错误信息，让下一次 prompt 注入错误提示
-                    parse_error = (
-                        format_decision_validation_error(e)
-                        if isinstance(e, ValidationError)
-                        else f"[{type(e).__name__}] {e}"
-                    )
+                    parse_error = str(e)
                     last_error = create_json_format_error(
                         original_json=response_text if 'response_text' in locals() else "",
                         parse_error=parse_error,
@@ -964,11 +965,7 @@ class ReActAgentBase:
 
                 # 重试次数用完，返回错误
                 original_response = response_text if 'response_text' in locals() else "(空)"
-                error_detail = (
-                    format_decision_validation_error(e)
-                    if isinstance(e, ValidationError)
-                    else f"[{type(e).__name__}] {e}"
-                )
+                error_detail = str(e)
                 reply = (
                     f"当前无法自动决策下一步：{error_detail}\n"
                     f"原始响应: {original_response}"

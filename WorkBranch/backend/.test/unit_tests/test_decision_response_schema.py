@@ -94,8 +94,8 @@ class DecisionErrorPromptTest(unittest.TestCase):
         )
 
     @patch("builtins.open", new_callable=mock_open)
-    def test_active_node_injects_full_array_error_into_next_prompt(self, _open):
-        original = '[{"kind":"step_done","payload":"完整原始响应"}]'
+    def test_active_node_injects_full_error_into_next_prompt(self, _open):
+        original = '{"kind":"invalid_kind"}'
 
         result = _decision_node(original)(_base_state())
         _, next_prompt = generate_prompt(
@@ -120,13 +120,13 @@ class DecisionErrorPromptTest(unittest.TestCase):
 
     @patch("builtins.open", new_callable=mock_open)
     def test_active_node_terminates_with_full_third_response(self, _open):
-        original = '[{"kind":"blocked","payload":"第三次完整响应"}]'
+        original = '{"kind":"bogus"}'
 
         result = _decision_node(original)(_base_state(decision_error_count=2))
 
         self.assertEqual(result["decision_error_count"], 3)
         self.assertIn(original, result["final_reply"])
-        self.assertIn("dict_type", result["final_reply"])
+        self.assertIn("原始响应", result["final_reply"])
 
     def test_child_route_retries_then_uses_error_summary(self):
         agent = ReActAgentBase.__new__(ReActAgentBase)

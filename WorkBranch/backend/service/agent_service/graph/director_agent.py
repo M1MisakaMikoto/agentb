@@ -28,6 +28,7 @@ from .subgraphs.tool_registry import (
 from .subgraphs.tool_executor import run_tool_execution, _get_subagent_timeout
 from .react_agent_base import ReActAgentBase, MemoryManager
 from .definitions import get_definition
+from .decision.tool_call_parser import DecisionParseError, parse_tool_decision_response
 from service.agent_service.prompts.graph_prompts import (
     THINK_SYSTEM_PROMPT,
     PLAN_MODE_SYSTEM_PROMPT,
@@ -808,10 +809,20 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         response = None
         try:
             # 使用厂商 JSON Mode 强制返回纯 JSON，避免手工剥 ```json 包裹
-            response = llm_service.chat_with_json_mode(
-                messages=[{"role": "user", "content": context_prompt}],
-                system_prompt=system_prompt,
-            )
+            from .decision.response_schema import decision_json_schema
+
+            chat_method = getattr(llm_service, "chat_with_structured_output", None)
+            if chat_method is not None:
+                response = chat_method(
+                    messages=[{"role": "user", "content": context_prompt}],
+                    system_prompt=system_prompt,
+                    schema=decision_json_schema(),
+                )
+            else:
+                response = llm_service.chat_with_json_mode(
+                    messages=[{"role": "user", "content": context_prompt}],
+                    system_prompt=system_prompt,
+                )
             console.response_box(response)
             response_text = response.strip()
 
@@ -828,14 +839,10 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             if not response_text:
                 raise ValueError("LLM 返回了空响应，可能是 API 超时或模型异常")
 
-            decision_data = json.loads(response_text)
-            # 防御：LLM 偶尔返回 JSON 数组 [{...}] 而非对象 {...}，取第一个元素
-            if isinstance(decision_data, list):
-                console.warning(f"[LLM-PARSE-WARN] LLM 返回了数组而非对象，取第一个元素")
-                if len(decision_data) == 0:
-                    raise ValueError("LLM 返回了空数组")
-                decision_data = decision_data[0]
-            # ✅ 分类异常：JSON解析错误
+            decision_data = parse_tool_decision_response(response_text)
+
+        except DecisionParseError as e:
+            # ✅ 分类异常：JSON 解析 / schema 校验失败
             console.warning(f"[LLM-PARSE-ERROR] JSON解析失败 (第{decision_error_count+1}次): {e}")
             console.warning(f"[LLM-PARSE-ERROR] 原始响应内容:\n{response_text}")
             _handle_decision_error(e, response_text, state, user_message, message_context, iteration_count)

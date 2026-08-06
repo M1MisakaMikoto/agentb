@@ -1,8 +1,6 @@
 """
 意图分析服务 - 用于过滤恶意请求和改写用户意图
 """
-import json
-import re
 import time
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
@@ -344,38 +342,31 @@ class IntentAnalysisService:
         """解析 LLM 返回的 JSON"""
         logger = self._get_logger()
 
-        # 提取 JSON（可能在 markdown 代码块中）
-        json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
-        if json_match:
-            json_str = json_match.group(1)
-        else:
-            # 尝试直接解析
-            json_str = response_text.strip()
+        from service.agent_service.graph.decision.tool_call_parser import parse_intent_response
 
-        try:
-            data = json.loads(json_str)
-            is_malicious = bool(data.get("is_malicious", False))
-            rewritten_query = data.get("rewritten_query", original_message)
-
-            if is_malicious:
-                logger.warning(
-                    event="intent.malicious_detected",
-                    msg="检测到恶意请求",
-                    extra={"original_message": original_message[:100]},
-                )
-
-            return IntentAnalysisResult(
-                is_malicious=is_malicious,
-                rewritten_query=rewritten_query if rewritten_query else original_message,
-            )
-        except json.JSONDecodeError as e:
+        data = parse_intent_response(response_text, original_message)
+        if data is None:
             logger.warning(
                 event="intent.parse_failed",
-                msg=f"JSON 解析失败，使用原始消息: {str(e)}",
+                msg="JSON 解析失败，使用原始消息",
                 extra={"response_preview": response_text},
             )
-            # 解析失败时使用原始消息
-            return IntentAnalysisResult(is_malicious=False, rewritten_query=original_message)
+            data = {"is_malicious": False, "rewritten_query": original_message}
+
+        is_malicious = bool(data.get("is_malicious", False))
+        rewritten_query = data.get("rewritten_query", original_message)
+
+        if is_malicious:
+            logger.warning(
+                event="intent.malicious_detected",
+                msg="检测到恶意请求",
+                extra={"original_message": original_message[:100]},
+            )
+
+        return IntentAnalysisResult(
+            is_malicious=is_malicious,
+            rewritten_query=rewritten_query if rewritten_query else original_message,
+        )
 
 
 def get_intent_analysis_service(settings_service=None) -> IntentAnalysisService:

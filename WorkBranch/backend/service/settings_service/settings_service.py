@@ -66,6 +66,7 @@ DEFAULT_SETTINGS = {
         "supports_vision": True,
         "vision_input_mode": "url",
         "reject_image_when_unsupported": True,
+        "structured_output": "auto",
         "fast_model": "qwen3-vl-flash",
         "fast_temperature": 0.3,
         "fast_max_tokens": 2048,

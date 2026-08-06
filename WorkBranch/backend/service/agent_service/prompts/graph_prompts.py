@@ -214,6 +214,9 @@ def build_direct_chat_messages(
 
 def build_tool_schema_prompt(tool_names: List[str], agent_type: str = "unknown") -> str:
     from service.agent_service.tools import ALL_TOOLS
+    from .templates.tool_schemas import ToolSchemaManager
+
+    ToolSchemaManager.validate_and_report(agent_type)
 
     schema_lines = ["工具列表："]
     for tool_name in tool_names:
@@ -397,82 +400,25 @@ def generate_prompt(
     Returns:
         Tuple[str, str]: (system_prompt, user_message)
     """
-    from .base.message_processor import MessageProcessor
-    from .templates.user_templates import UserTemplateManager
+    from .builder.prompt_builder import PromptBuilder
 
-    processor = MessageProcessor()
-
-    # 1. 获取 System Prompt（简化后直接使用 _get_system_prompt）
-    system_prompt = _get_system_prompt(
+    system_prompt, user_message_text, _stats = PromptBuilder().generate_prompt(
         agent_type=agent_type,
         mode=mode,
-        tool_prompt=tool_schema_prompt
-    )
-
-    # 2. 构建 User Message
-
-    # 2a. 静态区域（工具列表）
-    static_section = UserTemplateManager.build_static_section()
-
-    # 2b. 动态区域（元数据）
-    dynamic_section = processor.build_dynamic_section(
         user_message=user_message,
         workspace_id=workspace_id,
+        iteration_count=iteration_count,
+        max_iterations=max_iterations,
+        tool_schema_prompt=tool_schema_prompt,
+        tool_history=tool_history,
+        last_tool_result=last_tool_result,
         todos=todos,
         current_todo_index=current_todo_index,
         plan_content=plan_content,
-        include_iteration=False  # 已执行轮次默认不显示
+        parent_chain_messages=parent_chain_messages,
+        current_conversation_messages=current_conversation_messages,
+        last_error=last_error,
     )
-
-    # 2c. 对话上下文（压缩）- Director Agent 专属
-    conversation_context = ""
-
-    if parent_chain_messages:
-        parent_context = processor.process_conversation_context(
-            messages=parent_chain_messages,
-            source_type="parent_chain"
-        )
-        if parent_context:
-            conversation_context += parent_context + "\n"
-
-    if current_conversation_messages:
-        current_context = processor.process_conversation_context(
-            messages=current_conversation_messages,
-            source_type="current_conversation"
-        )
-        if current_context:
-            conversation_context += current_context
-
-    # 3. PLAN 模式额外指令
-    if mode.upper() == "PLAN":
-        dynamic_section += "\n\n" + UserTemplateManager.build_plan_mode_suffix()
-
-    # 4. 工具历史（统一区块，含时间标识）
-    tool_history_section = ""
-    history_block = _format_tool_history(tool_history)
-    if tool_history:
-        tool_history_section = f"\n\n{history_block}\n"
-
-    # 5. 拼接 User Message
-    user_message_text = processor.build_full_user_message(
-        static_content=static_section,
-        dynamic_content=dynamic_section,
-        conversation_context=conversation_context.strip()
-    )
-
-    # 6. 追加工具历史
-    if tool_history_section:
-        user_message_text += tool_history_section
-
-    # 7. 追加用户原始问题（倒数第二位，利用头尾效应）
-    if user_message:
-        user_message_text += format_current_question(user_message)
-
-    # 8. 注入错误信息（最后）
-    if last_error:
-        error_prompt = format_error_for_prompt(last_error)
-        user_message_text += "\n\n" + error_prompt
-
     return system_prompt, user_message_text
 
 
