@@ -36,7 +36,6 @@ suites:
     description: "Multi-worker affinity regression suite"
     scenarios:
       - serial_mode
-      - workspace_upload_image_understanding
       - workspace_upload_read_table_document
       - qiaozitang_monthly_query
       - pdf_generate

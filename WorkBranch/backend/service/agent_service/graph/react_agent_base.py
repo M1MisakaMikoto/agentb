@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from .agent_definition import AgentDefinition
 from core.logging import console, open_trace_log
 from ..state import AgentState
+from service.session_service.canonical import SegmentType
 from service.agent_service.prompts.error_injection import (
     ToolCallError,
     create_json_format_error,
@@ -853,6 +854,9 @@ class ReActAgentBase:
             allowed_tools = get_allowed_tools(agent_type, settings_service)
             from service.agent_service.prompts.graph_prompts import build_tool_schema_prompt as _build_tool_schema_prompt
             tool_schema_prompt = _build_tool_schema_prompt(allowed_tools, agent_type=agent_type)
+
+            parent_chain_messages = state.get("parent_chain_messages") or []
+            current_conversation_messages = state.get("current_conversation_messages") or []
             
             system_prompt, context_prompt = generate_prompt(
                 agent_type=agent_type,
@@ -866,6 +870,8 @@ class ReActAgentBase:
                 last_tool_result=last_tool_result,
                 todos=state.get('todos') or [],
                 current_todo_index=state.get('current_todo_index', 0) or 0,
+                parent_chain_messages=parent_chain_messages,
+                current_conversation_messages=current_conversation_messages,
                 last_error=state.get("last_error"),
             )
             
@@ -1000,11 +1006,40 @@ class ReActAgentBase:
                             "last_error": None,  # 清除错误信息
                         }
 
+                # blocked：正常输出拒绝/阻塞原因并结束对话，防止 decide 无限重试
+                if kind == "blocked":
+                    reply = decision_data.get("reply") or "当前无法继续执行"
+                    if message_context:
+                        send_message = message_context.get("send_message")
+                        if send_message:
+                            send_message("", SegmentType.CHAT_START, {
+                                "task_description": "输出最终回复",
+                                "is_start": True,
+                            })
+                            send_message(reply, SegmentType.CHAT_DELTA, {
+                                "task_description": "输出最终回复",
+                                "is_delta": True,
+                            })
+                            send_message("", SegmentType.CHAT_END, {
+                                "task_description": "输出最终回复",
+                                "is_end": True,
+                                "result": reply,
+                            })
+                    return {
+                        "todo_status": "blocked",
+                        "final_reply": reply,
+                        "has_tool_use": False,
+                        "pending_tools": [],
+                        "last_error": None,
+                        "iteration_count": iteration_count,
+                    }
+
                 return {
                     "todo_status": kind,
                     "has_tool_use": False,
                     "pending_tools": [],
                     "last_error": None,  # 清除错误信息
+                    "iteration_count": iteration_count,
                 }
             
             tool_name = decision_data.get("tool_name") or decision_data.get("name")
@@ -1070,10 +1105,25 @@ class ReActAgentBase:
             # 【关键修复】防止 pending_tools 为空时访问 [0] 导致 IndexError
             if not pending_tools:
                 console.info("[_create_execute_node] pending_tools 为空，直接返回")
+                last_result = state.get("last_tool_result")
+                if last_result:
+                    final_reply_text = str(last_result)
+                else:
+                    hist = state.get("tool_history") or []
+                    tail = hist[-3:]
+                    if tail:
+                        parts = []
+                        for h in tail:
+                            hname = h.get("tool_name") or h.get("tool") or "unknown"
+                            hres = str(h.get("result") or h.get("error") or "")[:150]
+                            parts.append(f"{hname}: {hres}")
+                        final_reply_text = "任务执行完成。最近工具执行摘要：" + " | ".join(parts)
+                    else:
+                        final_reply_text = "任务执行完成（无工具输出）"
                 return {
                     "pending_tools": [],
                     "has_tool_use": False,
-                    "final_reply": state.get("last_tool_result") or "任务执行完成",
+                    "final_reply": final_reply_text,
                 }
 
             tool_name = pending_tools[0].get("tool_name")

@@ -171,6 +171,27 @@ def _check_loop_or_stuck(
     todos: list = None,
 ) -> dict:
     from service.agent_service.service.llm_service import LLMService
+
+    # 规则预检：最近窗口内同一工具+相同参数+相同结果重复出现 >=3 次，判定为循环。
+    # 排除纯查询/思考类工具，避免误伤正常的多文件流程。
+    from collections import Counter
+
+    recent = tool_history[-CHECK_INTERVAL:] if len(tool_history) >= CHECK_INTERVAL else tool_history
+    if len(recent) >= 6:
+        query_tools = {"list_workspace_files", "get_workspace_info", "search_files", "thinking"}
+        sigs = []
+        for item in recent:
+            tname = item.get("tool_name") or item.get("tool") or "unknown"
+            if tname in query_tools:
+                continue
+            sigs.append((str(tname), str(item.get("args")), str(item.get("result") or item.get("error") or "")))
+        counter = Counter(sigs)
+        for (tname, _, _), count in counter.items():
+            if count >= 3:
+                return {
+                    "action": "stop",
+                    "reason": f"检测到重复调用相同工具且参数与结果完全相同（{tname} × {count}），判定为循环",
+                }
     
     prompt = _build_loop_check_prompt(
         tool_history, 

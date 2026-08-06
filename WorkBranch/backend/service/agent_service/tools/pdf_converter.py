@@ -185,6 +185,56 @@ def _run_xelatex(tex_path: str, pdf_path: str) -> None:
         shutil.copy(generated_pdf, pdf_path)
 
 
+def _convert_with_soffice(docx_path: str, pdf_path: str):
+    """用 LibreOffice headless 将 docx 转 PDF（支持中文，镜像内已随 Dockerfile 安装）。
+
+    Returns:
+        dict 结果（成功/失败），或 None 表示 soffice 不可用，需走原 TinyTeX 链路。
+    """
+    soffice = shutil.which("soffice")
+    if not soffice:
+        return None
+
+    tmpdir = tempfile.mkdtemp(prefix="pdf_soffice_")
+    try:
+        result = subprocess.run(
+            [soffice, "--headless", "--convert-to", "pdf", "--outdir", tmpdir, docx_path],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if result.returncode != 0:
+            detail = (result.stdout or result.stderr or "")[-500:]
+            return {"result": None, "error": f"LibreOffice 转换失败: {detail}"}
+
+        generated = os.path.join(
+            tmpdir, os.path.splitext(os.path.basename(docx_path))[0] + ".pdf"
+        )
+        if not os.path.exists(generated):
+            return {"result": None, "error": f"LibreOffice 转换完成但 PDF 不存在: {generated}"}
+
+        shutil.copy(generated, pdf_path)
+        size = os.path.getsize(pdf_path)
+        return {
+            "result": {
+                "message": f"PDF创建成功: {pdf_path}",
+                "pdf_path": pdf_path,
+                "size": size,
+            },
+            "error": None,
+        }
+    except subprocess.TimeoutExpired:
+        return {"result": None, "error": "LibreOffice 转换超时（300s）"}
+    except Exception as e:
+        return {"result": None, "error": f"LibreOffice 转换异常: {str(e)}"}
+    finally:
+        try:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 def convert_docx_to_pdf(docx_path: str, pdf_path: str) -> dict:
     """将 docx 转换为 PDF
 
@@ -203,6 +253,11 @@ def convert_docx_to_pdf(docx_path: str, pdf_path: str) -> dict:
         "3. 确保 setup/tinytex/TinyTeX/bin/windows/xelatex.exe 存在\n"
         "4. 重启 agent 服务"
     )
+
+    # 0. 优先使用 LibreOffice（镜像内已安装，支持中文），失败再回退 TinyTeX 链路
+    soffice_result = _convert_with_soffice(docx_path, pdf_path)
+    if soffice_result is not None:
+        return soffice_result
 
     # 1. 确保 xelatex 可用（首次下载）
     try:

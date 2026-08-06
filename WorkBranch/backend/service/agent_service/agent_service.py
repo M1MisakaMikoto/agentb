@@ -462,7 +462,7 @@ class AgentService:
             )
 
             if intent_result.is_malicious:
-                # 恶意请求：返回错误消息并结束对话
+                # 恶意请求：正常回复拒绝原因并以 DONE 结束对话（不让会话进入 failed 状态）
                 self._log_agent_event(
                     "WARNING",
                     "intent.malicious_blocked",
@@ -472,9 +472,35 @@ class AgentService:
                     extra={"original_message": message_text},
                 )
 
-                send_message("抱歉，我无法处理此请求", SegmentType.ERROR, {"message_id": message_id, "error": "malicious_request"})
-
-                return {"status": "blocked", "reason": "malicious_request"}
+                reply_text = (
+                    "抱歉，我无法处理此请求。\n"
+                    "原因：该请求被安全策略拦截（可能包含提示词注入、敏感信息索取或其他恶意内容）。"
+                )
+                send_message("", SegmentType.CHAT_START, {
+                    "message_id": message_id,
+                    "task_description": "输出拦截说明",
+                    "is_start": True,
+                })
+                send_message(reply_text, SegmentType.CHAT_DELTA, {
+                    "message_id": message_id,
+                    "task_description": "输出拦截说明",
+                    "is_delta": True,
+                })
+                send_message("", SegmentType.CHAT_END, {
+                    "message_id": message_id,
+                    "task_description": "输出拦截说明",
+                    "is_end": True,
+                    "result": reply_text,
+                })
+                done_msg = MessageBuilder.done(
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    metadata={"message_id": message_id, "status": "blocked"},
+                )
+                mq.publish_sync(done_msg)
+                return {"status": "blocked", "reason": "malicious_request", "reply": reply_text}
 
             if intent_result.rewritten_query != message_text:
                 self._log_agent_event(
