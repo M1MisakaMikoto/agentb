@@ -8,11 +8,13 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."
 sys.path.insert(0, BACKEND_DIR)
 
 from service.agent_service.graph.v4.acting import create_acting_node
+from service.agent_service.graph.v4.closuring import create_closuring_node
 from service.agent_service.graph.v4.graph import (
     build_v4_graph,
     resume_v4_graph,
     run_v4_graph,
 )
+from service.agent_service.graph.subgraphs.tool_executor import _execute_call_plan_agent
 from service.agent_service.graph.v4.prompt import (
     build_current_task,
     build_tagged_prompt,
@@ -312,6 +314,104 @@ class V4GraphSmokeTest(unittest.TestCase):
         records = out2.get("tool_records") or []
         ask = [r for r in records if r.get("tool_name") == "ask_user_question"]
         self.assertEqual(ask[0]["result"], "批准")
+
+
+class _FakeSettings:
+    """最小 settings stub：closuring 启用、预算 8、并行 3。"""
+
+    def __init__(self, **overrides):
+        self.values = {
+            "agent:closuring_enabled": True,
+            "agent:closure_max_rounds": 8,
+            "agent:tool_parallelism": 3,
+            "agent:ask_user_auto_approve": False,
+            "agent:subagent_timeout_seconds": 1800,
+        }
+        self.values.update(overrides)
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+
+class ClosuringNodeTest(unittest.TestCase):
+    def _node(self, settings=None):
+        return create_closuring_node(
+            llm_service=None,
+            settings_service=settings or _FakeSettings(),
+            message_context=None,
+        )
+
+    @patch("service.agent_service.service.llm_service.FastLLMService")
+    def test_disabled_routes_finalize(self, _fast_cls):
+        node = self._node(settings=_FakeSettings(**{"agent:closuring_enabled": False}))
+        out = node(_base_state(pending_final_text="x"))
+        self.assertEqual(out["_route_target"], "finalize")
+
+    @patch("service.agent_service.service.llm_service.FastLLMService")
+    def test_passed_routes_finalize(self, fast_cls):
+        fast_cls.return_value.chat.return_value = '{"passed": true, "reason": "ok", "feedback": ""}'
+        out = self._node()(_base_state(pending_final_text="已完成总结"))
+        self.assertEqual(out["_route_target"], "finalize")
+        self.assertEqual(out["closure_rounds"], 1)
+
+    @patch("service.agent_service.service.llm_service.FastLLMService")
+    def test_failed_injects_feedback_and_returns_reasoning(self, fast_cls):
+        fast_cls.return_value.chat.return_value = (
+            '{"passed": false, "reason": "缺少总结", '
+            '"feedback": "请先输出 text 总结再 done"}'
+        )
+        out = self._node()(_base_state(pending_final_text="done"))
+        self.assertEqual(out["_route_target"], "reasoning")
+        self.assertIn("text 总结", out["closur_feedback"])
+        self.assertIsNone(out["pending_final_text"])
+
+    @patch("service.agent_service.service.llm_service.FastLLMService")
+    def test_budget_exceeded_forces_finalize(self, _fast_cls):
+        out = self._node()(_base_state(pending_final_text="x", closure_rounds=8))
+        self.assertEqual(out["_route_target"], "finalize")
+        self.assertEqual(out["closure_rounds"], 9)
+
+
+class PlanSubagentExecutorTest(unittest.TestCase):
+    @patch("service.agent_service.graph.agent_graphs.run_agent_graph")
+    @patch("service.agent_service.service.plan_file_service.plan_file_service.create_plan")
+    def test_writes_plan_and_returns_content(self, mock_create_plan, mock_run):
+        mock_run.return_value = {
+            "status": "completed",
+            "payload": '{"tasks":[{"description":"步骤1","goal":"g","done_when":"d","phase":"research"}]}',
+            "exit_info": {"code": "final_reply"},
+        }
+        mock_create_plan.return_value = {"success": True}
+        result = _execute_call_plan_agent(
+            tool_args={
+                "task_description": "生成计划",
+                "feedback": "加入验证步骤",
+            },
+            llm_service=object(),
+            token_callback=None,
+            message_context={
+                "workspace_id": "ws-plan",
+                "session_id": 42,
+                "settings_service": _FakeSettings(),
+            },
+        )
+        self.assertIsNone(result["error"])
+        self.assertIn("tasks", result["result"])
+        self.assertTrue(result["plan_written"])
+        mock_create_plan.assert_called_once()
+        # feedback 应拼入任务描述
+        call_args = mock_run.call_args[0]
+        self.assertIn("加入验证步骤", call_args[1])
+
+    @patch("service.agent_service.graph.agent_graphs.run_agent_graph")
+    def test_missing_task_description_returns_error(self, _mock_run):
+        result = _execute_call_plan_agent(
+            tool_args={},
+            llm_service=object(),
+            token_callback=None,
+            message_context={},
+        )
+        self.assertIn("缺少 task_description", result["error"])
 
 
 if __name__ == "__main__":
