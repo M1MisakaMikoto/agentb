@@ -114,6 +114,16 @@ ALL_TOOLS = {
         "description": "调用桥梁检测预测子代理，用于BCI计算、趋势预测和规范查询",
         "params": 'call_prediction_agent:{"task_description":"(交给预测子代理的任务描述，例如：基于历史检测报告计算BCI并预测未来状况)"}'
     },
+    "call_plan_agent": {
+        "name": "call_plan_agent",
+        "description": "调用计划子代理生成/重新生成执行计划",
+        "params": 'call_plan_agent:{"task_description":"(交给计划子代理的任务描述，可附上之前相关文件说明)","feedback":"(可选：leader 对上一版计划的修改意见，提供时按意见重新生成)"}'
+    },
+    "ask_user_question": {
+        "name": "ask_user_question",
+        "description": "向用户提问并等待回复（交互式；awaiting 期间图暂停）",
+        "params": 'ask_user_question:{"question":"(必填)要问用户的问题","options":"(可选)选项列表","context":"(可选)附带摘要"}'
+    },
     "update_todo": {
         "name": "update_todo",
         "description": "用完整列表覆盖更新 TODO 状态",
@@ -236,7 +246,12 @@ ALL_TOOLS = {
 
 FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir"}
 EXPLORE_TOOLS = {"explore_code", "explore_internet"}
-SUBAGENT_TOOLS = {"call_explore_agent", "call_review_agent", "call_prediction_agent"}
+SUBAGENT_TOOLS = {
+    "call_explore_agent",
+    "call_review_agent",
+    "call_prediction_agent",
+    "call_plan_agent",
+}
 TODO_TOOLS = {"update_todo"}
 RAG_TOOLS = {"rag_search"}
 WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}

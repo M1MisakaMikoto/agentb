@@ -176,6 +176,7 @@ def build_tagged_prompt(
     acting_failures: Optional[list[dict]] = None,
     settings_service=None,
     message_context: Optional[dict] = None,
+    system_prompt_override: Optional[str] = None,
 ) -> tuple[str, str]:
     """组装 V4 标签化提示词，返回 (system_prompt, user_message)。"""
     from ...prompts.graph_prompts import build_tool_schema_prompt
@@ -184,6 +185,8 @@ def build_tagged_prompt(
     allowed_tools = get_allowed_tools(agent_type, settings_service)
     tool_schema = build_tool_schema_prompt(allowed_tools, agent_type=agent_type)
     system_prompt = build_v4_system_prompt(tool_schema)
+    if system_prompt_override:
+        system_prompt = system_prompt + "\n\n" + system_prompt_override
 
     current_task = build_current_task(acting_failures=acting_failures)
     context = format_context_section(

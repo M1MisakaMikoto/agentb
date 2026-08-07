@@ -32,6 +32,15 @@ SUBAGENT_TOOLS = {
 INTERACTIVE_TOOLS = {"ask_user_question"}
 
 
+def _auto_approve(settings_service) -> bool:
+    if settings_service is None:
+        return False
+    try:
+        return bool(settings_service.get("agent:ask_user_auto_approve"))
+    except Exception:
+        return False
+
+
 def _parallelism(settings_service, default: int = 3) -> int:
     if settings_service is None:
         return default
@@ -75,10 +84,29 @@ def _execute_single_call(
         }
 
     if tool_name in INTERACTIVE_TOOLS:
+        if _auto_approve(settings_service):
+            return {
+                **base_record,
+                "status": "success",
+                "result": "自动批准",
+                "duration_ms": 0,
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+        # LangGraph interrupt：图暂停，等待用户经 resume 端点回复
+        from langgraph.types import interrupt
+        answer = interrupt({
+            "type": "ask_user_question",
+            "call_seq": call_seq,
+            "question": tool_args.get("question") or "",
+            "options": tool_args.get("options") or [],
+            "context": tool_args.get("context") or "",
+        })
+        if answer is None:
+            answer = ""
         return {
             **base_record,
-            "status": "failed",
-            "error": "交互工具 ask_user_question 尚未启用（Phase 3）",
+            "status": "success",
+            "result": str(answer),
             "duration_ms": 0,
             "timestamp": datetime.datetime.now().isoformat(),
         }

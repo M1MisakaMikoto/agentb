@@ -2367,6 +2367,9 @@ def run_graph_v3(
                 current_conversation_messages=current_conversation_messages,
                 prior_agent_state=prior_agent_state,
                 agent_type="director_agent",
+                conversation_id=(
+                    message_context.get("conversation_id") if message_context else None
+                ),
             )
     except Exception as e:
         console.warning(f"[run_graph_v3] V4 入口切换失败，回退 V3: {e}")

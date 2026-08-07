@@ -8,7 +8,11 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."
 sys.path.insert(0, BACKEND_DIR)
 
 from service.agent_service.graph.v4.acting import create_acting_node
-from service.agent_service.graph.v4.graph import build_v4_graph
+from service.agent_service.graph.v4.graph import (
+    build_v4_graph,
+    resume_v4_graph,
+    run_v4_graph,
+)
 from service.agent_service.graph.v4.prompt import (
     build_current_task,
     build_tagged_prompt,
@@ -277,6 +281,37 @@ class V4GraphSmokeTest(unittest.TestCase):
         records = out.get("tool_records") or []
         failed = [r for r in records if r.get("call_seq") == 1]
         self.assertEqual(failed[0]["status"], "failed")
+
+    @patch(
+        "service.agent_service.graph.subgraphs.tool_executor.run_tool_execution",
+        return_value={"result": "ok", "error": None},
+    )
+    def test_interrupt_resume_ask_user_question(self, _mock):
+        """ask_user_question 触发 interrupt，resume 后继续到 text。"""
+        llm = _SeqLLM([
+            (
+                '{"type":"tool_calls","content":{"reason":"询问用户","calls":['
+                '{"call_seq":1,"tool_name":"ask_user_question",'
+                '"tool_args":{"question":"是否批准执行？","options":["批准","修改"]}}]}}'
+            ),
+            '{"type":"text","content":"已按用户意见完成"}',
+        ])
+        out = run_v4_graph(
+            user_message="是否需要批准？",
+            workspace_id="ws-interrupt",
+            llm_service=llm,
+            settings_service=None,
+            message_context=None,
+            conversation_id="conv-interrupt-test",
+        )
+        self.assertEqual(out.get("status"), "awaiting_user_input")
+        self.assertEqual(out.get("interrupt", {}).get("type"), "ask_user_question")
+
+        out2 = resume_v4_graph("conv-interrupt-test", "批准")
+        self.assertEqual(out2.get("final_reply"), "已按用户意见完成")
+        records = out2.get("tool_records") or []
+        ask = [r for r in records if r.get("tool_name") == "ask_user_question"]
+        self.assertEqual(ask[0]["result"], "批准")
 
 
 if __name__ == "__main__":

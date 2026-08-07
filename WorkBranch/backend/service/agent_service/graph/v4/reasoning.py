@@ -124,6 +124,17 @@ def create_reasoning_node(llm_service=None, settings_service=None, message_conte
             return _terminal_update(reply, state)
 
         # ===== 组装标签化提示词 =====
+        system_prompt_override = None
+        if agent_type != "director_agent":
+            try:
+                from ..definitions import get_definition
+                _def = get_definition(agent_type)
+                _base = getattr(getattr(_def, "prompt", None), "system_prompt", None)
+                if _base:
+                    system_prompt_override = _base
+            except Exception:
+                system_prompt_override = None
+
         system_prompt, user_message_text = build_tagged_prompt(
             agent_type=agent_type,
             user_message=user_message,
@@ -141,6 +152,7 @@ def create_reasoning_node(llm_service=None, settings_service=None, message_conte
             acting_failures=state.get("acting_failures"),
             settings_service=settings_service,
             message_context=message_context,
+            system_prompt_override=system_prompt_override,
         )
 
         # ===== LLM 调用（结构化输出 auto：json_schema -> 400 降级 json_object）=====

@@ -14,6 +14,9 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Command
 
 from ...state import AgentState
 from core.logging import console
@@ -23,6 +26,10 @@ from .reasoning import create_reasoning_node, route_after_reasoning
 from .acting import create_acting_node, route_after_acting
 from .closuring import create_closuring_node, route_after_closuring
 from .finalize import create_finalize_node
+
+
+# conversation_id -> (compiled_graph, config) 用于 resume 恢复（进程内，亲和性保证同实例）
+_RESUME_REGISTRY: dict[str, tuple] = {}
 
 
 def _v4_enabled(settings_service) -> bool:
@@ -41,6 +48,7 @@ def build_v4_graph(
     message_context: Optional[dict] = None,
     post_execute_hook: Optional[Callable] = None,
     enable_todo: bool = True,
+    enable_interrupt: bool = False,
 ) -> Any:
     """构建 V4 主图（或子代理循环图）。"""
     graph = StateGraph(AgentState)
@@ -106,6 +114,8 @@ def build_v4_graph(
 
     graph.add_edge("finalize", END)
 
+    if enable_interrupt:
+        return graph.compile(checkpointer=InMemorySaver())
     return graph.compile()
 
 
@@ -124,6 +134,7 @@ def run_v4_graph(
     agent_type: str = "director_agent",
     post_execute_hook: Optional[Callable] = None,
     enable_todo: bool = True,
+    conversation_id: Optional[str] = None,
 ) -> dict:
     """运行 V4 编排图，返回 final_state（与 run_graph_v2/v3 兼容）。"""
     from ..definitions import get_definition
@@ -131,6 +142,8 @@ def run_v4_graph(
     from ..agent_definition import calculate_recursion_limit
 
     definition = get_definition(agent_type)
+    if conversation_id is None and message_context:
+        conversation_id = message_context.get("conversation_id")
 
     initial_state = build_initial_state(
         user_message=user_message,
@@ -152,18 +165,51 @@ def run_v4_graph(
         message_context=message_context,
         post_execute_hook=post_execute_hook,
         enable_todo=enable_todo,
+        enable_interrupt=True,
     )
 
+    thread_id = conversation_id or f"v4-{workspace_id}-{agent_type}"
     graph_config = {
-        "recursion_limit": calculate_recursion_limit(definition.meta.max_iterations)
+        "recursion_limit": calculate_recursion_limit(definition.meta.max_iterations),
+        "configurable": {"thread_id": thread_id},
     }
-    final_state = graph.invoke(initial_state, config=graph_config)
+
+    try:
+        final_state = graph.invoke(initial_state, config=graph_config)
+    except GraphInterrupt as gi:
+        # 部分 langgraph 版本 invoke 会抛 GraphInterrupt
+        final_state = {"__interrupt__": getattr(gi, "interrupts", [])}
+
+    if isinstance(final_state, dict) and final_state.get("__interrupt__"):
+        interrupts = final_state["__interrupt__"]
+        try:
+            payload = interrupts[0].value
+        except Exception:
+            payload = None
+        _RESUME_REGISTRY[thread_id] = (graph, graph_config)
+        console.info(f"[run_v4_graph] 交互中断（awaiting_user_input）: {payload}")
+        return {
+            "status": "awaiting_user_input",
+            "interrupt": payload,
+            "thread_id": thread_id,
+        }
 
     console.info(
         f"[run_v4_graph] {agent_type} 执行完成，"
         f"final_reply={bool(final_state.get('final_reply'))}, "
         f"rounds={final_state.get('iteration_count', 0)}"
     )
+    return final_state
+
+
+def resume_v4_graph(thread_id: str, answer: Any) -> dict:
+    """恢复被 ask_user_question 中断的图（由 resume 端点调用）。"""
+    entry = _RESUME_REGISTRY.get(thread_id)
+    if not entry:
+        raise KeyError(f"未找到可恢复的 v4 会话: {thread_id}")
+    graph, graph_config = entry
+    final_state = graph.invoke(Command(resume=answer), config=graph_config)
+    _RESUME_REGISTRY.pop(thread_id, None)
     return final_state
 
 
@@ -179,4 +225,5 @@ def build_v4_child_loop(
         message_context=message_context,
         post_execute_hook=None,
         enable_todo=False,
+        enable_interrupt=False,
     )
