@@ -1,20 +1,16 @@
 import datetime
 from typing import Dict, Any, Optional, Callable, List
 
-from pydantic import ValidationError
-
 from .agent_definition import AgentDefinition
 from core.logging import console, open_trace_log
 from ..state import AgentState
+from service.session_service.canonical import SegmentType
 from service.agent_service.prompts.error_injection import (
     ToolCallError,
     create_json_format_error,
     create_tool_name_error,
 )
-from .decision.response_schema import (
-    format_decision_validation_error,
-    parse_decision_response,
-)
+from .decision.tool_call_parser import DecisionParseError, parse_tool_decision_response
 
 
 class MemoryManager:
@@ -853,6 +849,9 @@ class ReActAgentBase:
             allowed_tools = get_allowed_tools(agent_type, settings_service)
             from service.agent_service.prompts.graph_prompts import build_tool_schema_prompt as _build_tool_schema_prompt
             tool_schema_prompt = _build_tool_schema_prompt(allowed_tools, agent_type=agent_type)
+
+            parent_chain_messages = state.get("parent_chain_messages") or []
+            current_conversation_messages = state.get("current_conversation_messages") or []
             
             system_prompt, context_prompt = generate_prompt(
                 agent_type=agent_type,
@@ -866,6 +865,8 @@ class ReActAgentBase:
                 last_tool_result=last_tool_result,
                 todos=state.get('todos') or [],
                 current_todo_index=state.get('current_todo_index', 0) or 0,
+                parent_chain_messages=parent_chain_messages,
+                current_conversation_messages=current_conversation_messages,
                 last_error=state.get("last_error"),
             )
             
@@ -893,10 +894,20 @@ class ReActAgentBase:
 
             try:
                 # 使用厂商 JSON Mode 强制返回纯 JSON，避免手工剥 ```json 包裹
-                response = llm_service.chat_with_json_mode(
-                    messages=[{"role": "user", "content": context_prompt}],
-                    system_prompt=system_prompt,
-                )
+                from .decision.response_schema import decision_json_schema
+
+                chat_method = getattr(llm_service, "chat_with_structured_output", None)
+                if chat_method is not None:
+                    response = chat_method(
+                        messages=[{"role": "user", "content": context_prompt}],
+                        system_prompt=system_prompt,
+                        schema=decision_json_schema(),
+                    )
+                else:
+                    response = llm_service.chat_with_json_mode(
+                        messages=[{"role": "user", "content": context_prompt}],
+                        system_prompt=system_prompt,
+                    )
 
                 response_text = response.strip()
 
@@ -910,7 +921,7 @@ class ReActAgentBase:
                 if not response_text:
                     raise ValueError("LLM 返回了空响应，可能是 API 超时或模型异常")
 
-                decision_data = parse_decision_response(response_text)
+                decision_data = parse_tool_decision_response(response_text)
             except Exception as e:
                 # 记录完整的异常信息
                 import traceback as _tb
@@ -938,11 +949,7 @@ class ReActAgentBase:
                         _f.flush()
 
                     # 设置错误信息，让下一次 prompt 注入错误提示
-                    parse_error = (
-                        format_decision_validation_error(e)
-                        if isinstance(e, ValidationError)
-                        else f"[{type(e).__name__}] {e}"
-                    )
+                    parse_error = str(e)
                     last_error = create_json_format_error(
                         original_json=response_text if 'response_text' in locals() else "",
                         parse_error=parse_error,
@@ -958,11 +965,7 @@ class ReActAgentBase:
 
                 # 重试次数用完，返回错误
                 original_response = response_text if 'response_text' in locals() else "(空)"
-                error_detail = (
-                    format_decision_validation_error(e)
-                    if isinstance(e, ValidationError)
-                    else f"[{type(e).__name__}] {e}"
-                )
+                error_detail = str(e)
                 reply = (
                     f"当前无法自动决策下一步：{error_detail}\n"
                     f"原始响应: {original_response}"
@@ -1000,11 +1003,40 @@ class ReActAgentBase:
                             "last_error": None,  # 清除错误信息
                         }
 
+                # blocked：正常输出拒绝/阻塞原因并结束对话，防止 decide 无限重试
+                if kind == "blocked":
+                    reply = decision_data.get("reply") or "当前无法继续执行"
+                    if message_context:
+                        send_message = message_context.get("send_message")
+                        if send_message:
+                            send_message("", SegmentType.CHAT_START, {
+                                "task_description": "输出最终回复",
+                                "is_start": True,
+                            })
+                            send_message(reply, SegmentType.CHAT_DELTA, {
+                                "task_description": "输出最终回复",
+                                "is_delta": True,
+                            })
+                            send_message("", SegmentType.CHAT_END, {
+                                "task_description": "输出最终回复",
+                                "is_end": True,
+                                "result": reply,
+                            })
+                    return {
+                        "todo_status": "blocked",
+                        "final_reply": reply,
+                        "has_tool_use": False,
+                        "pending_tools": [],
+                        "last_error": None,
+                        "iteration_count": iteration_count,
+                    }
+
                 return {
                     "todo_status": kind,
                     "has_tool_use": False,
                     "pending_tools": [],
                     "last_error": None,  # 清除错误信息
+                    "iteration_count": iteration_count,
                 }
             
             tool_name = decision_data.get("tool_name") or decision_data.get("name")
@@ -1070,10 +1102,25 @@ class ReActAgentBase:
             # 【关键修复】防止 pending_tools 为空时访问 [0] 导致 IndexError
             if not pending_tools:
                 console.info("[_create_execute_node] pending_tools 为空，直接返回")
+                last_result = state.get("last_tool_result")
+                if last_result:
+                    final_reply_text = str(last_result)
+                else:
+                    hist = state.get("tool_history") or []
+                    tail = hist[-3:]
+                    if tail:
+                        parts = []
+                        for h in tail:
+                            hname = h.get("tool_name") or h.get("tool") or "unknown"
+                            hres = str(h.get("result") or h.get("error") or "")[:150]
+                            parts.append(f"{hname}: {hres}")
+                        final_reply_text = "任务执行完成。最近工具执行摘要：" + " | ".join(parts)
+                    else:
+                        final_reply_text = "任务执行完成（无工具输出）"
                 return {
                     "pending_tools": [],
                     "has_tool_use": False,
-                    "final_reply": state.get("last_tool_result") or "任务执行完成",
+                    "final_reply": final_reply_text,
                 }
 
             tool_name = pending_tools[0].get("tool_name")

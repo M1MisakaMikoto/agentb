@@ -419,6 +419,8 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
                 f.write(complete_msg)
                 f.flush()
             print(f"[DEBUG-PREDICTION] ✓ Prediction Sub-Agent COMPLETED!")
+        elif tool_name == "call_plan_agent":
+            tool_result = _execute_call_plan_agent(tool_args, llm_service, token_callback, message_context)
         elif tool_name == "calculate_bci":
             import datetime
             log_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] 🔢 calculate_bci CALLED! Args: {tool_args}\n"
@@ -1435,6 +1437,112 @@ def _execute_call_review_agent(tool_args: dict, llm_service=None, token_callback
         return {"result": None, "error": f"子代理执行失败: {str(e)}"}
 
 
+def _execute_call_plan_agent(tool_args: dict, llm_service=None, token_callback=None, message_context: dict = None) -> dict:
+    """执行 call_plan_agent 工具 - 切换到计划 Agent Graph（V4）。
+
+    计划子代理每次重新生成完整计划；执行器在收到 text 输出后把计划写入
+    plan.md（plan_file_service.create_plan），并以计划内容作为工具结果回传。
+    """
+    task_description = tool_args.get("task_description")
+    feedback = tool_args.get("feedback") or ""
+    if not task_description:
+        return {"result": None, "error": "缺少 task_description 参数"}
+
+    if feedback:
+        task_description = f"{task_description}\n\n（leader 反馈/修改意见）{feedback}"
+
+    print(f"[ToolExec] call_plan_agent: {task_description[:200]}")
+
+    if llm_service is None:
+        return {"result": None, "error": "LLM 服务未配置，无法执行计划子代理任务"}
+
+    workspace_id = None
+    session_id = None
+    parent_chain_messages = []
+    current_conversation_messages = []
+    settings_service = None
+    if message_context:
+        workspace_id = message_context.get("workspace_id")
+        session_id = message_context.get("session_id")
+        parent_chain_messages = message_context.get("parent_chain_messages") or []
+        current_conversation_messages = message_context.get("current_conversation_messages") or []
+        settings_service = message_context.get("settings_service")
+
+    if not workspace_id:
+        return {"result": None, "error": "缺少 workspace_id，无法切换到计划 Agent Graph"}
+
+    subagent_timeout = _get_subagent_timeout(settings_service)
+    try:
+        from ..agent_graphs import run_agent_graph
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                run_agent_graph,
+                "plan_agent",
+                task_description,
+                workspace_id,
+                llm_service,
+                token_callback,
+                "accumulate",
+                3,
+                settings_service,
+                message_context,
+                parent_chain_messages,
+                current_conversation_messages,
+                False,
+            )
+            try:
+                outcome = future.result(timeout=subagent_timeout)
+            except FutureTimeoutError:
+                future.cancel()
+                outcome = {
+                    "kind": "graph",
+                    "status": "failed",
+                    "payload": None,
+                    "exit_info": {
+                        "code": "subgraph_timeout",
+                        "message": f"plan_agent 子图执行超时（{subagent_timeout}秒）",
+                        "details": {"agent_type": "plan_agent"},
+                    },
+                }
+
+        if outcome.get("status") == "failed":
+            exit_info = outcome.get("exit_info") or {}
+            error_msg = exit_info.get("message") or exit_info.get("code") or "计划子代理执行失败"
+            return {"result": None, "error": error_msg, "outcome": outcome}
+
+        plan_content = outcome.get("payload") or ""
+        if not plan_content:
+            return {"result": None, "error": "计划子代理未返回计划内容", "outcome": outcome}
+
+        # 写入 plan.md
+        plan_written = False
+        try:
+            from service.agent_service.service.plan_file_service import plan_file_service
+            if not session_id:
+                workspace_info = workspace_service.get_workspace_info(workspace_id)
+                session_id = workspace_info.get("session_id", "default") if workspace_info else "default"
+            plan_file_service.create_plan(
+                session_id=str(session_id),
+                workspace_id=workspace_id,
+                plan_content=plan_content,
+                title="执行计划",
+            )
+            plan_written = True
+        except Exception as e:
+            print(f"[ToolExec] call_plan_agent 写入 plan.md 失败: {e}")
+
+        print(f"[ToolExec] call_plan_agent 完成 (plan_written={plan_written})")
+        return {
+            "result": plan_content,
+            "error": None,
+            "plan_written": plan_written,
+            "outcome": outcome,
+        }
+    except Exception as e:
+        print(f"[ToolExec] call_plan_agent 失败: {e}")
+        return {"result": None, "error": f"计划子代理执行失败: {str(e)}"}
+
+
 def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_callback=None, message_context: dict = None) -> dict:
     """执行 call_prediction_agent 工具 - 切换到预测 Agent Graph"""
     import datetime
@@ -1463,7 +1571,6 @@ def _execute_call_prediction_agent(tool_args: dict, llm_service=None, token_call
 
     try:
         from ..agent_graphs import run_agent_graph
-
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
         
         with open_trace_log() as f:

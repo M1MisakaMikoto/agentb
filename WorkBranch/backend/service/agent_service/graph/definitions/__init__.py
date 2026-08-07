@@ -2,6 +2,7 @@ from .director_def import DirectorDefinition
 from .prediction_def import PredictionDefinition
 from .explore_def import ExploreDefinition
 from .review_def import ReviewDefinition
+from .plan_def import PlanDefinition
 
 
 AGENT_DEFINITIONS = {
@@ -9,6 +10,7 @@ AGENT_DEFINITIONS = {
     "prediction_agent": PredictionDefinition,
     "explore_agent": ExploreDefinition,
     "review_agent": ReviewDefinition,
+    "plan_agent": PlanDefinition,
 }
 
 

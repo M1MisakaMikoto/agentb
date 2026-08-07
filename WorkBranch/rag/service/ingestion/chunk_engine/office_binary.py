@@ -25,19 +25,31 @@ def read_ole_stream(data: bytes, stream_name: str) -> Optional[bytes]:
     difat_start = struct.unpack_from("<I", data, 68)[0]
     num_difat_sectors = struct.unpack_from("<I", data, 72)[0]
 
-    fat: List[int] = []
+    # DIFAT 头部 109 项：FAT 扇区编号列表
+    fat_secs: List[int] = []
     for i in range(109):
         v = struct.unpack_from("<I", data, 76 + i * 4)[0]
-        if v != 0xFFFFFFFF:
-            fat.append(v)
-    for i in range(num_difat_sectors):
-        sec = difat_start + i if i == 0 else fat[difat_start + i - 1]
-        off = 512 + sec * sector_size
+        if v == 0xFFFFFFFF:
+            break
+        fat_secs.append(v)
+    # 扩展 DIFAT 链：后续 FAT 扇区编号存于 DIFAT 扇区
+    difat_sec = difat_start
+    while num_difat_sectors > 1:
+        off = 512 + difat_sec * sector_size
         for j in range(sector_size // 4 - 1):
             v = struct.unpack_from("<I", data, off + j * 4)[0]
             if v == 0xFFFFFFFF:
                 break
-            fat.append(v)
+            fat_secs.append(v)
+        difat_sec = struct.unpack_from("<I", data, off + sector_size - 4)[0]
+        num_difat_sectors -= 1
+
+    # 逐扇区读取 FAT 条目，拼出完整 fat 表
+    fat: List[int] = []
+    for fs in fat_secs:
+        off = 512 + fs * sector_size
+        for j in range(sector_size // 4):
+            fat.append(struct.unpack_from("<I", data, off + j * 4)[0])
 
     def read_chain(start: int) -> bytes:
         if start == 0xFFFFFFFE:
@@ -137,11 +149,45 @@ def _is_meaningful_text(text: str) -> bool:
         return False
     if re.fullmatch(r"[\d\s.,;:\-()[\]{}\\/|+=_*#@!%^&~`'\"<>?]+", t):
         return False
-    if re.search(r"[\u4e00-\u9fff]", t):
+
+    # OLE \u4e8c\u8fdb\u5236\u88ab\u8bef\u8bfb\u4e3a UTF-16LE \u65f6\u4f1a\u4ea7\u751f\u5927\u91cf\u5f02\u5e38\u5b57\u7b26\uff08PUA/\u97e9\u6587/\u897f\u91cc\u5c14\u7b49\uff09\uff0c
+    # \u7ed9\u5b83\u4eec\u6263\u5206\uff1b\u771f\u5b9e\u4e2d\u6587\u6b63\u6587\u57fa\u7840 CJK \u5360\u6bd4\u9ad8\u3001\u5f97\u5206\u9ad8\u3002
+    def _text_score(s: str) -> float:
+        score = 0.0
+        for ch in s:
+            o = ord(ch)
+            if 0x4E00 <= o <= 0x9FFF:
+                score += 3.0
+            elif 0x3400 <= o <= 0x4DBF:
+                score += 1.5
+            elif 0x3040 <= o <= 0x30FF:
+                score += 2.0
+            elif ch in "\uff0c\u3002\uff1b\uff1a\u3001\uff08\uff09\u3010\u3011\u300a\u300b\u3008\u3009\u300c\u300d\u300e\u300f\u201c\u201d\u2018\u2019\uff01\uff1f\u2014\u2026\u00b7\uff05\uffe5" or o in (0x3000, 0x2013):
+                score += 2.0
+            elif ch.isascii() and ch.isalnum():
+                score += 1.0
+            elif ch in " \t\r\n.":
+                score += 0.5
+            elif 0xE000 <= o <= 0xF8FF:
+                score -= 6.0
+            elif 0xAC00 <= o <= 0xD7A3:
+                score -= 4.0
+            elif 0x0400 <= o <= 0x052F:
+                score -= 4.0
+            else:
+                score -= 3.0
+        return score
+
+    base_cjk = sum(1 for ch in t if 0x4E00 <= ord(ch) <= 0x9FFF)
+    cjk_ratio = base_cjk / len(t) if t else 0
+    # 二进制误读的 run 往往很短，真实正文通常是一整段
+    if cjk_ratio >= 0.45 and len(t) >= 4:
+        return _text_score(t) >= len(t) * 1.2 or len(t) >= 60
+
+    ascii_alnum = sum(1 for ch in t if ch.isascii() and ch.isalnum())
+    if ascii_alnum / len(t) >= 0.6 and _text_score(t) > 0 and len(t) >= 4:
         return True
-    if re.search(r"[a-zA-Z]{2,}", t):
-        return True
-    return len(t) >= 6
+    return len(t) >= 12 and _text_score(t) >= len(t)
 
 
 def dedupe_lines(lines: Iterable[str]) -> str:
@@ -175,6 +221,43 @@ def extract_doc_text(file_path: Path) -> str:
     if fallback.strip():
         return fallback
     raise ValueError("no readable text extracted from .doc")
+
+
+def extract_ppt_text(file_path: Path) -> str:
+    data = file_path.read_bytes()
+    if data[:8] != _OLE_MAGIC:
+        raise ValueError("not a valid .ppt OLE file")
+
+    # 优先读正文流，其次 Data 流；取 UTF-16LE 文本片段得分最高者
+    best = ""
+    best_score = 0
+    for stream in ("PowerPoint Document", "Data"):
+        payload = read_ole_stream(data, stream)
+        if not payload:
+            continue
+        text = dedupe_lines(extract_utf16le_runs(payload, 2))
+        score = _score_extracted_text(text)
+        if score > best_score:
+            best_score = score
+            best = text
+    if best.strip():
+        return best
+
+    # 兜底：全文件 UTF-16LE 扫描
+    fallback = dedupe_lines(extract_utf16le_runs(data, 4))
+    if fallback.strip():
+        return fallback
+    raise ValueError("no readable text extracted from .ppt")
+
+
+def _score_extracted_text(text: str) -> int:
+    total = len(text.strip())
+    if total == 0:
+        return 0
+    cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
+    latin = sum(1 for ch in text if ch.isalpha() and ch.isascii())
+    digits = sum(1 for ch in text if ch.isdigit())
+    return cjk + latin + digits
 
 
 def _xlsx_col_letters(cell_ref: str) -> Tuple[int, int]:

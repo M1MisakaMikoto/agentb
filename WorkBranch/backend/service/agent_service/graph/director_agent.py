@@ -28,6 +28,7 @@ from .subgraphs.tool_registry import (
 from .subgraphs.tool_executor import run_tool_execution, _get_subagent_timeout
 from .react_agent_base import ReActAgentBase, MemoryManager
 from .definitions import get_definition
+from .decision.tool_call_parser import DecisionParseError, parse_tool_decision_response
 from service.agent_service.prompts.graph_prompts import (
     THINK_SYSTEM_PROMPT,
     PLAN_MODE_SYSTEM_PROMPT,
@@ -171,6 +172,27 @@ def _check_loop_or_stuck(
     todos: list = None,
 ) -> dict:
     from service.agent_service.service.llm_service import LLMService
+
+    # 规则预检：最近窗口内同一工具+相同参数+相同结果重复出现 >=3 次，判定为循环。
+    # 排除纯查询/思考类工具，避免误伤正常的多文件流程。
+    from collections import Counter
+
+    recent = tool_history[-CHECK_INTERVAL:] if len(tool_history) >= CHECK_INTERVAL else tool_history
+    if len(recent) >= 6:
+        query_tools = {"list_workspace_files", "get_workspace_info", "search_files", "thinking"}
+        sigs = []
+        for item in recent:
+            tname = item.get("tool_name") or item.get("tool") or "unknown"
+            if tname in query_tools:
+                continue
+            sigs.append((str(tname), str(item.get("args")), str(item.get("result") or item.get("error") or "")))
+        counter = Counter(sigs)
+        for (tname, _, _), count in counter.items():
+            if count >= 3:
+                return {
+                    "action": "stop",
+                    "reason": f"检测到重复调用相同工具且参数与结果完全相同（{tname} × {count}），判定为循环",
+                }
     
     prompt = _build_loop_check_prompt(
         tool_history, 
@@ -787,10 +809,20 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
         response = None
         try:
             # 使用厂商 JSON Mode 强制返回纯 JSON，避免手工剥 ```json 包裹
-            response = llm_service.chat_with_json_mode(
-                messages=[{"role": "user", "content": context_prompt}],
-                system_prompt=system_prompt,
-            )
+            from .decision.response_schema import decision_json_schema
+
+            chat_method = getattr(llm_service, "chat_with_structured_output", None)
+            if chat_method is not None:
+                response = chat_method(
+                    messages=[{"role": "user", "content": context_prompt}],
+                    system_prompt=system_prompt,
+                    schema=decision_json_schema(),
+                )
+            else:
+                response = llm_service.chat_with_json_mode(
+                    messages=[{"role": "user", "content": context_prompt}],
+                    system_prompt=system_prompt,
+                )
             console.response_box(response)
             response_text = response.strip()
 
@@ -807,14 +839,10 @@ def create_decide_tool_action_node(llm_service=None, settings_service=None, mess
             if not response_text:
                 raise ValueError("LLM 返回了空响应，可能是 API 超时或模型异常")
 
-            decision_data = json.loads(response_text)
-            # 防御：LLM 偶尔返回 JSON 数组 [{...}] 而非对象 {...}，取第一个元素
-            if isinstance(decision_data, list):
-                console.warning(f"[LLM-PARSE-WARN] LLM 返回了数组而非对象，取第一个元素")
-                if len(decision_data) == 0:
-                    raise ValueError("LLM 返回了空数组")
-                decision_data = decision_data[0]
-            # ✅ 分类异常：JSON解析错误
+            decision_data = parse_tool_decision_response(response_text)
+
+        except DecisionParseError as e:
+            # ✅ 分类异常：JSON 解析 / schema 校验失败
             console.warning(f"[LLM-PARSE-ERROR] JSON解析失败 (第{decision_error_count+1}次): {e}")
             console.warning(f"[LLM-PARSE-ERROR] 原始响应内容:\n{response_text}")
             _handle_decision_error(e, response_text, state, user_message, message_context, iteration_count)
@@ -2320,6 +2348,32 @@ def run_graph_v3(
     current_conversation_messages: List[dict] = None,
     prior_agent_state: Optional[AgentState] = None,
 ) -> dict:
+    # V4 编排开关：agent:orchestration_version == "v4" 时走新图
+    try:
+        if settings_service is not None and str(
+            settings_service.get("agent:orchestration_version") or "v3"
+        ).lower() == "v4":
+            from .v4.graph import run_v4_graph
+            return run_v4_graph(
+                user_message=user_message,
+                workspace_id=workspace_id,
+                llm_service=llm_service,
+                token_callback=token_callback,
+                memory_mode=memory_mode,
+                window_size=window_size,
+                settings_service=settings_service,
+                message_context=message_context,
+                parent_chain_messages=parent_chain_messages,
+                current_conversation_messages=current_conversation_messages,
+                prior_agent_state=prior_agent_state,
+                agent_type="director_agent",
+                conversation_id=(
+                    message_context.get("conversation_id") if message_context else None
+                ),
+            )
+    except Exception as e:
+        console.warning(f"[run_graph_v3] V4 入口切换失败，回退 V3: {e}")
+
     print("\n" + "="*60)
     print("[Director Agent] 块类型驱动循环 + Plan/Execute 分离")
     print(f"[Director Agent] 记忆模式: {memory_mode}, 窗口大小: {window_size}")

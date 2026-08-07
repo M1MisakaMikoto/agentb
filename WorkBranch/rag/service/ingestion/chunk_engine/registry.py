@@ -11,6 +11,8 @@ from .file_profile_detector import FileProfileDetector
 from .hybrid_pdf_chunk_engine import HybridPDFChunkEngine
 from .ocr_chunk_engine import OCRChunkEngine
 from .plain_text_chunk_engine import PlainTextChunkEngine
+from .ppt_chunk_engine import PptChunkEngine
+from .pptx_chunk_engine import PptxChunkEngine
 from .pypdf_chunk_engine import PyPDFChunkEngine
 from .xls_chunk_engine import XlsChunkEngine
 from .xlsx_chunk_engine import XlsxChunkEngine
@@ -23,6 +25,8 @@ class ChunkEngineRegistry:
             HybridPDFChunkEngine(),
             PyPDFChunkEngine(),
             OCRChunkEngine(),
+            PptxChunkEngine(),
+            PptChunkEngine(),
             DocxChunkEngine(),
             DocChunkEngine(),
             XlsxChunkEngine(),

@@ -33,6 +33,7 @@ def _build_workspace_file_index_text(workspace_id: str, files: List[Dict[str, An
 class ConversationState(Enum):
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_USER_INPUT = "awaiting_user_input"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -429,6 +430,15 @@ class ConversationService:
                         except asyncio.TimeoutError:
                             task.cancel()
                             raise RuntimeError("Agent task finished without emitting any stream messages")
+                        # 竞态保护：任务已完成但已发布的消息可能仍在订阅队列中
+                        # （例如 blocked 批量发布 chat_start/delta/end/done 的场景）。
+                        # 给订阅者一个短暂的送达窗口，避免误判为“无消息完成”。
+                        try:
+                            message, seq = await asyncio.wait_for(subscriber.get(), timeout=2.0)
+                            await collect_and_forward(message)
+                            continue
+                        except asyncio.TimeoutError:
+                            pass
                         raise RuntimeError("Agent task finished without emitting any stream messages")
                     continue
 

@@ -69,6 +69,20 @@ def create_child_agent_graph(
     settings_service=None,
     message_context: dict = None,
 ):
+    # V4 编排开关：子代理走统一 reasoning/acting 骨架
+    try:
+        if settings_service is not None and str(
+            settings_service.get("agent:orchestration_version") or "v3"
+        ).lower() == "v4":
+            from .v4.graph import build_v4_child_loop
+            return build_v4_child_loop(
+                llm_service=llm_service,
+                settings_service=settings_service,
+                message_context=message_context,
+            )
+    except Exception as e:
+        console.warning(f"[create_child_agent_graph] V4 子图切换失败，回退 V3: {e}")
+
     try:
         definition = get_definition(agent_type)
         child_base = ReActAgentBase(definition=definition)

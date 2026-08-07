@@ -326,6 +326,9 @@
         await loadCategories();
       }
 
+      const OFFICE_SUFFIXES = [".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"];
+      const isOfficeDoc = (name = "") => OFFICE_SUFFIXES.some(s => name.toLowerCase().endsWith(s));
+
       async function onSelectDoc(doc) {
         setSelectedDoc(doc);
         setDocName(doc.display_name || doc.filename);
@@ -357,6 +360,11 @@
 
       async function saveDoc() {
         if (!selectedDoc) return;
+        // Office 二进制/压缩文档：内容区是提取的只读预览，禁止写回，避免覆盖原始文件
+        if (isOfficeDoc(docPath || docName)) {
+          setStatusText("Office 文档为只读预览，不可保存内容");
+          return;
+        }
         await api(`${API_BASE}/documents/${selectedDoc.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },

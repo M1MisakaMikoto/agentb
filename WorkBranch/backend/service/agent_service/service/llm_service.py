@@ -19,6 +19,8 @@ class LLMService:
     """LLM 服务：封装 LangChain OpenAI 调用"""
 
     _instance = None
+    # 提供方不支持 json_schema 的负缓存（进程内），避免每次决策都先打一次 400
+    _json_schema_unavailable = False
 
     def __new__(cls, settings_service=None):
         if cls._instance is None:
@@ -412,6 +414,85 @@ class LLMService:
         print(response_text)  # 原生 print()，绝对无截断
         print(f"{'='*80}\n")
 
+        return response_text
+
+    def _get_structured_output_mode(self) -> str:
+        """读取 llm:structured_output 配置：disabled / json_object / json_schema / auto。"""
+        if self._settings is None:
+            return "json_object"
+        try:
+            mode = str(self._settings.get("llm:structured_output") or "auto").lower()
+        except KeyError:
+            mode = "auto"
+        if mode not in ("disabled", "json_object", "json_schema", "auto"):
+            mode = "auto"
+        return mode
+
+    def chat_with_structured_output(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        schema: Optional[dict] = None,
+        http_client: Any = None,
+        http_async_client: Any = None,
+        fallback_to_json_object: bool = True,
+    ) -> str:
+        """
+        发送聊天请求，优先使用 OpenAI 标准结构化输出（response_format=json_schema）。
+
+        - schema 为 None，或配置为 disabled/json_object 时：等价于 chat_with_json_mode。
+        - 配置为 auto/json_schema 且提供方不支持 json_schema（通常返回 400）：
+          自动降级 json_object 并记录事件，保证调用不中断。
+
+        Returns:
+            LLM 响应文本（与 chat_with_json_mode 一致，由统一解析器兜底）。
+        """
+        mode = self._get_structured_output_mode()
+        use_json_schema = mode in ("json_schema", "auto") and schema is not None
+        if self._json_schema_unavailable:
+            use_json_schema = False
+
+        if not use_json_schema:
+            return self.chat_with_json_mode(
+                messages,
+                system_prompt=system_prompt,
+                http_client=http_client,
+                http_async_client=http_async_client,
+            )
+
+        if http_client is not None or http_async_client is not None:
+            llm = self._build_llm(http_client=http_client, http_async_client=http_async_client)
+        else:
+            llm = self._get_llm()
+
+        structured_llm = llm.bind(
+            response_format={"type": "json_schema", "json_schema": schema}
+        )
+        lc_messages = self._build_lc_messages(messages, system_prompt, allow_multimodal=False)
+
+        try:
+            response = self._invoke_with_logging(
+                "chat_with_structured_output",
+                lambda: structured_llm.invoke(lc_messages),
+            )
+        except Exception as exc:
+            if not fallback_to_json_object:
+                raise
+            self._json_schema_unavailable = True
+            self._log_llm_event(
+                "WARNING",
+                "llm.structured_output_fallback",
+                "json_schema 不受提供方支持，降级 json_object",
+                extra={"error": str(exc), "mode": mode},
+            )
+            return self.chat_with_json_mode(
+                messages,
+                system_prompt=system_prompt,
+                http_client=http_client,
+                http_async_client=http_async_client,
+            )
+
+        response_text = response.content if isinstance(response.content, str) else str(response.content)
         return response_text
 
     def chat_stream(

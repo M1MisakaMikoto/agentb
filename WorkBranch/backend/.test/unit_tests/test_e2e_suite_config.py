@@ -12,7 +12,6 @@ FIXTURE_DOC_PATH = REPO_ROOT / "deploy" / "e2e" / "FIXTURES.md"
 
 EXPECTED_SCENARIOS = [
     "serial_mode",
-    "workspace_upload_image_understanding",
     "workspace_upload_read_table_document",
     "qiaozitang_monthly_query",
     "pdf_generate",

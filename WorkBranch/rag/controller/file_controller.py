@@ -46,6 +46,13 @@ from rag.service.file_system_service import FileSystemService
 from rag.service.ingestion import IngestionService
 from rag.service.ingestion.ingest_queue_service import IngestQueueService
 from rag.service.ingestion.redis_queue import RedisIngestQueueProducer
+from rag.service.ppt_convert_service import (
+    PPTX_MIME,
+    PptConvertError,
+    convert_ppt_bytes_to_pptx,
+    is_legacy_ppt,
+    pptx_display_name,
+)
 
 _DEFAULT_APP_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = _DEFAULT_APP_ROOT if (_DEFAULT_APP_ROOT / "backend").exists() else Path(__file__).resolve().parents[3]
@@ -262,6 +269,22 @@ async def upload_document(
                 mime,
             )
 
+    if is_legacy_ppt(display_name, mime):
+        try:
+            content = convert_ppt_bytes_to_pptx(content, display_name)
+            display_name = pptx_display_name(display_name)
+            mime = PPTX_MIME
+            converted_from_doc = True
+            LOGGER.info("upload_ppt_converted display_name=%s size_bytes=%s", display_name, len(content))
+        except PptConvertError as exc:
+            # 无 LibreOffice/PowerPoint 时降级：保留原始 .ppt 由 PptChunkEngine 解析
+            LOGGER.warning(
+                "upload_ppt_convert_failed_keep_legacy filename=%s error=%s mime=%s",
+                file.filename,
+                exc,
+                mime,
+            )
+
     size = len(content)
     hash_sha = _sha256_bytes(content)
     LOGGER.info(
@@ -356,11 +379,64 @@ def get_document(document_id: int) -> dict:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+_OFFICE_EXTRACTORS = (
+    (".doc", "office_binary", "extract_doc_text"),
+    (".docx", "docx_chunk_engine", "DocxChunkEngine"),
+    (".ppt", "office_binary", "extract_ppt_text"),
+    (".pptx", "pptx_chunk_engine", "PptxChunkEngine"),
+    (".xls", "office_binary", "extract_xls_text"),
+    (".xlsx", "office_binary", "extract_xlsx_text"),
+)
+
+
+def _extract_office_text(path: Path, name: str) -> str | None:
+    """Extract readable text from Office binary/zip files; None if not an Office file."""
+    suffix = Path(name.replace("\\", "/").rstrip("/")).suffix.lower()
+    for ext, module, symbol in _OFFICE_EXTRACTORS:
+        if suffix != ext:
+            continue
+        mod = __import__(
+            f"rag.service.ingestion.chunk_engine.{module}",
+            fromlist=[symbol],
+        )
+        target = getattr(mod, symbol)
+        if isinstance(target, type):
+            return target().extract_text(path)
+        return target(path)
+    return None
+
+
 @router.get("/api/documents/{document_id}/file")
 def get_document_file(document_id: int) -> dict:
     try:
         detail_do = FILE_META_DAO.get_document_detail(document_id)
-        payload = FILE_SYSTEM_SERVICE.read_file(path=detail_do.document.storage_key)
+        storage_key = detail_do.document.storage_key
+        display_name = detail_do.document.display_name or Path(storage_key.replace("\\", "/")).name
+        target = _storage_abs(storage_key)
+        if not target.exists():
+            raise FileNotFoundError("File not found")
+        if not target.is_file():
+            raise IsADirectoryError("Path is not a file")
+        size = target.stat().st_size
+
+        try:
+            extracted = _extract_office_text(target, storage_key)
+        except Exception as exc:
+            # 二进制文件按 UTF-8 裸读会乱码，提取失败时返回可读提示而非原始字节
+            LOGGER.warning(
+                "get_document_file_extract_failed document_id=%s storage_key=%s error=%s",
+                document_id,
+                storage_key,
+                exc,
+            )
+            extracted = f"[无法提取此文件的文本内容：{exc}]"
+
+        if extracted is not None:
+            return FILE_RESPONSE_ASSEMBLER.to_read_vo(
+                {"path": storage_key, "name": display_name, "size": size, "content": extracted}
+            ).model_dump()
+
+        payload = FILE_SYSTEM_SERVICE.read_file(path=storage_key)
         return FILE_RESPONSE_ASSEMBLER.to_read_vo(payload).model_dump()
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -484,6 +560,8 @@ def _media_type_for_binary_download(filename: str) -> str:
     lower = filename.lower()
     if lower.endswith(".docx"):
         return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if lower.endswith(".pptx"):
+        return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     guessed, _ = mimetypes.guess_type(filename)
     return guessed or "application/octet-stream"
 
@@ -566,6 +644,14 @@ def read_file(
                 except DocConvertError as exc:
                     # 与上传降级保持一致：无 LibreOffice/Word 时返回原始 .doc 字节，由前端 CFB 解析
                     LOGGER.warning("read_file_doc_convert_failed_keep_legacy path=%s error=%s", path, exc)
+            if is_legacy_ppt(name):
+                try:
+                    body = convert_ppt_bytes_to_pptx(body, name)
+                    name = pptx_display_name(name)
+                    LOGGER.info("read_file_ppt_converted path=%s out_name=%s", path, name)
+                except PptConvertError as exc:
+                    # 与上传降级保持一致：返回原始 .ppt 字节，由前端 CFB 解析
+                    LOGGER.warning("read_file_ppt_convert_failed_keep_legacy path=%s error=%s", path, exc)
             media_type = _media_type_for_binary_download(name)
             headers = {
                 **_deprecation_headers(),
