@@ -2348,6 +2348,29 @@ def run_graph_v3(
     current_conversation_messages: List[dict] = None,
     prior_agent_state: Optional[AgentState] = None,
 ) -> dict:
+    # V4 编排开关：agent:orchestration_version == "v4" 时走新图
+    try:
+        if settings_service is not None and str(
+            settings_service.get("agent:orchestration_version") or "v3"
+        ).lower() == "v4":
+            from .v4.graph import run_v4_graph
+            return run_v4_graph(
+                user_message=user_message,
+                workspace_id=workspace_id,
+                llm_service=llm_service,
+                token_callback=token_callback,
+                memory_mode=memory_mode,
+                window_size=window_size,
+                settings_service=settings_service,
+                message_context=message_context,
+                parent_chain_messages=parent_chain_messages,
+                current_conversation_messages=current_conversation_messages,
+                prior_agent_state=prior_agent_state,
+                agent_type="director_agent",
+            )
+    except Exception as e:
+        console.warning(f"[run_graph_v3] V4 入口切换失败，回退 V3: {e}")
+
     print("\n" + "="*60)
     print("[Director Agent] 块类型驱动循环 + Plan/Execute 分离")
     print(f"[Director Agent] 记忆模式: {memory_mode}, 窗口大小: {window_size}")

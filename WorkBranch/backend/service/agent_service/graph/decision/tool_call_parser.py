@@ -196,6 +196,39 @@ def parse_tool_decision_response(response_text: str) -> dict[str, Any]:
         ) from e
 
 
+def parse_leader_output(response_text: str) -> dict[str, Any]:
+    """
+    解析 V4 leader 输出（{type: text/tool_calls/done, content}）。
+
+    复用统一容错链（直接 JSON → fence → 平衡提取 → 修复），
+    再经 protocol.LeaderOutput 判别模型校验。
+
+    Raises:
+        DecisionParseError: category 为 "json_syntax" / "schema" / "not_object"。
+    """
+    from ..v4.protocol import parse_leader_output_dict
+
+    raw = extract_json_object(response_text)
+    if isinstance(raw, list):
+        if not raw:
+            raise DecisionParseError("json_syntax", "leader 输出为空数组", response_text)
+        raw = raw[0]
+    if not isinstance(raw, dict):
+        raise DecisionParseError(
+            "not_object",
+            f"leader 输出顶层必须是 JSON 对象，实际类型: {type(raw).__name__}",
+            response_text,
+        )
+    try:
+        return parse_leader_output_dict(raw)
+    except ValidationError as e:
+        raise DecisionParseError(
+            "schema",
+            format_decision_validation_error(e),
+            response_text,
+        ) from e
+
+
 def parse_intent_response(
     response_text: str,
     original_message: str,

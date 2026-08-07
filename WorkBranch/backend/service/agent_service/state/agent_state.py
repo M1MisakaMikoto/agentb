@@ -127,3 +127,14 @@ class AgentState(TypedDict):
     todo_status: Optional[str]
     next_action: Optional[NextAction]
     _route_target: Optional[str]
+
+    # ===== V4 编排字段 =====
+    pending_batch: Optional[dict]
+    tool_records: Optional[List[dict]]
+    parse_error: Optional[str]
+    parse_error_raw: Optional[str]
+    closur_feedback: Optional[str]
+    acting_failures: Optional[List[dict]]
+    closure_rounds: Optional[int]
+    pending_final_text: Optional[str]
+    output_type: Optional[str]
