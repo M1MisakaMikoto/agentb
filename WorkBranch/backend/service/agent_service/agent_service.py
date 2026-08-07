@@ -26,6 +26,7 @@ from service.session_service.message_content import build_user_message, get_mess
 class ConversationStatus(Enum):
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_USER_INPUT = "awaiting_user_input"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -589,6 +590,32 @@ class AgentService:
 
             if conv:
                 conv.result = result
+
+            if isinstance(result, dict) and result.get("status") == "awaiting_user_input":
+                # V4 交互中断：发布 user_input_request，置 awaiting 状态，不发布 DONE
+                interrupt = result.get("interrupt") or {}
+                request_msg = MessageBuilder.build(
+                    role="assistant",
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    session_id=str(session_id),
+                    workspace_id=workspace_id,
+                    msg_type=SegmentType.USER_INPUT_REQUEST,
+                    content=json.dumps(interrupt, ensure_ascii=False),
+                    metadata={"message_id": message_id, "awaiting": True},
+                )
+                mq.publish_sync(request_msg)
+                if conv:
+                    conv.status = ConversationStatus.AWAITING_USER_INPUT
+                self._log_agent_event(
+                    "INFO",
+                    "agent.awaiting_user_input",
+                    "agent 等待用户输入（ask_user_question 中断）",
+                    conversation_id=conversation_id,
+                    workspace_id=workspace_id,
+                    extra={"session_id": session_id, "interrupt": interrupt},
+                )
+                return result
 
             if text_started:
                 msg = MessageBuilder.text_end(

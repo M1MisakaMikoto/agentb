@@ -26,6 +26,36 @@ MAX_DECISION_RETRIES = 3
 MAX_RECORD_LOOP = 3
 
 
+def _fastllm_correction_guidance(
+    raw_response: str,
+    issue: str,
+    allowed_tools: list[str],
+    settings_service,
+) -> str:
+    """解析/语义错误时用快速模型生成修正性提示词（提高重试效果）。
+
+    fastllm 失败时返回空串（退化为纯错误信息 + 原文，不影响主流程）。
+    """
+    try:
+        from service.agent_service.service.llm_service import FastLLMService
+        fast = FastLLMService(settings_service)
+        prompt = (
+            "下面是 agent 的一轮错误输出，请给出修正建议（不超过 120 字，"
+            "说明正确输出形态，例如应使用哪个工具、补哪个字段、修正哪个 call_seq）。\n"
+            f"错误: {issue}\n"
+            f"可用工具: {', '.join(allowed_tools[:30])}\n"
+            f"原始输出: {str(raw_response)[:1500]}"
+        )
+        resp = fast.chat(
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt="你是输出协议校验助手，只输出修正建议文本，不要输出 JSON。",
+        )
+        guidance = str(resp or "").strip()
+        return guidance[:300]
+    except Exception:
+        return ""
+
+
 def _terminal_update(text: str, state: AgentState) -> dict:
     """异常终止：设置待定最终文本，路由 finalize（跳过 closuring）。"""
     return {
@@ -196,9 +226,13 @@ def create_reasoning_node(llm_service=None, settings_service=None, message_conte
             if decision_error_count >= MAX_DECISION_RETRIES:
                 text = fixed_parse_failure_text(f"[{e.category}] {e}", raw_response)
                 return _terminal_update(text, state)
+            guidance = _fastllm_correction_guidance(
+                raw_response, f"[{e.category}] {e}", [], settings_service
+            )
+            extra = f"\n修正建议: {guidance}" if guidance else ""
             return {
                 "decision_error_count": decision_error_count,
-                "parse_error": f"类别: {e.category}\n说明: {e}\n原文: {raw_response}",
+                "parse_error": f"类别: {e.category}\n说明: {e}\n原文: {raw_response}{extra}",
                 "parse_error_raw": raw_response,
                 "_route_target": "reasoning",
             }
@@ -212,9 +246,13 @@ def create_reasoning_node(llm_service=None, settings_service=None, message_conte
             if decision_error_count >= MAX_DECISION_RETRIES:
                 text = fixed_parse_failure_text(f"语义校验失败: {issue_text}", raw_response)
                 return _terminal_update(text, state)
+            guidance = _fastllm_correction_guidance(
+                raw_response, issue_text, allowed_tools, settings_service
+            )
+            extra = f"\n修正建议: {guidance}" if guidance else ""
             return {
                 "decision_error_count": decision_error_count,
-                "parse_error": f"类别: semantic\n说明: {issue_text}\n原文: {raw_response}",
+                "parse_error": f"类别: semantic\n说明: {issue_text}\n原文: {raw_response}{extra}",
                 "parse_error_raw": raw_response,
                 "_route_target": "reasoning",
             }

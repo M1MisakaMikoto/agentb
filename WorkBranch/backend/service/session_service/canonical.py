@@ -28,6 +28,7 @@ class SegmentType(Enum):
     ERROR = "error"
     CANCELLED = "cancelled"
     DONE = "done"
+    USER_INPUT_REQUEST = "user_input_request"
     CONVERSATION_HANDOFF = "conversation_handoff"
     COMPRESSION_START = "compression_start"
     COMPRESSION_END = "compression_end"

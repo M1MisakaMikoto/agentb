@@ -15,7 +15,7 @@ from controller.VO.result import Result
 from core.logging import bind_ctx, get_ctx
 from singleton import get_logging_runtime, get_message_queue, get_conversation_service
 from service.session_service.mq import MessageQueue
-from service.session_service.canonical import SegmentType, Message
+from service.session_service.canonical import SegmentType, Message, MessageBuilder
 from raw_streaming_response import RawStreamingResponse
 from service.session_service.message_content import MessageContentError, normalize_user_content
 from controller.affinity import require_owned_conversation
@@ -437,6 +437,14 @@ async def stream_conversation_message(
                                 },
                             )
                             yield f"data: {json.dumps(cancel_event, ensure_ascii=False)}\n\n"
+                        elif state == "awaiting_user_input":
+                            done_received = True
+                            awaiting_event = {
+                                'type': 'user_input_awaiting',
+                                'content': '等待用户回复，可通过 resume 端点继续',
+                            }
+                            stream_logger.log(awaiting_event, -1)
+                            yield f"data: {json.dumps(awaiting_event, ensure_ascii=False)}\n\n"
 
                 if not done_received:
                     timeout_event = {'type': 'error', 'content': 'Timeout'}
@@ -478,3 +486,83 @@ async def stream_conversation_message(
             "X-Request-Id": request_ctx.get("request_id") or "",
         },
     )
+
+
+class ResumeConversationBody(BaseModel):
+    answer: str
+
+
+@router.post("/{conversation_id}/resume")
+async def resume_conversation(
+    conversation_id: str,
+    body: ResumeConversationBody,
+    request: Request,
+) -> Result:
+    """恢复被 ask_user_question 中断的对话（V4 awaiting_user_input）。
+
+    调用 v4 resume_v4_graph 后，将最终回复以 CHAT_START/DELTA/END + DONE
+    发布到消息流，并把对话状态置为 completed。
+    """
+    await require_owned_conversation(request, conversation_id, claim_owner=True)
+
+    service = get_conversation_service()
+    mq = get_message_queue()
+    conversation = await service.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    if conversation.get("state") != "awaiting_user_input":
+        raise HTTPException(
+            status_code=400,
+            detail=f"对话不在等待用户输入状态（当前: {conversation.get('state')}）",
+        )
+
+    try:
+        from service.agent_service.graph.v4.graph import resume_v4_graph
+        final_state = await asyncio.to_thread(resume_v4_graph, conversation_id, body.answer)
+    except KeyError as e:
+        raise HTTPException(status_code=409, detail=f"无法恢复对话: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"恢复对话失败: {e}") from e
+
+    final_reply = str(final_state.get("final_reply") or "")
+    workspace_id = conversation.get("workspace_id") or ""
+    session_id = conversation.get("session_id") or ""
+    message_id = f"msg-{conversation_id}-resume-{int(time.time() * 1000)}"
+
+    for msg_type, content in [
+        (SegmentType.CHAT_START, ""),
+        (SegmentType.CHAT_DELTA, final_reply),
+        (SegmentType.CHAT_END, final_reply),
+    ]:
+        msg = MessageBuilder.build(
+            role="assistant",
+            message_id=message_id,
+            conversation_id=conversation_id,
+            session_id=str(session_id),
+            workspace_id=workspace_id,
+            msg_type=msg_type,
+            content=content,
+            metadata={"message_id": message_id, "resumed": True},
+        )
+        mq.publish_sync(msg)
+
+    done_msg = MessageBuilder.done(
+        message_id=message_id,
+        conversation_id=conversation_id,
+        session_id=str(session_id),
+        workspace_id=workspace_id,
+        metadata={"message_id": message_id, "resumed": True},
+    )
+    mq.publish_sync(done_msg)
+
+    try:
+        await service._dao.transition_conversation_state(
+            conversation_id,
+            ["awaiting_user_input"],
+            "completed",
+            assistant_content=final_reply,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"对话状态更新失败: {e}") from e
+
+    return Result.success(data={"final_reply": final_reply, "resumed": True})

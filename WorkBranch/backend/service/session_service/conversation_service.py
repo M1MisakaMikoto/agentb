@@ -27,6 +27,7 @@ def _format_file_size(size_bytes: int) -> str:
 class ConversationState(Enum):
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_USER_INPUT = "awaiting_user_input"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
