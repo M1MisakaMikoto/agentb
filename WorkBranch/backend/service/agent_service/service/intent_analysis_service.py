@@ -1,6 +1,7 @@
 """
 意图分析服务 - 用于过滤恶意请求和改写用户意图
 """
+import re
 import time
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
