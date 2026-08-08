@@ -81,6 +81,14 @@ def _clip(text: Any, limit: int = 3000) -> str:
     return f"{s[:1500]}\n[中间省略 {len(s) - limit} 字符]\n{s[-1500:]}"
 
 
+_SUBAGENT_TOOLS = {
+    "call_explore_agent",
+    "call_review_agent",
+    "call_prediction_agent",
+    "call_plan_agent",
+}
+
+
 def format_tool_records(tool_records: list[dict], max_rounds: int = 10) -> str:
     """<tool_records>：按 round 分组、批内按 call_seq 排序。"""
     if not tool_records:
@@ -110,7 +118,12 @@ def format_tool_records(tool_records: list[dict], max_rounds: int = 10) -> str:
             if status == "failed":
                 body += f" error={_clip(item.get('error') or '', 500)}"
             else:
-                body += f" result={_clip(item.get('result') or '', 3000)}"
+                result = item.get("result") or ""
+                # 工具读取内容禁止裁剪（否则模型会误以为已读完而重复读/漏读）；
+                # 仅子代理回传的生成文本允许裁剪，避免全文报告二次进上下文。
+                if item.get("tool_name") in _SUBAGENT_TOOLS:
+                    result = _clip(result, 3000)
+                body += f" result={result}"
             if item.get("duration_ms") is not None:
                 body += f" duration_ms={item.get('duration_ms')}"
             lines.append(body)

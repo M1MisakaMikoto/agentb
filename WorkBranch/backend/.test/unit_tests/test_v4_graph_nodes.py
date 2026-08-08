@@ -295,7 +295,26 @@ class PromptTagTest(unittest.TestCase):
         self.assertIn("round=1", text)
         self.assertIn("round=2", text)
         self.assertIn("status=failed", text)
-        self.assertIn("error=err", text)
+
+    def test_tool_records_do_not_clip_regular_tool_result(self):
+        long_result = "数" * 5000
+        text = format_tool_records([
+            {"round": 1, "reason": "r"},
+            {"round": 1, "call_seq": 1, "tool_name": "document",
+             "status": "success", "result": long_result},
+        ])
+        self.assertIn(long_result, text)
+        self.assertNotIn("中间省略", text)
+
+    def test_tool_records_clip_subagent_return_only(self):
+        long_result = "数" * 5000
+        text = format_tool_records([
+            {"round": 1, "reason": "r"},
+            {"round": 1, "call_seq": 1, "tool_name": "call_prediction_agent",
+             "status": "success", "result": long_result},
+        ])
+        self.assertNotIn(long_result, text)
+        self.assertIn("中间省略", text)
 
 
 class _SeqLLM:
