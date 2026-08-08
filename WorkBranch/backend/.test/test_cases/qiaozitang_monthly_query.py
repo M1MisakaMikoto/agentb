@@ -45,8 +45,15 @@ DEFAULT_SOURCE_FILES = [
     ".dev/fixture/大渡口5月巡查报告.docx",
 ]
 
-# 默认查询提示词
-DEFAULT_PROMPT = "查询桥梓塘立交1-5月的数据"
+# 默认查询提示词：明确要求用 document 工具读取工作区已上传的报告，
+# 避免 leader 误选 sql_query（当前环境 BTManager 无 TO_Org_User 权限表）。
+DEFAULT_PROMPT = (
+    "请使用 document 工具（operation=r）逐一读取工作区中的 5 份月度巡查报告"
+    "（大渡口1月巡查报告.docx、大渡口2月巡查报告.docx、大渡口3月巡查报告.docx、"
+    "大渡口4月巡查报告.docx、大渡口5月巡查报告.docx），"
+    "聚合提取其中“桥梓塘立交”1-5 月的数据并输出汇总。"
+    "不要使用 sql_query。"
+)
 
 # 关键词校验：响应必须出现"桥梓塘"以及 1~5 月字样
 BRIDGE_KEYWORD = "桥梓塘"

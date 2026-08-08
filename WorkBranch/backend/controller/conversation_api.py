@@ -3,7 +3,7 @@ import json
 import os
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
@@ -490,6 +490,7 @@ async def stream_conversation_message(
 
 class ResumeConversationBody(BaseModel):
     answer: str
+    call_seq: Optional[int] = None
 
 
 @router.post("/{conversation_id}/resume")
@@ -516,11 +517,36 @@ async def resume_conversation(
             detail=f"对话不在等待用户输入状态（当前: {conversation.get('state')}）",
         )
 
+    updated_at = conversation.get("updated_at")
+    if updated_at:
+        try:
+            from service.session_service.conversation_service import ConversationService
+            timeout_seconds = ConversationService()._awaiting_timeout_seconds()
+            updated_dt = updated_at if isinstance(updated_at, datetime) else datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+            if updated_dt.tzinfo is None:
+                updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - updated_dt).total_seconds() > timeout_seconds:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"等待用户输入超时（超过 {timeout_seconds} 秒），请创建新对话",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
     try:
         from service.agent_service.graph.v4.graph import resume_v4_graph
-        final_state = await asyncio.to_thread(resume_v4_graph, conversation_id, body.answer)
+        final_state = await asyncio.to_thread(
+            resume_v4_graph,
+            conversation_id,
+            body.answer,
+            body.call_seq,
+        )
     except KeyError as e:
         raise HTTPException(status_code=409, detail=f"无法恢复对话: {e}") from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"恢复对话失败: {e}") from e
 

@@ -122,20 +122,32 @@ def get_allowed_tools(agent_type: str, settings_service=None, use_settings_overr
         from ..definitions import get_definition
         definition = get_definition(agent_type)
         console.info(f"[tool_registry] ✅ 从 AgentDefinition 获取 {agent_type} 的工具权限")
-        return definition.meta.get_allowed_tools()
+        tools = definition.meta.get_allowed_tools()
     except (ValueError, KeyError, ImportError) as e:
         console.warning(f"[tool_registry] ⚠️ 未找到 {agent_type} 的定义: {e}，使用默认权限")
 
-    default_permissions = {
-        "director_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "call_prediction_agent", "call_plan_agent", "ask_user_question", "list_workspace_files", "get_workspace_info", "search_files", "update_todo", "rag_search", "document", "sql_query", "submit_ai_judgment_issue", "submit_facility_report", "submit_facility_forecast", "submit_dailypatrol_record"],
-        "sub_agent": ["read_file", "write_file", "list_dir", "thinking", "chat", "document", "bridge_report_parser", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "submit_ai_judgment_issue", "submit_facility_report", "submit_facility_forecast", "submit_dailypatrol_record", "rag_search"],
-        "plan_agent": ["read_file", "write_file", "list_dir", "explore_code", "thinking", "chat", "rag_search", "document", "sql_query", "switch_execution_mode"],
-        "review_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat", "sql_query", "rag_search"],
-        "explore_agent": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files", "sql_query", "rag_search"],
-        "prediction_agent": ["document", "read_file", "thinking", "chat", "bridge_report_parser", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "update_todo", "submit_facility_report", "submit_facility_forecast", "rag_search"],
-        "admin_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files", "sql_query", "submit_ai_judgment_issue", "rag_search"]
-    }
-    return default_permissions.get(agent_type, default_permissions["director_agent"])
+        default_permissions = {
+            "director_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "call_prediction_agent", "call_plan_agent", "ask_user_question", "list_workspace_files", "get_workspace_info", "search_files", "update_todo", "rag_search", "document", "sql_query", "submit_ai_judgment_issue", "submit_facility_report", "submit_facility_forecast", "submit_dailypatrol_record"],
+            "sub_agent": ["read_file", "write_file", "list_dir", "thinking", "chat", "document", "bridge_report_parser", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "submit_ai_judgment_issue", "submit_facility_report", "submit_facility_forecast", "submit_dailypatrol_record", "rag_search"],
+            "plan_agent": ["read_file", "write_file", "list_dir", "explore_code", "thinking", "rag_search", "document", "sql_query"],
+            "review_agent": ["read_file", "list_dir", "explore_code", "thinking", "chat", "sql_query", "rag_search"],
+            "explore_agent": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files", "sql_query", "rag_search"],
+            "prediction_agent": ["document", "read_file", "thinking", "chat", "bridge_report_parser", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "update_todo", "submit_facility_report", "submit_facility_forecast", "rag_search"],
+            "admin_agent": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files", "sql_query", "submit_ai_judgment_issue", "rag_search"]
+        }
+        tools = default_permissions.get(agent_type, default_permissions["director_agent"])
+
+    # V4：chat 工具已退役，不暴露给模型（v3 回退路径仍保留 chat 作为终止工具）
+    try:
+        version = str(
+            (settings_service.get("agent:orchestration_version") if settings_service else None)
+            or "v3"
+        ).lower()
+        if version == "v4":
+            tools = [tool for tool in tools if tool != "chat"]
+    except Exception:
+        pass
+    return tools
 
 
 def filter_tools_by_agent_type(agent_type: str, settings_service=None, use_settings_override: bool = False) -> List[dict]:

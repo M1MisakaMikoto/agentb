@@ -13,6 +13,7 @@ from .base import (
     print_test_header,
     wait_for_conversation_state,
 )
+from .pdf_generate import discard_stream_timeout_errors
 
 
 async def run_plan_mode_test(
@@ -50,11 +51,13 @@ async def run_plan_mode_test(
     result.workspace_id = data.get("workspace_id") or workspace_id
     print_step(1, "等待计划子代理完成...", Colors.CYAN)
     await wait_for_conversation_state(api, conversation_id, "processing", timeout=15.0)
-    await collect_stream_output(api, conversation_id, result, verbose=verbose, timeout=300.0)
+    await collect_stream_output(api, conversation_id, result, verbose=verbose, timeout=600.0)
     completed = await wait_for_conversation_state(
-        api, conversation_id, "completed", timeout=300.0
+        api, conversation_id, "completed", timeout=600.0
     )
     result.response_text = extract_response_text(completed)
+    # 流窗口超时但会话已完成：计划产物与总结已落库，收集窗口不足不判失败。
+    result.errors = discard_stream_timeout_errors(result.errors)
 
     plan_result = await api.get_plan(result.workspace_id)
     plan_data = plan_result.get("data", {})

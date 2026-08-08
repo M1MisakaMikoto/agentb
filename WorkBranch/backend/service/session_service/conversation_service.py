@@ -83,6 +83,12 @@ class ConversationService:
             self._runtime = get_logging_runtime()
         return self._runtime.get_logger("app")
 
+    def _awaiting_timeout_seconds(self) -> int:
+        try:
+            return max(1, int(get_settings_service().get("agent:awaiting_timeout_seconds", 600)))
+        except (KeyError, ValueError, TypeError):
+            return 600
+
     def _write_content_record(self, conversation_id: str, content_type: str, payload: Dict[str, Any]) -> None:
         if self._runtime is None:
             self._runtime = get_logging_runtime()
@@ -169,6 +175,9 @@ class ConversationService:
             await self._dao.fail_stale_running_conversations(
                 session_id, runtime.instance_id
             )
+            await self._dao.fail_expired_awaiting_conversations(
+                session_id, self._awaiting_timeout_seconds()
+            )
 
         if idempotency_key:
             existing = await self._dao.get_conversation_by_idempotency_key(
@@ -180,6 +189,11 @@ class ConversationService:
         existing_conversations = await self._dao.list_conversations_by_session(session_id)
         if not allow_existing_running and any(conv.state == ConversationState.RUNNING.value for conv in existing_conversations):
             raise RuntimeError(f"Session {session_id} already has a running conversation")
+        if any(conv.state == ConversationState.AWAITING_USER_INPUT.value for conv in existing_conversations):
+            raise RuntimeError(
+                f"Session {session_id} 正在等待用户输入（awaiting_user_input），"
+                "请先通过 resume 端点回复或等待超时后重试"
+            )
 
         workspace_id = session.workspace_id
 
@@ -266,6 +280,11 @@ class ConversationService:
 
             if conv_info.state == ConversationState.RUNNING:
                 raise RuntimeError(f"Conversation {conversation_id} is already running")
+            if conv_info.state == ConversationState.AWAITING_USER_INPUT:
+                raise RuntimeError(
+                    f"Conversation {conversation_id} 正在等待用户输入（awaiting_user_input），"
+                    "请先通过 resume 端点回复"
+                )
 
         await get_runtime_state().claim_session(conv_info.session_id)
         normalized_parts = normalize_user_content(user_message)
@@ -309,6 +328,11 @@ class ConversationService:
 
             if conv_info.state == ConversationState.RUNNING:
                 raise RuntimeError(f"Conversation {conversation_id} is already running")
+            if conv_info.state == ConversationState.AWAITING_USER_INPUT:
+                raise RuntimeError(
+                    f"Conversation {conversation_id} 正在等待用户输入（awaiting_user_input），"
+                    "请先通过 resume 端点回复"
+                )
 
         runtime = get_runtime_state()
         claim = await runtime.claim_session(conv_info.session_id)

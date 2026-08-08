@@ -1,6 +1,34 @@
 import unittest
+import asyncio
 
 from db.mysql import MySQLDatabase
+from data.conversation_dao import ConversationDAO
+
+
+class _FakeExecuteAffectedDB:
+    def __init__(self):
+        self.sql = None
+        self.params = None
+        self.affected = 1
+
+    async def execute_affected(self, sql, params):
+        self.sql = " ".join(sql.split())
+        self.params = params
+        return self.affected
+
+
+class ConversationDAOTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fail_expired_awaiting_marks_failed_with_timeout(self):
+        db = _FakeExecuteAffectedDB()
+        dao = ConversationDAO(db)
+
+        affected = await dao.fail_expired_awaiting_conversations(7, 600)
+
+        self.assertEqual(affected, 1)
+        self.assertIn("state = 'failed'", db.sql)
+        self.assertIn("state = 'awaiting_user_input'", db.sql)
+        self.assertIn("INTERVAL %s SECOND", db.sql)
+        self.assertEqual(db.params[2], 600)
 
 
 class _AsyncContext:

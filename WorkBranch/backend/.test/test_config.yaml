@@ -71,7 +71,7 @@ scenarios:
       - ".dev/fixture/大渡口3月巡查报告.docx"
       - ".dev/fixture/大渡口4月巡查报告.docx"
       - ".dev/fixture/大渡口5月巡查报告.docx"
-    prompt: "查询桥梓塘立交1-5月的数据"
+    prompt: "请使用 document 工具（operation=r）逐一读取工作区中的 5 份月度巡查报告（大渡口1月巡查报告.docx、大渡口2月巡查报告.docx、大渡口3月巡查报告.docx、大渡口4月巡查报告.docx、大渡口5月巡查报告.docx），聚合提取其中“桥梓塘立交”1-5 月的数据并输出汇总。不要使用 sql_query。"
     extraction_timeout: 300.0
     required_files:
       - ".dev/fixture/大渡口1月巡查报告.docx"

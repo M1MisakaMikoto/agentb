@@ -386,6 +386,35 @@ class V4GraphSmokeTest(unittest.TestCase):
         ask = [r for r in records if r.get("tool_name") == "ask_user_question"]
         self.assertEqual(ask[0]["result"], "批准")
 
+    @patch(
+        "service.agent_service.graph.subgraphs.tool_executor.run_tool_execution",
+        return_value={"result": "ok", "error": None},
+    )
+    def test_resume_rejects_mismatched_call_seq(self, _mock):
+        llm = _SeqLLM([
+            (
+                '{"type":"tool_calls","content":{"reason":"询问用户","calls":['
+                '{"call_seq":1,"tool_name":"ask_user_question",'
+                '"tool_args":{"question":"是否批准？"}}]}}'
+            ),
+            '{"type":"text","content":"已按用户意见完成"}',
+        ])
+        out = run_v4_graph(
+            user_message="需要批准",
+            workspace_id="ws-interrupt-seq",
+            llm_service=llm,
+            settings_service=None,
+            message_context=None,
+            conversation_id="conv-interrupt-seq",
+        )
+        self.assertEqual(out.get("status"), "awaiting_user_input")
+
+        with self.assertRaisesRegex(ValueError, "call_seq 不匹配"):
+            resume_v4_graph("conv-interrupt-seq", "批准", expected_call_seq=2)
+
+        out2 = resume_v4_graph("conv-interrupt-seq", "批准", expected_call_seq=1)
+        self.assertEqual(out2.get("final_reply"), "已按用户意见完成")
+
 
 class _FakeSettings:
     """最小 settings stub：closuring 启用、预算 8、并行 3。"""

@@ -294,3 +294,69 @@ def test_send_message_persists_awaiting_user_input_state():
     assert service._conversations[conversation_id].state == module.ConversationState.AWAITING_USER_INPUT
     states = [call.args[2] for call in dao.transition_conversation_state.await_args_list]
     assert states == ["running", "awaiting_user_input"]
+
+
+def test_send_message_rejects_awaiting_user_input():
+    from service.session_service import conversation_service as module
+
+    conversation_id = "conversation-awaiting-reject"
+    service = object.__new__(module.ConversationService)
+    service._dao = SimpleNamespace(get_session_context=AsyncMock(return_value=[]))
+    service._workspace_service = SimpleNamespace(
+        get_workspace_dir=Mock(return_value=None),
+        consume_unnotified_files=Mock(return_value=[]),
+    )
+    service._agent = SimpleNamespace(send_message=AsyncMock())
+    service._mq = SimpleNamespace()
+    service._conversations = {
+        conversation_id: SimpleNamespace(
+            conversation_id=conversation_id,
+            session_id=7,
+            workspace_id="ws",
+            state=module.ConversationState.AWAITING_USER_INPUT,
+        )
+    }
+    service._lock = asyncio.Lock()
+
+    try:
+        asyncio.run(service.send_message(conversation_id))
+    except RuntimeError as exc:
+        assert "awaiting_user_input" in str(exc)
+    else:
+        raise AssertionError("awaiting 状态应拒绝 send_message")
+
+
+def test_create_conversation_rejects_awaiting_session():
+    from service.session_service import conversation_service as module
+
+    session_id = 7
+    dao = SimpleNamespace(
+        get_session_by_id=AsyncMock(
+            return_value=SimpleNamespace(id=session_id, user_id=1, workspace_id="ws")
+        ),
+        fail_stale_running_conversations=AsyncMock(return_value=0),
+        fail_expired_awaiting_conversations=AsyncMock(return_value=0),
+        get_conversation_by_idempotency_key=AsyncMock(return_value=None),
+        list_conversations_by_session=AsyncMock(
+            return_value=[SimpleNamespace(state="awaiting_user_input")]
+        ),
+        create_conversation=AsyncMock(return_value=True),
+    )
+    runtime = SimpleNamespace(
+        instance_id="instance-test",
+        claim_session=AsyncMock(return_value=SimpleNamespace(acquired=True)),
+    )
+    service = object.__new__(module.ConversationService)
+    service._dao = dao
+    service._agent = SimpleNamespace(register_conversation=AsyncMock())
+    service._mq = SimpleNamespace(register_stream=Mock())
+    service._lock = asyncio.Lock()
+    service._conversations = {}
+
+    with patch.object(module, "get_runtime_state", return_value=runtime):
+        try:
+            asyncio.run(service.create_conversation(session_id, "新消息"))
+        except RuntimeError as exc:
+            assert "awaiting_user_input" in str(exc)
+        else:
+            raise AssertionError("awaiting 会话应拒绝创建新对话")

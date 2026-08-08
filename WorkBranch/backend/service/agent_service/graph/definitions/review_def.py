@@ -41,8 +41,6 @@ class ReviewDefinition(AgentDefinition):
                     "get_workspace_info",
                     "search_files",
                     "read_file",
-                    "glob",
-                    "grep",
                     "sql_query",
                 ],
                 default_tools=[

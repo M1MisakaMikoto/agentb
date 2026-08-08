@@ -189,7 +189,7 @@ def run_v4_graph(
             payload = interrupts[0].value
         except Exception:
             payload = None
-        _RESUME_REGISTRY[thread_id] = (graph, graph_config)
+        _RESUME_REGISTRY[thread_id] = (graph, graph_config, payload)
         console.info(f"[run_v4_graph] 交互中断（awaiting_user_input）: {payload}")
         return {
             "status": "awaiting_user_input",
@@ -205,12 +205,28 @@ def run_v4_graph(
     return final_state
 
 
-def resume_v4_graph(thread_id: str, answer: Any) -> dict:
-    """恢复被 ask_user_question 中断的图（由 resume 端点调用）。"""
+def resume_v4_graph(
+    thread_id: str,
+    answer: Any,
+    expected_call_seq: Optional[int] = None,
+) -> dict:
+    """恢复被 ask_user_question 中断的图（由 resume 端点调用）。
+
+    expected_call_seq 由 resume 请求体提供；若与中断 payload 不一致则拒绝，
+    防止并发/误提交恢复错误的交互。
+    """
     entry = _RESUME_REGISTRY.get(thread_id)
     if not entry:
         raise KeyError(f"未找到可恢复的 v4 会话: {thread_id}")
-    graph, graph_config = entry
+    graph, graph_config, interrupt_payload = entry
+    if expected_call_seq is not None:
+        interrupted_seq = None
+        if isinstance(interrupt_payload, dict):
+            interrupted_seq = interrupt_payload.get("call_seq")
+        if interrupted_seq != expected_call_seq:
+            raise ValueError(
+                f"call_seq 不匹配：中断请求为 {interrupted_seq}，收到 {expected_call_seq}"
+            )
     final_state = graph.invoke(Command(resume=answer), config=graph_config)
     _RESUME_REGISTRY.pop(thread_id, None)
     return final_state

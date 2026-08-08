@@ -34,6 +34,9 @@ class FakeSettings:
         self.data = deepcopy(DEFAULT_SETTINGS)
         self.data["llm"]["api_key"] = "secret"
         self.data["intent_analysis"]["rule_keywords"] = ["keep-visible"]
+        # 本文件全部基于 v3 ReActAgentBase 图验证轮次/超时预算，
+        # chat 作为 v3 终止工具必须保留，因此显式使用 v3 编排配置。
+        self.data["agent"]["orchestration_version"] = "v3"
 
     def reload(self):
         return None

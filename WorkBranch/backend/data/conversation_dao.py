@@ -204,6 +204,25 @@ class ConversationDAO:
             ),
         )
 
+    async def fail_expired_awaiting_conversations(
+        self, session_id: int, timeout_seconds: int
+    ) -> int:
+        """将等待用户输入超过 timeout_seconds 的对话标记为 failed。
+
+        返回受影响行数；用于惰性超时清理（awaiting 期间无后台任务，
+        在创建新对话/恢复对话入口检查）。
+        """
+        sql = '''
+            UPDATE conversations
+            SET state = 'failed', error = %s
+            WHERE session_id = %s AND state = 'awaiting_user_input'
+              AND updated_at < (NOW() - INTERVAL %s SECOND)
+        '''
+        return await self._db.execute_affected(
+            sql,
+            ("等待用户输入超时，请创建新对话", session_id, timeout_seconds),
+        )
+
     async def get_conversation_by_id(self, conversation_id: str) -> Optional[Conversation]:
         sql = '''
             SELECT id, session_id, user_content, assistant_content,

@@ -81,12 +81,12 @@ DEFAULT_SETTINGS = {
     "agent": {
         "memory_mode": "accumulate",
         "memory_window_size": 3,
-        "plan_auto_approve": True,
         "orchestration_version": "v4",
         "tool_parallelism": 3,
         "closuring_enabled": True,
         "closure_max_rounds": 8,
         "ask_user_auto_approve": False,
+        "awaiting_timeout_seconds": 600,
         "tool_timeout_seconds": 1200,
         "special_tool_timeout_seconds": 1200,
         "subagent_timeout_seconds": 1800,
