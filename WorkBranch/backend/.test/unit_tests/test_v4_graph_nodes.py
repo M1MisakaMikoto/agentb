@@ -279,6 +279,10 @@ class PromptTagTest(unittest.TestCase):
         ]:
             self.assertIn(tag, user_message)
         self.assertIn("tool_calls", system_prompt)
+        # meta（含轮次数字）必须在 user 末尾，避免破坏每轮前缀缓存命中
+        self.assertTrue(user_message.startswith("<system>"))
+        self.assertIn("轮次: 1/10", user_message)
+        self.assertTrue(user_message.rstrip().endswith("agent_type: director_agent"))
 
     def test_tool_records_grouping(self):
         text = format_tool_records([

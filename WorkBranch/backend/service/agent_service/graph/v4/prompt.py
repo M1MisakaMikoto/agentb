@@ -217,11 +217,13 @@ def build_tagged_prompt(
         sections.append(f"<closur-feedback>\n{closur_feedback}\n</closur-feedback>")
     sections.append(f"<user_question>\n{user_message}\n</user_question>")
 
+    # meta 放末尾：轮次数字若在 user 前缀会破坏每轮前缀缓存命中
+    # （system/current_task/context 前半段跨轮稳定，应可被前缀缓存覆盖）
     meta = (
         f"当前工作区ID: {workspace_id} | 轮次: {round_no}/{max_iterations} "
         f"| agent_type: {agent_type}"
     )
-    return system_prompt, "\n\n".join([meta, *sections])
+    return system_prompt, "\n\n".join([*sections, meta])
 
 
 # ---------- 固定终止模板（异常路径，跳过 closuring） ----------
