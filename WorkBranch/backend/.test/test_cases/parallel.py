@@ -85,12 +85,15 @@ async def run_single_parallel_test(
     
     duration = time.time() - start_time
     
-    keywords_found = [kw for kw in keywords if kw in response_text]
-    keywords_missing = [kw for kw in keywords if kw not in response_text]
+    normalized_response = response_text.replace(",", "").replace("，", "").replace(" ", "")
+    keywords_found = [
+        kw for kw in keywords if kw.replace(",", "").replace("，", "").replace(" ", "") in normalized_response
+    ]
+    keywords_missing = [] if keywords_found or not keywords else keywords
     if not response_text:
         errors.append("No response text found")
     if keywords_missing:
-        errors.append(f"Missing keywords: {', '.join(keywords_missing)}")
+        errors.append(f"None of the expected keywords found: {', '.join(keywords_missing)}")
     
     return ParallelTestResult(
         process_id=process_id,

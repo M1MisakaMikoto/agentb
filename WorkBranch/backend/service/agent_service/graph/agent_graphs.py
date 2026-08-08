@@ -77,6 +77,7 @@ def create_child_agent_graph(
             from .v4.graph import build_v4_child_loop
             return build_v4_child_loop(
                 llm_service=llm_service,
+                token_callback=token_callback,
                 settings_service=settings_service,
                 message_context=message_context,
             )
@@ -113,7 +114,7 @@ def create_agent_graph(
     settings_service=None,
     message_context: dict = None,
 ):
-    if agent_type in {"explore_agent", "review_agent", "prediction_agent"}:
+    if agent_type in {"explore_agent", "review_agent", "prediction_agent", "plan_agent"}:
         return create_child_agent_graph(
             agent_type=agent_type,
             llm_service=llm_service,

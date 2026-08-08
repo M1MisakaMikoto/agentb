@@ -178,7 +178,10 @@ class MySQLDatabase:
                         user_content TEXT NOT NULL,
                         assistant_content LONGTEXT,
                         thinking_content LONGTEXT,
-                        state ENUM('pending', 'running', 'completed', 'failed', 'cancelled') DEFAULT 'pending',
+                        state ENUM(
+                            'pending', 'running', 'awaiting_user_input',
+                            'completed', 'failed', 'cancelled'
+                        ) DEFAULT 'pending',
                         error TEXT,
                         owner_instance_id VARCHAR(128),
                         idempotency_key VARCHAR(128),
@@ -206,6 +209,18 @@ class MySQLDatabase:
                     )
                     if await cursor.fetchone() is None:
                         await cursor.execute(statement)
+
+                await cursor.execute(
+                    "SHOW COLUMNS FROM conversations LIKE %s", ("state",)
+                )
+                state_column = await cursor.fetchone()
+                assert state_column is not None, "conversations.state column is missing"
+                if "awaiting_user_input" not in state_column[1]:
+                    await cursor.execute(
+                        "ALTER TABLE conversations MODIFY COLUMN state "
+                        "ENUM('pending','running','awaiting_user_input',"
+                        "'completed','failed','cancelled') DEFAULT 'pending'"
+                    )
 
                 try:
                     await cursor.execute('''

@@ -44,6 +44,7 @@ def _v4_enabled(settings_service) -> bool:
 def build_v4_graph(
     *,
     llm_service=None,
+    token_callback=None,
     settings_service=None,
     message_context: Optional[dict] = None,
     post_execute_hook: Optional[Callable] = None,
@@ -65,6 +66,7 @@ def build_v4_graph(
     ))
     graph.add_node("leader_acting", create_acting_node(
         llm_service=llm_service,
+        token_callback=token_callback,
         settings_service=settings_service,
         message_context=message_context,
         post_execute_hook=post_execute_hook,
@@ -161,6 +163,7 @@ def run_v4_graph(
 
     graph = build_v4_graph(
         llm_service=llm_service,
+        token_callback=token_callback,
         settings_service=settings_service,
         message_context=message_context,
         post_execute_hook=post_execute_hook,
@@ -215,12 +218,14 @@ def resume_v4_graph(thread_id: str, answer: Any) -> dict:
 
 def build_v4_child_loop(
     llm_service=None,
+    token_callback=None,
     settings_service=None,
     message_context: Optional[dict] = None,
 ) -> Any:
     """子代理循环图：reasoning/acting，无 todo、无 closuring。"""
     return build_v4_graph(
         llm_service=llm_service,
+        token_callback=token_callback,
         settings_service=settings_service,
         message_context=message_context,
         post_execute_hook=None,

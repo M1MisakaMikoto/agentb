@@ -57,6 +57,7 @@ def _execute_single_call(
     state: AgentState,
     workspace_service,
     llm_service,
+    token_callback,
     settings_service,
     message_context: Optional[dict],
 ) -> dict:
@@ -127,6 +128,14 @@ def _execute_single_call(
     except Exception:
         enhanced_args = tool_args
 
+    if (
+        tool_name in SUBAGENT_TOOLS
+        and task_description
+        and not enhanced_args.get("task_description")
+    ):
+        enhanced_args = dict(enhanced_args)
+        enhanced_args["task_description"] = task_description
+
     enhanced_message_context = dict(message_context) if message_context else {}
     enhanced_message_context["workspace_id"] = workspace_id
     enhanced_message_context["parent_chain_messages"] = state.get("parent_chain_messages") or []
@@ -142,7 +151,7 @@ def _execute_single_call(
             previous_calls=_legacy_history(state),
             workspace_service=workspace_service,
             llm_service=llm_service,
-            token_callback=None,
+            token_callback=token_callback,
             task_description=task_description,
             previous_results=[r.get("result") for r in _legacy_history(state) if r.get("result")],
             agent_type=state.get("agent_type") or "director_agent",
@@ -198,6 +207,7 @@ def _apply_todo_update(state: AgentState, results: list[dict]) -> dict:
 
 def create_acting_node(
     llm_service=None,
+    token_callback=None,
     settings_service=None,
     message_context=None,
     post_execute_hook: Optional[Callable] = None,
@@ -232,6 +242,7 @@ def create_acting_node(
                 state=state,
                 workspace_service=workspace_service,
                 llm_service=llm_service,
+                token_callback=token_callback,
                 settings_service=settings_service,
                 message_context=message_context,
             ))
@@ -246,6 +257,7 @@ def create_acting_node(
                                 state=state,
                                 workspace_service=workspace_service,
                                 llm_service=llm_service,
+                                token_callback=token_callback,
                                 settings_service=settings_service,
                                 message_context=message_context): call
                     for call in parallel_calls

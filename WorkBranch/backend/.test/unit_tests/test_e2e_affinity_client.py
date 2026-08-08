@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import types
 import unittest
@@ -237,6 +238,37 @@ class AffinityClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.done)
         self.assertEqual(result.errors, [])
         self.assertEqual(api.calls, [0, 7])
+
+    async def test_stream_returns_cleanly_when_user_input_is_requested(self):
+        class AwaitingInputAPI:
+            async def stream_message(self, *_args, **_kwargs):
+                event = {
+                    "type": "user_input_request",
+                    "seq": 1,
+                    "content": json.dumps({"question": "Approve?"}),
+                }
+                yield {
+                    "raw_line": f"data: {json.dumps(event)}"
+                }
+
+        result = TestResult("stream_test", {})
+        await asyncio.wait_for(
+            collect_stream_output(
+                AwaitingInputAPI(),
+                "conversation-1",
+                result,
+                verbose=False,
+                timeout=1.0,
+            ),
+            timeout=0.5,
+        )
+
+        self.assertTrue(result.awaiting_user_input)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(
+            result.user_input_requests,
+            [{"question": "Approve?"}],
+        )
 
     async def test_stream_rejects_affinity_conflict(self):
         class ConflictAPI:

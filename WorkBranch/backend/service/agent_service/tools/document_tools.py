@@ -5,6 +5,7 @@ import re
 import time
 import tempfile
 import shutil
+import subprocess
 import gc
 from typing import Optional, Dict, Any, Tuple, List, Generator
 
@@ -387,7 +388,9 @@ def _convert_doc_to_docx(file_path: str) -> Optional[str]:
                     capture_output=True, timeout=30
                 )
                 if result.returncode == 0:
-                    converted = file_path.rsplit(".", 1)[0] + ".docx"
+                    output_dir = os.path.dirname(temp_docx)
+                    output_name = os.path.basename(file_path).rsplit(".", 1)[0] + ".docx"
+                    converted = os.path.join(output_dir, output_name)
                     if os.path.exists(converted):
                         shutil.move(converted, temp_docx)
                         return temp_docx

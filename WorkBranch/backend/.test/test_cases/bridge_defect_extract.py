@@ -393,6 +393,10 @@ async def run_defect_extraction_test(
 
         validation = validate_extraction_result(defect_summary)
         result.validation = validation
+        if not validation["valid"]:
+            issues = "; ".join(validation["issues"])
+            result.errors.append(f"Incomplete extraction: {issues}")
+
 
         if verbose:
             print(f"{Colors.CYAN}Extraction Summary:{Colors.ENDC}")

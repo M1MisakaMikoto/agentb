@@ -8,6 +8,8 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."
 sys.path.insert(0, BACKEND_DIR)
 
 from service.agent_service.graph.v4.acting import create_acting_node
+from service.agent_service.graph.director_agent import create_analyze_node
+from service.agent_service.graph.agent_graphs import create_agent_graph
 from service.agent_service.graph.v4.closuring import create_closuring_node
 from service.agent_service.graph.v4.graph import (
     build_v4_graph,
@@ -106,9 +108,10 @@ class ReasoningNodeTest(unittest.TestCase):
 
 
 class ActingNodeTest(unittest.TestCase):
-    def _node(self):
+    def _node(self, token_callback=None):
         return create_acting_node(
             llm_service=None,
+            token_callback=token_callback,
             settings_service=None,
             message_context=None,
             post_execute_hook=None,
@@ -157,6 +160,48 @@ class ActingNodeTest(unittest.TestCase):
         self.assertEqual(result["acting_failures"][0]["status"], "failed")
         self.assertEqual(result["acting_failures"][0]["call_seq"], 1)
 
+    @patch(
+        "service.agent_service.graph.subgraphs.tool_executor.run_tool_execution",
+        return_value={"result": "ok", "error": None},
+    )
+    def test_forwards_token_callback_to_tool_execution(self, mock_run):
+        callback = object()
+        state = _base_state(
+            pending_batch={
+                "reason": "r",
+                "calls": [{"call_seq": 1, "tool_name": "read_file", "tool_args": {}}],
+            }
+        )
+
+        self._node(token_callback=callback)(state)
+
+        self.assertIs(mock_run.call_args.kwargs["token_callback"], callback)
+
+    @patch(
+        "service.agent_service.graph.subgraphs.tool_executor.run_tool_execution",
+        return_value={"result": "ok", "error": None},
+    )
+    def test_subagent_uses_call_level_task_description(self, mock_run):
+        state = _base_state(
+            pending_batch={
+                "reason": "r",
+                "calls": [{
+                    "call_seq": 1,
+                    "tool_name": "call_plan_agent",
+                    "tool_args": {},
+                    "task_description": "生成登录计划",
+                }],
+            }
+        )
+
+        self._node()(state)
+
+        self.assertEqual(
+            mock_run.call_args.kwargs["tool_args"]["task_description"],
+            "生成登录计划",
+        )
+
+
     def test_chat_tool_retired(self):
         state = _base_state(
             pending_batch={
@@ -168,6 +213,32 @@ class ActingNodeTest(unittest.TestCase):
         self.assertEqual(result["acting_failures"][0]["status"], "failed")
         self.assertIn("已退役", result["acting_failures"][0]["error"])
 
+
+class AnalyzeNodeTest(unittest.TestCase):
+    def test_string_execution_mode_is_emitted_without_enum_error(self):
+        events = []
+        node = create_analyze_node(
+            message_context={
+                "send_message": lambda content, segment_type, metadata: events.append(
+                    (content, segment_type, metadata)
+                )
+            }
+        )
+
+        result = node(_base_state(execution_mode="DIRECT"))
+
+        self.assertEqual(result["execution_mode"], "DIRECT")
+        self.assertEqual(events[0][2]["execution_mode"], "DIRECT")
+
+    @patch(
+        "service.agent_service.graph.agent_graphs.create_child_agent_graph",
+        return_value="child-graph",
+    )
+    def test_plan_agent_uses_child_graph(self, mock_create_child):
+        graph = create_agent_graph("plan_agent")
+
+        self.assertEqual(graph, "child-graph")
+        mock_create_child.assert_called_once()
 
 class PromptTagTest(unittest.TestCase):
     def test_default_current_task_is_protocol(self):
@@ -371,6 +442,33 @@ class ClosuringNodeTest(unittest.TestCase):
         self.assertEqual(out["_route_target"], "finalize")
         self.assertEqual(out["closure_rounds"], 9)
 
+    @patch("service.agent_service.service.llm_service.FastLLMService")
+    def test_judgment_prompt_includes_conversation_history(self, fast_cls):
+        fast_cls.return_value.chat.return_value = (
+            '{"passed": true, "reason": "leader 依据历史对话作答", "feedback": ""}'
+        )
+        state = _base_state(
+            pending_final_text="上一轮对话中的暗号是：ALPHA-9271",
+            tool_records=[{
+                "round": 1,
+                "call_seq": 1,
+                "tool_name": "chat",
+                "status": "failed",
+                "error": "chat 工具已退役",
+            }],
+            parent_chain_messages=[
+                {"role": "user", "content": "请记住暗号 ALPHA-9271"},
+                {"role": "assistant", "content": "ALPHA-9271"},
+            ],
+        )
+
+        out = self._node()(state)
+
+        self.assertEqual(out["_route_target"], "finalize")
+        judgment_prompt = fast_cls.return_value.chat.call_args[1]["messages"][0]["content"]
+        self.assertIn("请记住暗号 ALPHA-9271", judgment_prompt)
+        self.assertIn("ALPHA-9271", judgment_prompt)
+
 
 class PlanSubagentExecutorTest(unittest.TestCase):
     @patch("service.agent_service.graph.agent_graphs.run_agent_graph")
@@ -402,6 +500,31 @@ class PlanSubagentExecutorTest(unittest.TestCase):
         # feedback 应拼入任务描述
         call_args = mock_run.call_args[0]
         self.assertIn("加入验证步骤", call_args[1])
+
+    @patch("service.agent_service.graph.agent_graphs.run_agent_graph")
+    @patch(
+        "service.agent_service.service.plan_file_service.plan_file_service.create_plan",
+        side_effect=RuntimeError("disk full"),
+    )
+    def test_plan_write_failure_is_tool_error(self, _mock_create, mock_run):
+        mock_run.return_value = {
+            "status": "completed",
+            "payload": '{"tasks":[]}',
+            "exit_info": {"code": "final_reply"},
+        }
+
+        result = _execute_call_plan_agent(
+            tool_args={"task_description": "生成计划"},
+            llm_service=object(),
+            message_context={
+                "workspace_id": "ws-plan",
+                "session_id": 42,
+                "settings_service": _FakeSettings(),
+            },
+        )
+
+        self.assertIn("计划文件写入失败", result["error"])
+        self.assertFalse(result["plan_written"])
 
     @patch("service.agent_service.graph.agent_graphs.run_agent_graph")
     def test_missing_task_description_returns_error(self, _mock_run):

@@ -129,8 +129,8 @@ async def run_mq_resume_test(api: APIClient, scenario_config: dict, verbose: boo
     result.conversation_id = conversation_id
     print_success(f"Conversation created: {conversation_id}")
     
-    print_step(3, "Receiving first part of stream (max 5 messages)...", Colors.CYAN)
-    first_part = await collect_stream_with_seq(api, conversation_id, max_messages=5, verbose=verbose)
+    print_step(3, "Receiving first part of stream (max 2 messages)...", Colors.CYAN)
+    first_part = await collect_stream_with_seq(api, conversation_id, max_messages=2, verbose=verbose)
     first_last_seq = first_part.last_seq
     first_messages = first_part.messages.copy()
     print_success(f"Received {len(first_messages)} messages, last_seq={first_last_seq}")
@@ -159,11 +159,11 @@ async def run_mq_resume_test(api: APIClient, scenario_config: dict, verbose: boo
         print_error(f"Duplicate messages detected: {len(all_messages)} total, {len(unique_seqs)} unique")
         result.errors.append("Duplicate messages in resume")
     
-    if resumed_part.done:
-        print_success("Stream completed successfully after resume")
+    if first_part.done or resumed_part.done:
+        print_success("Combined stream includes a terminal event")
     else:
-        print_error("Resumed stream did not include a terminal event")
-        result.errors.append("Resumed stream did not include a terminal event")
+        print_error("Combined stream did not include a terminal event")
+        result.errors.append("Combined stream did not include a terminal event")
     
     print_step(8, "Testing reconnection after completion...", Colors.CYAN)
     await asyncio.sleep(0.5)

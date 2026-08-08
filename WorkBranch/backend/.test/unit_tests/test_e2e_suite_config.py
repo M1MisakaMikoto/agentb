@@ -69,6 +69,17 @@ class E2ESuiteConfigTests(unittest.TestCase):
                 f"{scenario_name} source files must match fixture preflight paths",
             )
 
+    def test_long_running_scenarios_use_observed_completion_windows(self):
+        scenarios = self.config["scenarios"]
+        self.assertEqual(
+            scenarios["bridge_defect_extract_parallel"]["extraction_timeout"],
+            600.0,
+        )
+        self.assertEqual(
+            scenarios["persistent_disease_predict"]["prediction_timeout"],
+            1200.0,
+        )
+
     def test_fixture_document_matches_configuration(self):
         required = {
             path

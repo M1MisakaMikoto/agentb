@@ -694,8 +694,15 @@ class AgentService:
         
         try:
             conv.result = task.result()
-            conv.status = ConversationStatus.COMPLETED
-            print(f"[Agent] 对话 {conversation_id} 执行完成")
+            if (
+                isinstance(conv.result, dict)
+                and conv.result.get("status") == "awaiting_user_input"
+            ):
+                conv.status = ConversationStatus.AWAITING_USER_INPUT
+                print(f"[Agent] 对话 {conversation_id} 等待用户输入")
+            else:
+                conv.status = ConversationStatus.COMPLETED
+                print(f"[Agent] 对话 {conversation_id} 执行完成")
         except asyncio.CancelledError:
             conv.status = ConversationStatus.CANCELLED
             print(f"[Agent] 对话 {conversation_id} 已取消")

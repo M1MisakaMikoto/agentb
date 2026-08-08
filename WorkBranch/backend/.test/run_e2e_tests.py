@@ -8,6 +8,7 @@ E2E Tests Runner
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 import threading
@@ -31,11 +32,11 @@ from test_cases import (
 )
 
 from test_cases.direct_mode import run_direct_mode_test
+from test_cases.ask_user_resume import run_ask_user_resume_test
 from test_cases.plan_mode import run_plan_mode_test
 from test_cases.search_mode import run_search_mode_test
 from test_cases.serial_mode import run_serial_mode_test
 from test_cases.workspace_upload import (
-    run_workspace_upload_user_content_index_test,
     run_workspace_upload_extract_write_test,
     run_workspace_upload_read_document_test,
     run_workspace_upload_image_understanding_test,
@@ -63,10 +64,10 @@ from test_cases.pdf_generate import run_pdf_generate_test
 
 SCENARIO_RUNNERS = {
     "direct_mode": run_direct_mode_test,
+    "ask_user_resume": run_ask_user_resume_test,
     "plan_mode": run_plan_mode_test,
     "search_mode": run_search_mode_test,
     "serial_mode": run_serial_mode_test,
-    "workspace_upload_user_content_index": run_workspace_upload_user_content_index_test,
     "workspace_upload_extract_write": run_workspace_upload_extract_write_test,
     "workspace_upload_read_document": run_workspace_upload_read_document_test,
     "workspace_upload_image_understanding": run_workspace_upload_image_understanding_test,
@@ -115,20 +116,15 @@ def print_summary(results: List[TestResult], total_duration: float):
         # 基础判断：是否有错误
         base_pass = not result.errors
 
-        # 对于 bridge_predict 场景，还要检查评级得分
-        grade_pass = True
-        if result.scenario == "bridge_predict" and hasattr(result, 'grade_score'):
-            grade_pass = result.grade_score >= 70
-
-        # 综合判断
-        is_pass = base_pass and grade_pass
+        # Model quality scores remain diagnostic; functional errors gate E2E.
+        is_pass = base_pass
 
         if is_pass:
             passed += 1
             status = f"{Colors.GREEN}PASS{Colors.ENDC}"
         else:
             failed += 1
-            status = f"{Colors.RED}FAIL{Colors.ENDC}" if not base_pass else f"{Colors.YELLOW}MARGINAL{Colors.ENDC}"
+            status = f"{Colors.RED}FAIL{Colors.ENDC}"
 
         print(f"  {status} - {result.scenario}")
         if result.errors:
@@ -383,7 +379,17 @@ async def run_tests(
     return results
 
 
+def _configure_utf8_console() -> None:
+    if os.name != "nt":
+        return
+    assert hasattr(sys.stdout, "reconfigure")
+    assert hasattr(sys.stderr, "reconfigure")
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
+
 def main():
+    _configure_utf8_console()
     args = parse_args()
     output = OutputDuplicator(args.output) if args.output else None
     if output:

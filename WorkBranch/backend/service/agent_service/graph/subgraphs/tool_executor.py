@@ -1514,23 +1514,30 @@ def _execute_call_plan_agent(tool_args: dict, llm_service=None, token_callback=N
         if not plan_content:
             return {"result": None, "error": "计划子代理未返回计划内容", "outcome": outcome}
 
-        # 写入 plan.md
-        plan_written = False
+        # 写入 plan.md；写入失败必须作为工具失败返回，不能伪报成功。
         try:
             from service.agent_service.service.plan_file_service import plan_file_service
             if not session_id:
-                workspace_info = workspace_service.get_workspace_info(workspace_id)
+                from singleton import get_workspace_service
+                workspace_info = get_workspace_service().get_workspace_info(workspace_id)
                 session_id = workspace_info.get("session_id", "default") if workspace_info else "default"
-            plan_file_service.create_plan(
+            create_result = plan_file_service.create_plan(
                 session_id=str(session_id),
                 workspace_id=workspace_id,
                 plan_content=plan_content,
-                title="执行计划",
             )
-            plan_written = True
+            if not create_result.get("success"):
+                raise RuntimeError(create_result.get("error") or "计划文件创建失败")
         except Exception as e:
             print(f"[ToolExec] call_plan_agent 写入 plan.md 失败: {e}")
+            return {
+                "result": None,
+                "error": f"计划文件写入失败: {e}",
+                "plan_written": False,
+                "outcome": outcome,
+            }
 
+        plan_written = True
         print(f"[ToolExec] call_plan_agent 完成 (plan_written={plan_written})")
         return {
             "result": plan_content,

@@ -541,7 +541,7 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
         elif forced_execution_mode is not None:
             mode_decision = {
                 "mode": forced_execution_mode,
-                "reason": f"使用预设执行模式: {forced_execution_mode.name}",
+                "reason": f"使用预设执行模式: {_mode_name(forced_execution_mode)}",
             }
         elif current_agent_type != "director_agent":
             mode_decision = {
@@ -599,7 +599,7 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
             send_message = message_context.get("send_message")
             if send_message:
                 state_metadata = {
-                    "execution_mode": mode_decision["mode"].name,
+                    "execution_mode": _mode_name(mode_decision["mode"]),
                 }
                 send_message("", SegmentType.STATE_CHANGE, state_metadata)
 

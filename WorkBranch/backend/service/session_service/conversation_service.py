@@ -451,7 +451,26 @@ class ConversationService:
             if terminal_error:
                 raise RuntimeError(terminal_error)
 
+            task_result = task.result()
             messages_json = json.dumps([msg.to_dict() for msg in messages])
+
+            if (
+                isinstance(task_result, dict)
+                and task_result.get("status") == "awaiting_user_input"
+            ):
+                async with self._lock:
+                    conv_info.state = ConversationState.AWAITING_USER_INPUT
+                    transitioned = await self._dao.transition_conversation_state(
+                        conversation_id,
+                        [ConversationState.RUNNING.value],
+                        ConversationState.AWAITING_USER_INPUT.value,
+                        assistant_content=messages_json,
+                    )
+                assert transitioned, "awaiting_user_input 状态持久化失败"
+                return {
+                    "conversation_id": conversation_id,
+                    "state": ConversationState.AWAITING_USER_INPUT.value,
+                }
 
             async with self._lock:
                 conv_info.state = ConversationState.COMPLETED

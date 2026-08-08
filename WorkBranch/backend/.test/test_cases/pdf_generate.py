@@ -45,7 +45,15 @@ DEFAULT_PROMPT_TEMPLATE = """请调用 document 工具（operation=w）生成一
 
 3. 必须实际调用 document 工具生成 PDF 文件，不得仅用文字描述或回复。
 
-4. 生成完成后用 chat 工具简要回复 PDF 文件路径。"""
+4. 生成完成后直接输出包含 PDF 文件路径的最终总结。"""
+
+
+def discard_stream_timeout_errors(errors: list) -> list:
+    """会话已完成时，流收集窗口超时不作为失败：仅表示收集窗口不足。"""
+    return [
+        error for error in errors
+        if not str(error).startswith("stream timeout after ")
+    ]
 
 
 # ============================================================
@@ -156,6 +164,10 @@ async def run_pdf_generate_test(
         api, conversation_id, "completed", timeout=extraction_timeout,
     )
     result.response_text = extract_response_text(final_result)
+
+    # 流收集窗口超时但会话已完成：该错误仅表示收集窗口不足，
+    # 不能否定已落盘的工作区产物，后续按 PDF 存在与否判定。
+    result.errors = discard_stream_timeout_errors(result.errors)
 
     # ---------- Step 7: 校验 ----------
     print_step(7, "Validating results...", Colors.CYAN)

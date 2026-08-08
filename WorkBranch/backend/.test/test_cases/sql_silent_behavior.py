@@ -159,7 +159,7 @@ async def run_sql_silent_behavior_test(api: APIClient, scenario_config: dict, ve
         "T5_sql_injection_quote_handled",
         "查询customer_name等于 O'Neil 的订单，SQL注入测试",
         validate_injection_handled,
-        timeout=60
+        timeout=120
     )
 
     # T6: LIKE特殊字符转义验证

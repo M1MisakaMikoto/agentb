@@ -393,9 +393,7 @@ async def run_persistent_disease_predict_test(
         config: 测试配置（默认使用周家堰桥配置）
         verbose: 是否显示详细信息
     """
-    # 如果 config 为空或缺少 bridge_name，使用默认配置
-    if not config or not config.get("bridge_name"):
-        config = PERSISTENT_DISEASE_CONFIG
+    config = {**PERSISTENT_DISEASE_CONFIG, **(config or {})}
 
     result = TestResult(
         scenario="persistent_disease_predict",

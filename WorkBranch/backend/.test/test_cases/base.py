@@ -358,6 +358,8 @@ class TestResult:
         self.detected_modes: List[str] = []
         self.next_conversation_id: Optional[str] = None
         self.raw_lines: List[str] = []
+        self.user_input_requests: List[Dict] = []
+        self.awaiting_user_input = False
         self.done = False
         self.response_text = ""
         # [方案B] 工作区轮询结果
@@ -389,6 +391,8 @@ class TestResult:
             "session_id": self.session_id,
             "detected_mode": self.detected_mode,
             "detected_modes": self.detected_modes,
+            "user_input_requests": self.user_input_requests,
+            "awaiting_user_input": self.awaiting_user_input,
             "done": self.done,
             "response_text": self.response_text[:500] if self.response_text else None,
             "workspace_files_checked": self.workspace_files_checked,
@@ -656,6 +660,27 @@ class APIClient:
     async def cancel_conversation(self, conversation_id: str) -> dict:
         path = self._get_endpoint("conversation", "cancel", conversation_id=conversation_id)
         return await self._request("POST", path)
+
+    async def resume_conversation(self, conversation_id: str, answer: str) -> dict:
+        path = self._get_endpoint("conversation", "resume", conversation_id=conversation_id)
+        session_id = self.session_for_conversation(conversation_id)
+        return await self._request(
+            "POST",
+            path,
+            affinity_key=session_id,
+            session_id=session_id,
+            json={"answer": answer},
+        )
+
+    async def get_plan(self, workspace_id: str) -> dict:
+        path = self._get_endpoint("plan", "get", workspace_id=workspace_id)
+        session_id = self.observation_session_for_workspace(workspace_id)
+        return await self._request(
+            "GET",
+            path,
+            affinity_key=self.affinity_for_workspace(workspace_id),
+            session_id=session_id,
+        )
 
     async def get_plan_status(self, workspace_id: str) -> dict:
         path = self._get_endpoint("plan", "status", workspace_id=workspace_id)
@@ -1271,6 +1296,21 @@ async def collect_stream_output(
                     _write_stream_log(stream_log_fh, f"  Handoff: approved={auto_approved}, next={next_conv_id}\n")
                     if verbose:
                         print(f"{Colors.HEADER}[conversation_handoff] auto_approved: {auto_approved}, next_conversation_id: {next_conv_id}{Colors.ENDC}")
+                elif event_type == "user_input_request":
+                    content = data.get("content", "")
+                    try:
+                        payload = json.loads(content) if isinstance(content, str) else content
+                    except json.JSONDecodeError:
+                        payload = {"raw": content}
+                    if not isinstance(payload, dict):
+                        payload = {"value": payload}
+                    result.user_input_requests.append(payload)
+                    result.awaiting_user_input = True
+                    _write_stream_log(stream_log_fh, f"  UserInputRequest: {payload}\n")
+                    if verbose:
+                        print(f"{Colors.YELLOW}[user_input_request] {payload}{Colors.ENDC}")
+                    finish_stream_log()
+                    return
                 elif event_type == "done":
                     result.done = True
                     _write_stream_log(stream_log_fh, f"  → Stream completed ✓\n")
