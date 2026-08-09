@@ -16,6 +16,7 @@ if str(_WORKBRANCH_ROOT) not in sys.path:
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from controller.VO.result import Result
 from controller.user_api import router as user_router
@@ -138,6 +139,11 @@ app.openapi = custom_openapi
 
 app.add_middleware(AuthMiddleware)
 app.add_middleware(AffinityMiddleware)
+
+# 静态托管 API 演示前端（纯静态，无构建）
+_FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
+if _FRONTEND_DIR.is_dir():
+    app.mount("/frontend", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
 
 FRONTEND_LOG_ALLOWED_EVENTS = {
     "create_conversation",

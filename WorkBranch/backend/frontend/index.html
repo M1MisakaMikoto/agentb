@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgentB · API 演示台</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-badge">AB</span>
+      <span>AgentB · API 演示台</span>
+    </div>
+    <div class="controls">
+      <label>Base URL
+        <input id="baseUrl" type="text" placeholder="留空 = 同源" spellcheck="false" />
+      </label>
+      <label>X-User-ID
+        <input id="userId" type="number" value="1" />
+      </label>
+      <a class="docs-link" href="/docs" target="_blank" rel="noopener">OpenAPI Docs ↗</a>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <input id="filter" type="search" placeholder="搜索接口名 / 路径…" />
+      <nav id="groupNav" aria-label="接口导航"></nav>
+    </aside>
+    <main id="endpointList" class="content"></main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

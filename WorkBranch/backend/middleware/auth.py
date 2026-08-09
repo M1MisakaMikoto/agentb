@@ -14,6 +14,7 @@ PUBLIC_PATHS = {
     "/router-health",
     "/docs",
     "/openapi.json",
+    "/frontend",
 }
 RAG_UI_PUBLIC_PATHS = {
     "/rag",
@@ -55,6 +56,7 @@ class AuthMiddleware:
             or path in RAG_UI_PUBLIC_PATHS
             or path.startswith("/docs")
             or path.startswith("/openapi")
+            or path.startswith("/frontend")
         ):
             await self.app(scope, receive, send)
             return
@@ -103,6 +105,7 @@ class AuthMiddlewareDeprecated(BaseHTTPMiddleware):
             or path in RAG_UI_PUBLIC_PATHS
             or path.startswith("/docs")
             or path.startswith("/openapi")
+            or path.startswith("/frontend")
         ):
             return await call_next(request)
 
