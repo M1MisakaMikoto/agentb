@@ -24,6 +24,10 @@ RUN sed -i 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g; s
         libsm6 \
         libxext6 \
         libxrender1 \
+        libpango-1.0-0 \
+        libpangoft2-1.0-0 \
+        libcairo2 \
+        libgdk-pixbuf-2.0-0 \
         libreoffice-core \
         libreoffice-writer \
         fonts-noto-cjk \

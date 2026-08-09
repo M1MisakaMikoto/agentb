@@ -247,32 +247,13 @@ def _pdf_read(file_path: str, start_idx: int = 0, max_length: int = 100000,
 
 
 def _pdf_write(file_path: str, content: str, metadata: Optional[dict] = None) -> dict:
-    """通过 docx→tex→xelatex 链路生成 PDF，支持中文
-
-    转换链：复用 _docx_write 生成临时 docx → pdf_converter 转 PDF
-    """
-    from .pdf_converter import convert_docx_to_pdf
-
-    tmp_docx = tempfile.mktemp(suffix=".docx")
+    """将 Markdown 直接渲染为 PDF（WeasyPrint：HTML/CSS 排版，支持中文）。"""
     try:
-        # 1. 复用现有 _docx_write 生成临时 docx
-        docx_result = _docx_write(tmp_docx, content, metadata)
-        if docx_result.get("error"):
-            return docx_result
-
-        # 2. docx → PDF
-        conv = convert_docx_to_pdf(tmp_docx, file_path)
-        if conv.get("error"):
-            return _make_result(error=conv["error"])
-        return _make_result(conv["result"])
+        from .pdf_renderer import render_markdown_to_pdf
+        result = render_markdown_to_pdf(content, file_path, metadata)
+        return _make_result(result)
     except Exception as e:
         return _make_result(error=f"PDF写入失败: {str(e)}")
-    finally:
-        try:
-            if os.path.exists(tmp_docx):
-                os.unlink(tmp_docx)
-        except Exception:
-            pass
 
 
 def _pdf_append(file_path: str, content: str) -> dict:
