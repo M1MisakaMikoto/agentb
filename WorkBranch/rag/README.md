@@ -22,12 +22,13 @@
 ```bash
 start-dev.bat
 ```
-该方式会启动前端+backend，backend 内已包含 RAG 路由。
+该方式启动 backend（含 RAG 路由）；API 演示前端由 backend 静态托管在 `/frontend`。
 
-### 方式 B（仅后端）
+### 方式 B（直接运行）
 ```bash
-python run_dev.py --backend-only
+python run_dev.py --host 127.0.0.1 --backend-port 8000
 ```
+支持 `--no-reload` 关闭热重载。
 
 ## 4. API 入口
 - 基础前缀: `/rag`
