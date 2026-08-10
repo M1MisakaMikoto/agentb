@@ -389,11 +389,14 @@ async def run_workspace_upload_image_understanding_test(
             print_error(f"Failed to upload image: {upload_result.get('message')}")
             result.errors.append(f"upload_file: {upload_result.get('message')}")
             return result
-        print_success(f"Uploaded: {file_path.name}")
+        uploaded_files = upload_result.get("data") or []
+        saved_as = uploaded_files[0].get("saved_as") if uploaded_files else None
+        image_ref = saved_as or file_path.name
+        print_success(f"Uploaded: {image_ref}")
 
         user_content_parts = [
             {"type": "text", "text": prompt},
-            {"type": "image", "file_ref": file_path.name}
+            {"type": "image", "file_ref": image_ref}
         ]
         conv_result = await api.create_conversation(session_id, prompt, user_content_parts=user_content_parts)
     except FileNotFoundError as e:
@@ -428,13 +431,30 @@ async def run_workspace_upload_image_understanding_test(
     if result.response_text:
         print_success(f"Response length: {len(result.response_text)} chars")
         
-        image_keywords = ["图片", "图表", "曲线", "算法"]
-        found_keywords = [kw for kw in image_keywords if kw in result.response_text]
-        if found_keywords:
-            print_success(f"Image-related keywords found: {found_keywords}")
+        content_groups = [
+            ("排序", ["排序", "sort"]),
+            ("折线", ["折线", "曲线", "线图"]),
+            ("插入", ["插入"]),
+            ("归并", ["归并", "合并"]),
+            ("快速", ["快速", "quick"]),
+            ("元素", ["元素", "数量", "规模", "数据量"]),
+            ("性能", ["性能", "耗时", "时间", "对比"]),
+        ]
+        matched_groups = [
+            label for label, words in content_groups
+            if any(word in result.response_text for word in words)
+        ]
+        result.image_content_groups = matched_groups
+        print_dim(f"Image content groups matched: {matched_groups}")
+        if len(matched_groups) >= 3:
+            print_success(f"Image content recognized: {matched_groups}")
         else:
-            print_error("No image-related keywords found in response")
-            result.errors.append("No image-related keywords found in response")
+            error = (
+                f"Image content not recognized, matched only "
+                f"{len(matched_groups)}/{len(content_groups)} groups: {matched_groups}"
+            )
+            print_error(error)
+            result.errors.append(error)
     else:
         print_error("No response text found")
         result.errors.append("No response text found")

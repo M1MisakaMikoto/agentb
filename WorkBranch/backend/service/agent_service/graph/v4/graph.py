@@ -80,7 +80,14 @@ def build_v4_graph(
 
     graph.set_entry_point("sidekick_analyze")
 
-    graph.add_edge("sidekick_analyze", "leader_reasoning")
+    graph.add_conditional_edges(
+        "sidekick_analyze",
+        route_after_analyze,
+        {
+            "reasoning": "leader_reasoning",
+            "finalize": "finalize",
+        },
+    )
 
     graph.add_conditional_edges(
         "leader_reasoning",
