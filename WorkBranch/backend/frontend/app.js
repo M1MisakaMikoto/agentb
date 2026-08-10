@@ -43,10 +43,10 @@ const GROUPS = [
       { id: 'session-get', method: 'GET', path: '/session/sessions/{session_id}', desc: '会话详情。', fields: [F('session_id', 'session_id', { type: 'number', where: 'path' })] },
       { id: 'session-delete', method: 'DELETE', path: '/session/sessions/{session_id}', confirm: true, desc: '删除会话及其全部对话。', fields: [F('session_id', 'session_id', { type: 'number', where: 'path' })] },
       { id: 'session-conversations', method: 'GET', path: '/session/sessions/{session_id}/conversations', desc: '会话下的对话列表。', fields: [F('session_id', 'session_id', { type: 'number', where: 'path' })] },
-      { id: 'session-conversation-create', method: 'POST', path: '/session/sessions/{session_id}/conversations', desc: '创建对话并写入首条用户消息。', fields: [
+      { id: 'session-conversation-create', method: 'POST', path: '/session/sessions/{session_id}/conversations', desc: '创建对话并写入首条用户消息；user_content_parts 支持图片理解：{"type":"image","url":"<工作区相对路径或http(s)/data:链接>"}，单条最多5张。', fields: [
         F('session_id', 'session_id', { type: 'number', where: 'path' }),
         F('user_content', 'user_content', { placeholder: '首条用户消息' }),
-        F('user_content_parts', 'user_content_parts (JSON)', { type: 'json', placeholder: '[{"type":"text","text":"..."}]', wide: true }),
+        F('user_content_parts', 'user_content_parts (JSON)', { type: 'json', placeholder: '[{"type":"text","text":"分析这张图"},{"type":"image","url":"测试图片.png"}]', wide: true }),
         F('idempotency_key', 'idempotency_key', { placeholder: '幂等键，可选' }),
       ] },
     ],
@@ -58,10 +58,10 @@ const GROUPS = [
       { id: 'conv-delete', method: 'DELETE', path: '/session/conversations/{conversation_id}', confirm: true, desc: '删除单个对话。', fields: [F('conversation_id', 'conversation_id', { where: 'path' })] },
       { id: 'conv-cancel', method: 'POST', path: '/session/conversations/{conversation_id}/cancel', desc: '取消正在运行的对话。', fields: [F('conversation_id', 'conversation_id', { where: 'path' })] },
       { id: 'conv-cascade', method: 'DELETE', path: '/session/conversations/{conversation_id}/cascade', confirm: true, desc: '级联删除该对话及其之后的所有对话（回退）。', fields: [F('conversation_id', 'conversation_id', { where: 'path' })] },
-      { id: 'conv-messages', method: 'POST', path: '/session/conversations/{conversation_id}/messages', desc: '准备消息：更新用户消息内容并返回消息 ID，不执行 Agent。', fields: [
+      { id: 'conv-messages', method: 'POST', path: '/session/conversations/{conversation_id}/messages', desc: '准备消息：更新用户消息内容并返回消息 ID，不执行 Agent；message_parts 支持图片理解：{"type":"image","url":"<工作区相对路径或http(s)/data:链接>"}，单条最多5张。', fields: [
         F('conversation_id', 'conversation_id', { where: 'path' }),
         F('message', 'message', { placeholder: '用户消息' }),
-        F('message_parts', 'message_parts (JSON)', { type: 'json', placeholder: '[{"type":"text","text":"..."}]', wide: true }),
+        F('message_parts', 'message_parts (JSON)', { type: 'json', placeholder: '[{"type":"text","text":"分析这张图"},{"type":"image","url":"测试图片.png"}]', wide: true }),
         F('enable_context', 'enable_context', { type: 'checkbox' }),
       ] },
       { id: 'conv-stream', method: 'GET', path: '/session/conversations/{conversation_id}/stream', sse: true, desc: 'SSE 流式执行对话；首个请求会触发 Agent 运行，完成后自动结束。', fields: [
