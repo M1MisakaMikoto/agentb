@@ -12,6 +12,7 @@ from service.agent_service.agent_service import AgentService
 from data.conversation_dao import ConversationDAO
 from service.session_service.canonical import Message, SegmentType, MessageBuilder
 from service.session_service.message_content import deserialize_parts, normalize_user_content, parts_to_plain_text, resolve_runtime_parts, serialize_parts
+from core.logging.multimodal_diag import log_multimodal_channel_check
 from service.runtime import get_runtime_state
 
 
@@ -361,6 +362,15 @@ class ConversationService:
                 user_content=serialize_parts(persisted_user_parts),
             )
         user_message_parts = resolve_runtime_parts(persisted_user_parts, workspace_dir)
+        try:
+            _supports_vision = bool(get_settings_service().get("llm:supports_vision"))
+        except Exception:
+            _supports_vision = False
+        log_multimodal_channel_check(
+            parts=user_message_parts,
+            conversation_id=conversation_id,
+            supports_vision=_supports_vision,
+        )
         history_context = []
         for item in context if context else []:
             role = item.get("role", "user")

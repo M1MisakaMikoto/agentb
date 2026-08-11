@@ -98,6 +98,32 @@ def has_image_parts(parts: Any) -> bool:
     return False
 
 
+def summarize_image_parts(parts: Any) -> Dict[str, Any]:
+    """统计图像部件数量并提取名称列表。
+
+    用于多模态通道诊断日志，name 缺失时回退到 image_url 的文件名。
+    """
+    count = 0
+    names: List[str] = []
+    for part in normalize_message_parts(parts):
+        if part.get("type") != IMAGE_PART:
+            continue
+        count += 1
+        name = part.get("name")
+        if not name:
+            image_ref = str(part.get("image_url", ""))
+            if image_ref.startswith("data:"):
+                name = "(base64)"
+            elif "/" in image_ref:
+                name = image_ref.rsplit("/", 1)[-1]
+            elif image_ref:
+                name = image_ref
+            else:
+                name = "(unnamed)"
+        names.append(name)
+    return {"count": count, "names": names}
+
+
 def image_part_placeholder(part: Dict[str, Any]) -> str:
     name = part.get("name")
     if name:

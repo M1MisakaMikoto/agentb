@@ -14,6 +14,7 @@ from typing import Optional
 
 from ...state import AgentState
 from core.logging import console
+from core.logging.multimodal_diag import log_multimodal_route_result
 from service.session_service.message_content import has_image_parts
 from service.agent_service.prompts.graph_prompts import (
     build_chat_system_prompt,
@@ -79,11 +80,21 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
 
         # 原生多模态：检测到图片输入时直接以 image_url 调用 LLM，跳过决策链
         user_message_parts = state.get("current_user_message_parts") or []
-        if (
-            (state.get("agent_type") or "director_agent") == "director_agent"
-            and _supports_vision(_settings_service)
+        agent_type = state.get("agent_type") or "director_agent"
+        supports_vision = _supports_vision(_settings_service)
+        routed_native = (
+            agent_type == "director_agent"
+            and supports_vision
             and has_image_parts(user_message_parts)
-        ):
+        )
+        log_multimodal_route_result(
+            parts=user_message_parts,
+            conversation_id=(message_context or {}).get("conversation_id"),
+            supports_vision=supports_vision,
+            agent_type=agent_type,
+            routed_native=routed_native,
+        )
+        if routed_native:
             console.info("[sidekick-analyze] 检测到图片输入，直接走原生多模态 chat")
             reply = _run_native_multimodal_chat(
                 user_message=final_user_message or "请直接分析这张图片并回答用户。",
