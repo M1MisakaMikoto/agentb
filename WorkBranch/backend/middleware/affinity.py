@@ -58,7 +58,7 @@ class AffinityMiddleware:
                 response = JSONResponse(
                     status_code=400,
                     content=Result.error(message=str(exc), code=400).model_dump(),
-                    headers={"X-AgentB-Instance-ID": runtime.instance_id},
+                    headers={"X-AgentB-Instance-ID": runtime.instance_id.encode("ascii", "replace").decode("ascii")},
                 )
                 await response(scope, receive, send)
                 return
@@ -72,7 +72,7 @@ class AffinityMiddleware:
                 ).model_dump(),
                 headers={
                     "Retry-After": "5",
-                    "X-AgentB-Instance-ID": runtime.instance_id,
+                    "X-AgentB-Instance-ID": runtime.instance_id.encode("ascii", "replace").decode("ascii"),
                 },
             )
             await response(scope, receive, send)

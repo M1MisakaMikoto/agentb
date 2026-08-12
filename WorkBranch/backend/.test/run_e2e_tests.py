@@ -353,9 +353,16 @@ async def run_tests(
             api_config = config.get("api", {})
             host = api_config.get("host", "127.0.0.1")
             port = api_config.get("port", 8000)
-            if not wait_for_backend(host, port, timeout=60.0):
-                print(f"{Colors.RED}Failed to start backend{Colors.ENDC}")
-                return results
+            # 只在实际启动了新进程时才等待后端启动
+            if backend_process is not None:
+                if not wait_for_backend(host, port, timeout=60.0):
+                    print(f"{Colors.RED}Failed to start backend{Colors.ENDC}")
+                    return results
+            else:
+                # 端口已被占用，验证现有后端是否可访问
+                if not wait_for_backend(host, port, timeout=10.0):
+                    print(f"{Colors.RED}Existing backend is not responding{Colors.ENDC}")
+                    return results
         else:
             print(f"{Colors.CYAN}Using existing backend{Colors.ENDC}")
         
