@@ -236,8 +236,13 @@ ALL_TOOLS = {
                    '"dtoList":"(检测指标明细列表，可选)"'
                    '}'
     },
+    # --- 图像理解工具 ---
+    "analyze_image": {
+        "name": "analyze_image",
+        "description": "分析工作区图片（视觉理解） - 读取工作区图片并调用视觉模型返回文本分析结果",
+        "params": 'analyze_image:{"image_path":"(工作区相对路径，必填，来自用户消息 [图片: 文件名])","task":"(分析要求，必填)"}'
+    },
 }
-
 
 FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir"}
 EXPLORE_TOOLS = {"explore_code", "explore_internet"}

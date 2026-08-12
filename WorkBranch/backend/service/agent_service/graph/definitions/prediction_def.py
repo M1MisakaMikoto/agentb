@@ -46,6 +46,7 @@ class PredictionDefinition(AgentDefinition):
                     "list_workspace_files",
                     "get_workspace_info",
                     "search_files",
+                    "analyze_image",
                     "read_file",
                     "submit_facility_report",
                     "submit_facility_forecast",

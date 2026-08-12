@@ -11,6 +11,8 @@ from langgraph.graph import StateGraph, END
 import os
 import shutil
 import fnmatch
+import base64
+import mimetypes
 
 from ...state import ToolExecutionState, ToolCall
 from ...tools.todo_tools import update_todo
@@ -26,6 +28,7 @@ from service.agent_service.prompts.graph_prompts import (
     THINK_SYSTEM_PROMPT,
     build_special_tool_messages,
     generate_prompt,
+    build_chat_system_prompt,
     build_direct_chat_messages,
 )
 from service.session_service.canonical import SegmentType
@@ -421,6 +424,15 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             print(f"[DEBUG-PREDICTION] ✓ Prediction Sub-Agent COMPLETED!")
         elif tool_name == "call_plan_agent":
             tool_result = _execute_call_plan_agent(tool_args, llm_service, token_callback, message_context)
+        elif tool_name == "analyze_image":
+            tool_result = _execute_analyze_image(
+                tool_args,
+                llm_service=llm_service,
+                workspace_service=workspace_service,
+                workspace_id=workspace_id,
+                message_context=message_context,
+            )
+
         elif tool_name == "calculate_bci":
             import datetime
             log_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] 🔢 calculate_bci CALLED! Args: {tool_args}\n"
@@ -909,6 +921,61 @@ def _execute_chat_tool(
                 "error": str(e)
             })
         return {"result": f"对话回复失败: {e}", "error": str(e)}
+
+
+def _execute_analyze_image(
+    tool_args: dict,
+    llm_service=None,
+    workspace_service=None,
+    workspace_id: str = None,
+    message_context: dict = None,
+) -> dict:
+    """执行 analyze_image 工具：读取工作区图片并以原生多模态交给主模型分析，返回文本结果。
+
+    失败返回 error 文本（不终止会话），由模型自行决定下一步。
+    """
+    image_path = tool_args.get("image_path")
+    task = tool_args.get("task")
+    if not image_path:
+        return {"result": None, "error": "analyze_image 缺少必填参数 image_path（工作区相对路径）"}
+    if not task:
+        return {"result": None, "error": "analyze_image 缺少必填参数 task（分析要求）"}
+    if workspace_service is None or not workspace_id:
+        return {"result": None, "error": "analyze_image 无法解析工作区：缺少 workspace_service/workspace_id"}
+    if llm_service is None:
+        return {"result": None, "error": "analyze_image 无法执行：LLM 服务未配置"}
+
+    allowed, resolved_path = workspace_service.resolve_path(workspace_id, image_path)
+    if not allowed:
+        return {"result": None, "error": f"analyze_image 路径不允许（越界或不存在）: {resolved_path}"}
+    if not os.path.isfile(resolved_path):
+        return {"result": None, "error": f"analyze_image 文件不存在: {resolved_path}"}
+
+    try:
+        mime_type = mimetypes.guess_type(resolved_path)[0] or "application/octet-stream"
+        with open(resolved_path, "rb") as fh:
+            data_url = f"data:{mime_type};base64,{base64.b64encode(fh.read()).decode('utf-8')}"
+        parts = [
+            {"type": "text", "text": task},
+            {"type": "image", "image_url": data_url, "name": os.path.basename(resolved_path)},
+        ]
+        messages = build_direct_chat_messages(
+            task_description=task,
+            parent_chain_messages=[],
+            current_conversation_messages=[],
+            multimodal_parts=parts,
+        )
+        from core.logging.multimodal_diag import log_multimodal_tool_executed
+        log_multimodal_tool_executed(
+            image_path=os.path.basename(resolved_path),
+            conversation_id=(message_context or {}).get("conversation_id"),
+        )
+        settings_service = (message_context or {}).get("settings_service")
+        system_prompt = build_chat_system_prompt(settings_service)
+        response_text = llm_service.chat(messages=messages, system_prompt=system_prompt)
+        return {"result": str(response_text), "error": None}
+    except Exception as e:
+        return {"result": None, "error": f"analyze_image 执行失败: {type(e).__name__}: {e}"}
 
 
 def _execute_read_file(tool_args: dict) -> dict:

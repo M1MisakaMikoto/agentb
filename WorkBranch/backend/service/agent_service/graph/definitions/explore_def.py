@@ -41,6 +41,7 @@ class ExploreDefinition(AgentDefinition):
                     "get_workspace_info",
                     "search_files",
                     "document",
+                    "analyze_image",
                     "read_file",
                 ],
                 default_tools=[

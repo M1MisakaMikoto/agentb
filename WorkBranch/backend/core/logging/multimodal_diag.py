@@ -35,21 +35,12 @@ def log_multimodal_channel_check(
     conversation_id: Optional[str],
     supports_vision: bool,
 ) -> None:
-    """图像装配触发时输出：开关状态 + 图像摘要 + 预判路由。"""
+    """图像装配触发时输出：是否开启图像理解支持 + 图像摘要。"""
     ts = _now()
     summary = summarize_image_parts(parts)
-    enabled_text = "当前已开启多模态" if supports_vision else "当前未开启多模态"
+    enabled_text = "当前已开启图像理解" if supports_vision else "当前未开启图像理解"
     image_text = _image_summary_text(summary)
-    if supports_vision and summary["count"] > 0:
-        predicted = "原生多模态 chat（跳过决策链）"
-    elif supports_vision:
-        predicted = "不会走原生多模态（无图像输入）"
-    else:
-        predicted = "不会走原生多模态（未开启）"
-    line = (
-        f"[{ts}] {enabled_text}（supports_vision={supports_vision}）：{image_text}；"
-        f"预判路由: {predicted}"
-    )
+    line = f"[{ts}] {enabled_text}（supports_vision={supports_vision}）：{image_text}"
     try:
         with open_trace_log() as f:
             f.write(f"\n[{ts}] === 🖼️ MULTIMODAL CHANNEL CHECK ===\n")
@@ -97,3 +88,22 @@ def log_multimodal_route_result(
     except Exception:
         pass
     console.info(f"[multimodal-route] {line}")
+
+def log_multimodal_tool_executed(
+    *,
+    image_path: str,
+    conversation_id: Optional[str],
+) -> None:
+    """analyze_image 工具执行时输出：图像装载进原生多模态 chat。"""
+    ts = _now()
+    line = f"[{ts}] 工具 analyze_image 装载图像 [{image_path}] → 原生多模态 chat（工具）"
+    try:
+        with open_trace_log() as f:
+            f.write(f"\n[{ts}] === 🖼️ MULTIMODAL TOOL EXECUTED ===\n")
+            f.write(line + "\n")
+            if conversation_id:
+                f.write(f"[{ts}] conversation_id: {conversation_id}\n")
+            f.flush()
+    except Exception:
+        pass
+    console.info(f"[multimodal-tool] {line}")

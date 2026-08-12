@@ -39,6 +39,7 @@ class DirectorDefinition(AgentDefinition):
                     "list_workspace_files",
                     "get_workspace_info",
                     "search_files",
+                    "analyze_image",
                     "read_file",
                     "write_file",
                     "delete_file",

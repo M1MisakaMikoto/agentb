@@ -15,11 +15,6 @@ from typing import Optional
 from ...state import AgentState
 from core.logging import console
 from core.logging.multimodal_diag import log_multimodal_route_result
-from service.session_service.message_content import has_image_parts
-from service.agent_service.prompts.graph_prompts import (
-    build_chat_system_prompt,
-    build_direct_chat_messages,
-)
 
 
 def _supports_vision(settings_service) -> bool:
@@ -29,29 +24,6 @@ def _supports_vision(settings_service) -> bool:
         return bool(settings_service.get("llm:supports_vision"))
     except Exception:
         return False
-
-
-def _run_native_multimodal_chat(
-    *,
-    user_message: str,
-    multimodal_parts: list,
-    llm_service,
-    settings_service,
-    message_context,
-    state: AgentState,
-) -> str:
-    """原生多模态：直接以 image_url 调用 LLM，跳过决策链。"""
-    if llm_service is None:
-        return "无法自动分析图片：LLM 服务未配置。"
-    messages = build_direct_chat_messages(
-        task_description=user_message,
-        parent_chain_messages=state.get("parent_chain_messages") or [],
-        current_conversation_messages=state.get("current_conversation_messages") or [],
-        multimodal_parts=multimodal_parts,
-        message_context=message_context,
-    )
-    system_prompt = build_chat_system_prompt(settings_service)
-    return llm_service.chat(messages=messages, system_prompt=system_prompt)
 
 
 def create_analyze_node(_llm_service=None, message_context=None, _settings_service=None):
@@ -78,42 +50,17 @@ def create_analyze_node(_llm_service=None, message_context=None, _settings_servi
 
         console.info(f"[sidekick-analyze] 用户问题规范化完成（{len(final_user_message)} 字符）")
 
-        # 原生多模态：检测到图片输入时直接以 image_url 调用 LLM，跳过决策链
+        # 图像理解已改为 analyze_image 工具：有图也走 reasoning，由模型决定是否调用工具
         user_message_parts = state.get("current_user_message_parts") or []
         agent_type = state.get("agent_type") or "director_agent"
         supports_vision = _supports_vision(_settings_service)
-        routed_native = (
-            agent_type == "director_agent"
-            and supports_vision
-            and has_image_parts(user_message_parts)
-        )
         log_multimodal_route_result(
             parts=user_message_parts,
             conversation_id=(message_context or {}).get("conversation_id"),
             supports_vision=supports_vision,
             agent_type=agent_type,
-            routed_native=routed_native,
+            routed_native=False,
         )
-        if routed_native:
-            console.info("[sidekick-analyze] 检测到图片输入，直接走原生多模态 chat")
-            reply = _run_native_multimodal_chat(
-                user_message=final_user_message or "请直接分析这张图片并回答用户。",
-                multimodal_parts=user_message_parts,
-                llm_service=_llm_service,
-                settings_service=_settings_service,
-                message_context=message_context,
-                state=state,
-            )
-            return {
-                "current_user_message_text": final_user_message,
-                "user_message": final_user_message,
-                "final_reply": reply,
-                "pending_final_text": reply,
-                "has_tool_use": False,
-                "pending_tools": [],
-                "_route_target": "finalize",
-            }
-
         return {
             "current_user_message_text": final_user_message,
             "user_message": final_user_message,
