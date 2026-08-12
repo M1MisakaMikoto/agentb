@@ -81,7 +81,6 @@ DEFAULT_SETTINGS = {
     "agent": {
         "memory_mode": "accumulate",
         "memory_window_size": 3,
-        "orchestration_version": "v4",
         "tool_parallelism": 3,
         "closuring_enabled": True,
         "closure_max_rounds": 8,

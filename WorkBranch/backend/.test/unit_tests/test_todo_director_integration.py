@@ -15,48 +15,38 @@ from service.agent_service.graph.director_agent import (
 from service.agent_service.prompts.graph_prompts import generate_prompt
 
 
-class _TodoE2ELLM:
+class _TodoV4LLM:
+    """v4 编排：leader 输出 tool_calls/text 协议。"""
+
     def __init__(self):
         todos = ["inspect-e2e", "change-e2e", "verify-e2e"]
         self.responses = [
-            {"kind": "tool", "tool_name": "update_todo", "tool_args": {"todos": todos, "doingIdx": 0}},
-            {"kind": "tool", "tool_name": "update_todo", "tool_args": {"todos": todos, "doingIdx": 1}},
-            {"kind": "tool", "tool_name": "update_todo", "tool_args": {"todos": todos, "doingIdx": 2}},
-            {"kind": "tool", "tool_name": "chat", "tool_args": {"description": "report completion"}},
+            {"type": "tool_calls", "content": {"reason": "登记任务", "calls": [{"call_seq": 1, "tool_name": "update_todo", "tool_args": {"todos": todos, "doingIdx": 0}}]}},
+            {"type": "tool_calls", "content": {"reason": "推进任务", "calls": [{"call_seq": 2, "tool_name": "update_todo", "tool_args": {"todos": todos, "doingIdx": 1}}]}},
+            {"type": "tool_calls", "content": {"reason": "推进任务", "calls": [{"call_seq": 3, "tool_name": "update_todo", "tool_args": {"todos": todos, "doingIdx": 2}}]}},
+            {"type": "text", "content": "todo e2e complete"},
         ]
         self.decision_prompts = []
 
-    def chat_with_json_mode(self, messages, **_kwargs):
+    def chat_with_structured_output(self, messages, **_kwargs):
         self.decision_prompts.append(messages[-1]["content"])
-        assert self.responses, "unexpected extra decision"
         import json
         return json.dumps(self.responses.pop(0))
 
-    def chat_stream(self, _messages, _system_prompt, stream_callback=None, **_kwargs):
-        reply = "todo e2e complete"
-        if stream_callback:
-            stream_callback(reply)
-        yield reply
 
-
-class _ResumeE2ELLM:
+class _ResumeV4LLM:
     def __init__(self):
         self.decision_prompt = None
 
-    def chat_with_json_mode(self, messages, **_kwargs):
+    def chat_with_structured_output(self, messages, **_kwargs):
         self.decision_prompt = messages[-1]["content"]
-        return '{"kind":"tool","tool_name":"chat","tool_args":{"description":"resume"}}'
-
-    def chat_stream(self, _messages, _system_prompt, stream_callback=None, **_kwargs):
-        reply = "resumed"
-        if stream_callback:
-            stream_callback(reply)
-        yield reply
+        import json
+        return json.dumps({"type": "text", "content": "resumed"})
 
 
 class TodoDirectorIntegrationTest(unittest.TestCase):
     def test_full_graph_keeps_todo_across_react_iterations(self):
-        llm = _TodoE2ELLM()
+        llm = _TodoV4LLM()
         previous_cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as run_dir:
             try:
@@ -78,7 +68,7 @@ class TodoDirectorIntegrationTest(unittest.TestCase):
             self.assertIn("change-e2e", prompt)
             self.assertIn("verify-e2e", prompt)
 
-        resume_llm = _ResumeE2ELLM()
+        resume_llm = _ResumeV4LLM()
         with tempfile.TemporaryDirectory() as run_dir:
             try:
                 os.chdir(run_dir)

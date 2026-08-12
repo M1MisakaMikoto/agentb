@@ -137,16 +137,8 @@ def get_allowed_tools(agent_type: str, settings_service=None, use_settings_overr
         }
         tools = default_permissions.get(agent_type, default_permissions["director_agent"])
 
-    # V4：chat 工具已退役，不暴露给模型（v3 回退路径仍保留 chat 作为终止工具）
-    try:
-        version = str(
-            (settings_service.get("agent:orchestration_version") if settings_service else None)
-            or "v3"
-        ).lower()
-        if version == "v4":
-            tools = [tool for tool in tools if tool != "chat"]
-    except Exception:
-        pass
+    # V4：chat 工具已退役，不暴露给模型（旧版 v2/v3 已弃用，不再保留 chat 终止工具）
+    tools = [tool for tool in tools if tool != "chat"]
     return tools
 
 

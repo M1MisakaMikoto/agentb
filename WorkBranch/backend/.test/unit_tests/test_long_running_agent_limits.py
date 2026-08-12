@@ -34,9 +34,7 @@ class FakeSettings:
         self.data = deepcopy(DEFAULT_SETTINGS)
         self.data["llm"]["api_key"] = "secret"
         self.data["intent_analysis"]["rule_keywords"] = ["keep-visible"]
-        # 本文件全部基于 v3 ReActAgentBase 图验证轮次/超时预算，
-        # chat 作为 v3 终止工具必须保留，因此显式使用 v3 编排配置。
-        self.data["agent"]["orchestration_version"] = "v3"
+        # 旧版 ReActAgentBase 已弃用但代码保留，本文件直接对其内部行为做单元验证。
 
     def reload(self):
         return None
@@ -108,17 +106,18 @@ def test_generic_agent_entry_injects_definition_limit_into_state(monkeypatch):
     assert outcome["final_state"]["max_iterations"] == 32
 
 
-def test_compiled_graph_completes_exactly_32_tool_rounds(monkeypatch):
+def test_legacy_loop_respects_32_round_budget_without_chat(monkeypatch):
+    # v2/v3 已弃用且 chat 工具已退役：旧 ReActAgentBase 循环不再用 chat 终止，
+    # 由 32 轮预算强制结束。
     class ThirtyTwoRoundLLM:
         def __init__(self):
             self.calls = 0
 
         def chat_with_json_mode(self, **_kwargs):
             self.calls += 1
-            tool_name = "chat" if self.calls == 32 else "thinking"
             return json.dumps({
                 "kind": "tool",
-                "tool_name": tool_name,
+                "tool_name": "thinking",
                 "tool_args": {"description": f"round-{self.calls}"},
             })
 
@@ -136,7 +135,7 @@ def test_compiled_graph_completes_exactly_32_tool_rounds(monkeypatch):
         tool_executor,
         "run_tool_execution",
         lambda tool_name, **_kwargs: {
-            "result": "completed" if tool_name == "chat" else "continue",
+            "result": "continue",
             "error": None,
         },
     )
@@ -162,7 +161,6 @@ def test_compiled_graph_completes_exactly_32_tool_rounds(monkeypatch):
 
     assert llm.calls == 32
     assert final_state["iteration_count"] == 32
-    assert final_state["final_reply"] == "completed"
 
 
 def test_limits_timeouts_and_recursion_budget_are_coherent():

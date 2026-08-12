@@ -2348,65 +2348,25 @@ def run_graph_v3(
     current_conversation_messages: List[dict] = None,
     prior_agent_state: Optional[AgentState] = None,
 ) -> dict:
-    # V4 编排开关：agent:orchestration_version == "v4" 时走新图
-    try:
-        if settings_service is not None and str(
-            settings_service.get("agent:orchestration_version") or "v3"
-        ).lower() == "v4":
-            from .v4.graph import run_v4_graph
-            return run_v4_graph(
-                user_message=user_message,
-                workspace_id=workspace_id,
-                llm_service=llm_service,
-                token_callback=token_callback,
-                memory_mode=memory_mode,
-                window_size=window_size,
-                settings_service=settings_service,
-                message_context=message_context,
-                parent_chain_messages=parent_chain_messages,
-                current_conversation_messages=current_conversation_messages,
-                prior_agent_state=prior_agent_state,
-                agent_type="director_agent",
-                conversation_id=(
-                    message_context.get("conversation_id") if message_context else None
-                ),
-            )
-    except Exception as e:
-        console.warning(f"[run_graph_v3] V4 入口切换失败，回退 V3: {e}")
-
-    print("\n" + "="*60)
-    print("[Director Agent] 块类型驱动循环 + Plan/Execute 分离")
-    print(f"[Director Agent] 记忆模式: {memory_mode}, 窗口大小: {window_size}")
-    print("="*60)
-
-    # 从 AgentDefinition 读取配置
-    definition = get_definition("director_agent")
-    print(f"[Director Agent] max_iterations: {definition.meta.max_iterations}")
-
-    initial_state = build_initial_state(
+    # V2/V3 已弃用：无论配置如何，一律强制走 v4 新图（旧图代码保留但不执行）
+    from .v4.graph import run_v4_graph
+    return run_v4_graph(
         user_message=user_message,
         workspace_id=workspace_id,
-        definition=definition,
+        llm_service=llm_service,
+        token_callback=token_callback,
+        memory_mode=memory_mode,
+        window_size=window_size,
+        settings_service=settings_service,
+        message_context=message_context,
         parent_chain_messages=parent_chain_messages,
         current_conversation_messages=current_conversation_messages,
-        is_root_graph=True,
         prior_agent_state=prior_agent_state,
+        agent_type="director_agent",
+        conversation_id=(
+            message_context.get("conversation_id") if message_context else None
+        ),
     )
-
-    graph = create_orchestrator_graph_v3(llm_service, token_callback, memory_mode, window_size, settings_service, message_context)
-
-    # ✅ 正确做法：通过 graph.invoke() 的 config 参数传递 recursion_limit
-    # ⚠️ compile() 不接受此参数！必须在 invoke() 时传入
-    _max_iters = definition.meta.max_iterations
-    graph_config = {'recursion_limit': calculate_recursion_limit(_max_iters)}
-
-    final_state = graph.invoke(initial_state, config=graph_config)
-
-    print("\n" + "="*60)
-    print("[Director Agent] 主编排图执行完成")
-    print("="*60)
-
-    return final_state
 
 
 run_graph_v2 = run_graph_v3

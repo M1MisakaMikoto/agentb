@@ -11,25 +11,10 @@ from service.agent_service.tools.registry import ALL_TOOLS  # noqa: E402
 
 
 class RetiredToolCleanupTests(unittest.TestCase):
-    class _Settings:
-        def __init__(self, version):
-            self.version = version
-
-        def get(self, key, default=None):
-            if key == "agent:orchestration_version":
-                return self.version
-            return default
-
     def test_director_excludes_retired_chat(self):
         self.assertNotIn(
             "chat",
-            get_allowed_tools("director_agent", self._Settings("v4")),
-        )
-
-    def test_legacy_v3_keeps_chat_termination_tool(self):
-        self.assertIn(
-            "chat",
-            get_allowed_tools("director_agent", self._Settings("v3")),
+            get_allowed_tools("director_agent", None),
         )
 
     def test_review_excludes_unregistered_glob_grep(self):

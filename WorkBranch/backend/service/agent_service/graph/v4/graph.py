@@ -32,14 +32,6 @@ from .finalize import create_finalize_node
 _RESUME_REGISTRY: dict[str, tuple] = {}
 
 
-def _v4_enabled(settings_service) -> bool:
-    if settings_service is None:
-        return False
-    try:
-        return str(settings_service.get("agent:orchestration_version") or "v3").lower() == "v4"
-    except Exception:
-        return False
-
 
 def build_v4_graph(
     *,
