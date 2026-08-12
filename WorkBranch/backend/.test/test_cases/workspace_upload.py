@@ -466,6 +466,109 @@ async def run_workspace_upload_image_understanding_test(
     return result
 
 
+async def run_workspace_upload_image_understanding_speedbump_test(
+    api: APIClient,
+    scenario_config: dict,
+    verbose: bool = True
+) -> TestResult:
+    result = TestResult("workspace_upload_image_understanding_speedbump", scenario_config)
+    print_test_header(scenario_config.get(
+        "description",
+        "Workspace Upload - Speed Bump Image Understanding Test",
+    ))
+
+    print_step(1, "Creating session...", Colors.CYAN)
+    session_result = await api.create_session(title="Speed Bump Image Understanding Test")
+    if not session_result.get("success", True):
+        print_error(f"Failed to create session: {session_result.get('message')}")
+        result.errors.append(f"create_session: {session_result.get('message')}")
+        return result
+    session_id = session_result.get("data", {}).get("id")
+    workspace_id = session_result.get("data", {}).get("workspace_id")
+    result.session_id = session_id
+    result.workspace_id = workspace_id
+    print_success(f"Session created: {session_id}")
+
+    print_step(2, "Uploading image to workspace...", Colors.CYAN)
+    source_file = scenario_config.get(
+        "source_file",
+        ".dev/table/图像理解测试/e46127c2ce9f5c8cbb8e645d6023c5df.jpg",
+    )
+    prompt = scenario_config.get(
+        "prompt",
+        "请问这个视频图片中的减速带是否有病害或缺损？如果有病害请给出处置建议",
+    )
+    try:
+        file_path = resolve_source_file(source_file)
+        upload_result = await api.upload_workspace_file(workspace_id, file_path)
+        if not upload_result.get("success", True):
+            print_error(f"Failed to upload image: {upload_result.get('message')}")
+            result.errors.append(f"upload_file: {upload_result.get('message')}")
+            return result
+        uploaded_files = upload_result.get("data") or []
+        saved_as = uploaded_files[0].get("saved_as") if uploaded_files else None
+        image_ref = saved_as or file_path.name
+        print_success(f"Uploaded: {image_ref}")
+        user_content_parts = [
+            {"type": "text", "text": prompt},
+            {"type": "image", "file_ref": image_ref},
+        ]
+        conv_result = await api.create_conversation(session_id, prompt, user_content_parts=user_content_parts)
+    except FileNotFoundError as e:
+        print_error(str(e))
+        result.errors.append(str(e))
+        return result
+
+    if not conv_result.get("success", True):
+        print_error(f"Failed to create conversation: {conv_result.get('message')}")
+        result.errors.append(f"create_conversation: {conv_result.get('message')}")
+        return result
+
+    conversation_id = conv_result.get("data", {}).get("conversation_id")
+    workspace_id = conv_result.get("data", {}).get("workspace_id")
+    result.conversation_id = conversation_id
+    result.workspace_id = workspace_id
+    print_success(f"Conversation created: {conversation_id}")
+
+    print_step(3, "Waiting for conversation to be processing...", Colors.CYAN)
+    await wait_for_conversation_state(api, conversation_id, "processing", timeout=10.0)
+
+    print_step(4, "Streaming response...", Colors.CYAN)
+    await collect_stream_output(api, conversation_id, result, verbose=verbose)
+
+    print_step(5, "Waiting for conversation to complete...", Colors.CYAN)
+    final_result = await wait_for_conversation_state(api, conversation_id, "completed", timeout=300.0)
+    result.response_text = extract_response_text(final_result)
+
+    print_step(6, "Validating results...", Colors.CYAN)
+    if not result.response_text:
+        print_error("No response text found")
+        result.errors.append("No response text found")
+        return result
+
+    print_success(f"Response length: {len(result.response_text)} chars")
+    if "analyze_image" in result.tool_calls:
+        print_success("analyze_image tool was called")
+    else:
+        error = f"analyze_image tool was not called, tool_calls={result.tool_calls}"
+        print_error(error)
+        result.errors.append(error)
+
+    keywords = ["减速带", "病害", "缺损"]
+    matched = [k for k in keywords if k in result.response_text]
+    print_dim(f"Speed bump keywords matched: {matched}")
+    if len(matched) >= 2:
+        print_success(f"Speed bump content recognized: {matched}")
+    else:
+        error = f"Speed bump content not recognized, matched only {len(matched)}/{len(keywords)}: {matched}"
+        print_error(error)
+        result.errors.append(error)
+
+    print(f"\n{Colors.GREEN}{'='*60}{Colors.ENDC}")
+    print(f"{Colors.GREEN}  Speed Bump Image Understanding Test Completed{Colors.ENDC}")
+    print(f"{Colors.GREEN}{'='*60}{Colors.ENDC}\n")
+    return result
+
 async def run_workspace_upload_read_table_document_test(
     api: APIClient,
     scenario_config: dict,

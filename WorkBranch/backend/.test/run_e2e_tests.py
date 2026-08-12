@@ -15,7 +15,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from test_cases import (
     APIClient,
@@ -40,6 +40,7 @@ from test_cases.workspace_upload import (
     run_workspace_upload_extract_write_test,
     run_workspace_upload_read_document_test,
     run_workspace_upload_image_understanding_test,
+    run_workspace_upload_image_understanding_speedbump_test,
     run_workspace_upload_read_table_document_test,
 )
 from test_cases.rag_search import run_rag_search_test
@@ -71,6 +72,7 @@ SCENARIO_RUNNERS = {
     "workspace_upload_extract_write": run_workspace_upload_extract_write_test,
     "workspace_upload_read_document": run_workspace_upload_read_document_test,
     "workspace_upload_image_understanding": run_workspace_upload_image_understanding_test,
+    "workspace_upload_image_understanding_speedbump": run_workspace_upload_image_understanding_speedbump_test,
     "workspace_upload_read_table_document": run_workspace_upload_read_table_document_test,
     "rag_search": run_rag_search_test,
     "sql_query": run_sql_query_test,
@@ -121,10 +123,10 @@ def print_summary(results: List[TestResult], total_duration: float):
 
         if is_pass:
             passed += 1
-            status = f"{Colors.GREEN}PASS{Colors.ENDC}"
+            status = f"{Colors.GREEN}{Colors.BOLD}PASS{Colors.ENDC}"
         else:
             failed += 1
-            status = f"{Colors.RED}FAIL{Colors.ENDC}"
+            status = f"{Colors.RED}{Colors.BOLD}FAIL{Colors.ENDC}"
 
         print(f"  {status} - {result.scenario}")
         if result.errors:
@@ -146,6 +148,12 @@ def print_summary(results: List[TestResult], total_duration: float):
         print(f"  {Colors.RED}Failed: {failed}{Colors.ENDC}")
     print(f"  Duration: {total_duration:.2f}s")
     print(f"{Colors.CYAN}{'='*60}{Colors.ENDC}\n")
+
+    if failed == 0:
+        print(f"{Colors.GREEN}{Colors.BOLD}✅ ALL TESTS PASSED{Colors.ENDC}")
+    else:
+        print(f"{Colors.RED}{Colors.BOLD}❌ SOME TESTS FAILED ({failed}/{len(results)}){Colors.ENDC}")
+    print()
 
     return failed == 0
 
@@ -253,9 +261,9 @@ def get_scenarios_to_run(config: Dict, suite: Optional[str], scenario: Optional[
     return config.get("suites", {}).get("all", {}).get("scenarios", list(SCENARIO_RUNNERS.keys()))
 
 
-def validate_required_files(config: Dict, scenarios: List[str]) -> List[Path]:
+def validate_required_files(config: Dict, scenarios: List[str]) -> List[Tuple[str, Path]]:
     project_root = Path(__file__).resolve().parents[3]
-    missing: List[Path] = []
+    missing: List[Tuple[str, Path]] = []
     seen = set()
     for scenario_name in scenarios:
         scenario_config = config.get("scenarios", {}).get(scenario_name, {})
@@ -267,7 +275,7 @@ def validate_required_files(config: Dict, scenarios: List[str]) -> List[Path]:
             key = str(candidate).casefold()
             if key not in seen and not candidate.is_file():
                 seen.add(key)
-                missing.append(candidate)
+                missing.append((scenario_name, candidate))
     return missing
 
 
@@ -364,6 +372,12 @@ async def run_tests(
             try:
                 result = await runner(api, scenario_config, verbose=verbose)
                 results.append(result)
+                if getattr(result, "response_text", None):
+                    print(f"\n{Colors.GREEN}{Colors.BOLD}{'='*60}{Colors.ENDC}")
+                    print(f"{Colors.GREEN}{Colors.BOLD}  Agent 回复（{scenario_name}）{Colors.ENDC}")
+                    print(f"{Colors.GREEN}{Colors.BOLD}{'='*60}{Colors.ENDC}")
+                    print(result.response_text)
+                    print(f"{Colors.GREEN}{Colors.BOLD}{'='*60}{Colors.ENDC}\n")
             except Exception as e:
                 print(f"{Colors.RED}Error running {scenario_name}: {e}{Colors.ENDC}")
                 error_result = TestResult(scenario_name, scenario_config)
@@ -419,9 +433,22 @@ def main():
 
         missing_files = validate_required_files(config, scenarios)
         if missing_files:
-            print(f"{Colors.RED}Required E2E fixture files are missing:{Colors.ENDC}")
-            for missing_file in missing_files:
-                print(f"  - {missing_file}")
+            print()
+            print(f"{Colors.YELLOW}{Colors.BOLD}{'='*60}{Colors.ENDC}")
+            print(f"{Colors.YELLOW}{Colors.BOLD}  ⚠️  缺少 E2E 必需 fixture 文件（共 {len(missing_files)} 个）{Colors.ENDC}")
+            print(f"{Colors.YELLOW}{Colors.BOLD}{'='*60}{Colors.ENDC}")
+            print(f"{Colors.CYAN}{Colors.BOLD}缺少文件清单（场景 -> 路径）：{Colors.ENDC}")
+            for scenario_name, missing_file in missing_files:
+                print(f"  - [{scenario_name}] {missing_file}")
+            print()
+            print(f"{Colors.CYAN}{Colors.BOLD}操作指示：{Colors.ENDC}")
+            print("  1. 将缺失文件放置到上述绝对路径（完整清单见 deploy/e2e/FIXTURES.md）。")
+            print("     Windows:  Copy-Item '源文件路径' '上述目标路径'")
+            print("     Linux:    cp 源文件路径 上述目标路径")
+            print("  2. 仅校验 fixture：python run_e2e_tests.py --scenario <场景> --preflight-only")
+            print("  3. 放置完成后重新运行：python run_e2e_tests.py --scenario <场景>")
+            print(f"{Colors.GREEN}{Colors.BOLD}提示：fixture 按仓库约定不入库，需从共享位置/微信复制到对应 .dev 目录。{Colors.ENDC}")
+            print()
             return 2
         if args.preflight_only:
             print(
