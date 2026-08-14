@@ -161,8 +161,8 @@ ALL_TOOLS = {
     },
     "sql_query": {
         "name": "sql_query",
-        "description": "执行只读 SQL 查询或结构探查；支持 query(SELECT)、show_databases(列出数据库)、show_tables(列出表)、describe(查看表结构)、show_create(查看建表语句)，以及面向facility_detail索引查询的 facility_trend/facility_report",
-        "params": 'sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create|facility_trend|facility_report，必填)","query":"(query 模式必填；其他模式忽略)","database":"(数据库名称，可选；show_databases 模式忽略，show_tables/describe/show_create 使用该库或默认库)","table":"(表名；describe/show_create 模式必填，其他模式忽略)","limit":"(仅 query/facility_* 模式生效，默认100，最大1000)","table_name":"(facility_* 模式可选，默认 facility_detail)","start_time":"(facility_* 可选，例 2026-05-01 00:00:00)","end_time":"(facility_* 可选，建议与start_time一起传)","device_type_name":"(facility_* 可选，等值过滤)","device_id":"(facility_* 可选，等值过滤)","content_keyword":"(facility_* 可选，LIKE过滤)","group_by":"(facility_trend 可选: hour|day|device_type|device)"}'
+        "description": "执行只读 SQL 查询或结构探查；支持 query(SELECT)、show_databases(列出数据库)、show_tables(列出表)、describe(查看表结构)、show_create(查看建表语句)，以及面向设施表（自动发现或指定）索引查询的 facility_trend/facility_report",
+        "params": 'sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create|facility_trend|facility_report，必填)","query":"(query 模式必填；其他模式忽略；不同设施表的字段映射: 桥梁表t_Bridge/mc=名称, id=ID；道路表t_Road/mc=名称；人行桥表t_Footbridge/mc=名称)","database":"(数据库名称，可选；show_databases 模式忽略，show_tables/describe/show_create 使用该库或默认库)","table":"(表名；describe/show_create 模式必填；query/facility_* 模式可用于指定设施表)","limit":"(仅 query/facility_* 模式生效，默认100，最大1000)","table_name":"(facility_* 模式可选，指定设施表名；不指定则自动发现)","start_time":"(facility_* 可选，例 2026-05-01 00:00:00)","end_time":"(facility_* 可选，建议与start_time一起传)","device_type_name":"(facility_* 可选，设施类型如桥梁/道路/人行桥，用于自动表发现)","device_id":"(facility_* 可选，等值过滤)","content_keyword":"(facility_* 可选，LIKE过滤)","group_by":"(facility_trend 可选: hour|day|device_type|device)"}'
     },
     # --- Prediction Tools ---
     "calculate_bci": {
