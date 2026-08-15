@@ -781,31 +781,31 @@ async def _discover_facility_table(
         if not rows:
             return ""
 
-        all_tables = [_extract_first_value(row).lower() for row in rows]
+        all_tables = [(_extract_first_value(row), _extract_first_value(row).lower()) for row in rows]
 
-        # 策略1：根据设施类型名称匹配表名
+        # 策略1：根据设施类型名称匹配表名（最精确）
         if device_type_name:
             patterns = FACILITY_TABLE_PATTERNS.get(device_type_name.lower(), [])
             for pattern in patterns:
-                for table in all_tables:
-                    if pattern in table:
-                        # 返回原始大小写的表名
-                        return table
+                for original_name, lower_name in all_tables:
+                    if pattern in lower_name:
+                        return original_name
 
-        # 策略2：查找可能的设施表（名称中包含 bridge/road/tunnel 等关键词）
-        facility_keywords = ["bridge", "road", "tunnel", "facility"]
-        for table in all_tables:
+        # 策略2：查找名称中包含设施关键词的表
+        facility_keywords = ["bridge", "road", "tunnel", "footbridge", "facility"]
+        for original_name, lower_name in all_tables:
             for keyword in facility_keywords:
-                if keyword in table:
-                    return table
+                if keyword in lower_name:
+                    return original_name
 
-        # 策略3：查找包含 mc（名称）字段的表
-        # 先获取所有表
-        await asyncio.wait_for(cursor.execute("SHOW TABLES"), timeout=timeout)
-        rows = await asyncio.wait_for(cursor.fetchall(), timeout=timeout)
+        # 策略3：在设施相关表中查找包含 mc 字段的表
+        # 先筛选出可能的设施表（以 t_ 开头且名称长度合理）
+        candidate_tables = [
+            original_name for original_name, lower_name in all_tables
+            if lower_name.startswith("t_") and len(lower_name) > 3
+        ]
 
-        for row in rows:
-            table_name = _extract_first_value(row)
+        for table_name in candidate_tables:
             try:
                 # 检查表是否有 mc 字段（名称字段）
                 await asyncio.wait_for(
