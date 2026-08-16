@@ -194,13 +194,13 @@ ALL_TOOLS = {
     # --- 设施研判报告工具 ---
     "submit_facility_report": {
         "name": "submit_facility_report",
-        "description": "生成设施研判报告 - 将检测报告(PDF)上传后自动生成研判报告",
-        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告PDF文件本地路径，必填)","regionId":"(区域ID，必填，从元数据中获取)"}'
+        "description": "生成设施研判报告 - 将检测报告(DOCX)上传后自动生成研判报告。注意：若尚无DOCX文件，先用 document w 工具生成DOCX（file_path 必须用 .docx 结尾，传入Markdown内容即可自动转换为DOCX），再传 reportFile 给本工具。",
+        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告DOCX文件本地路径，必填)","regionId":"(区域ID，必填，从元数据中获取)"}'
     },
     "submit_facility_forecast": {
         "name": "submit_facility_forecast",
-        "description": "提交设施预测报告 - 将桥梁预测分析结果(PDF)上传到系统。调用 POST /v1/facility/forecast/report 接口。",
-        "params": 'submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)"}'
+        "description": "提交设施预测报告 - 将桥梁预测分析结果(DOCX)上传到系统。调用 POST /v1/facility/forecast/report 接口。若尚无DOCX文件，先用 document w 工具生成DOCX（file_path 必须用 .docx 结尾，传入Markdown内容即可自动转换为DOCX）。",
+        "params": 'submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告DOCX文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)"}'
     },
     # --- 日常巡查记录工具 ---
     "submit_dailypatrol_record": {

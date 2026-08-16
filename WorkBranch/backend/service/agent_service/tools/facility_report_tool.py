@@ -2,17 +2,17 @@
 设施研判报告工具 - 用于生成设施检测研判报告
 
 工具名称: submit_facility_report
-功能: 上传 PDF 文件后生成研判报告
+功能: 上传 DOCX 文件后生成研判报告
 
 API 流程（两步）:
-1. POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+1. POST /v1/file/upload - 上传 DOCX 文件，获得 fileUrl
 2. POST /v1/facility/decision/report - 用 fileUrl + 业务字段生成研判报告
 
 预测报告工具名称: submit_facility_forecast
-功能: 上传 PDF 文件后提交预测数据
+功能: 上传 DOCX 文件后提交预测数据
 
 API 流程（两步）:
-1. POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+1. POST /v1/file/upload - 上传 DOCX 文件，获得 fileUrl
 2. POST /v1/facility/forecast/report - 用 fileUrl 提交预测数据
 
 使用方法:
@@ -20,7 +20,7 @@ API 流程（两步）:
         reportName="2026年5月沪渝高速大桥定期检测报告",
         facilityId="BR-001",
         facilityName="沪渝高速大桥",
-        reportFile="/path/to/report.pdf",
+        reportFile="/path/to/report.docx",
         regionId="region-001"
     )
 
@@ -327,7 +327,7 @@ def execute_submit_facility_report(
 ) -> dict:
     """执行设施研判报告工具（两步流程）
 
-    步骤1: POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+    步骤1: POST /v1/file/upload - 上传 DOCX 文件，获得 fileUrl
     步骤2: POST /v1/facility/decision/report - 用 fileUrl + 业务字段生成研判报告
 
     Args:
@@ -335,7 +335,7 @@ def execute_submit_facility_report(
             - reportName: 报告名称 (必需)
             - facilityId: 设施ID (必需)
             - facilityName: 设施名称 (必需)
-            - reportFile: 报告PDF文件本地路径 (必需)
+            - reportFile: 报告DOCX文件本地路径 (必需)
             - regionId: 区域ID (必需)
         message_context: 消息上下文
 
@@ -357,7 +357,7 @@ def execute_submit_facility_report(
     if not facility_name:
         return {"result": None, "error": "缺少必需参数: facilityName (设施名称)"}
     if not report_file:
-        return {"result": None, "error": "缺少必需参数: reportFile (报告PDF文件路径)"}
+        return {"result": None, "error": "缺少必需参数: reportFile (报告DOCX文件路径)"}
     if not region_id:
         return {"result": None, "error": "缺少必需参数: regionId (区域ID)"}
 
@@ -394,7 +394,7 @@ def execute_submit_facility_report(
     # ========== 步骤1: 上传 PDF 文件 ==========
     upload_url = f"{api_url}/v1/file/upload"
 
-    logger.info(f"[设施研判报告] 步骤1/2 - 上传PDF文件到: {upload_url}")
+    logger.info(f"[设施研判报告] 步骤1/2 - 上传DOCX文件到: {upload_url}")
 
     upload_response = _send_multipart_upload(upload_url, report_file, headers=region_headers)
 
@@ -464,15 +464,15 @@ def register_facility_report_tools():
     tools = [
         ToolDefinition(
             name="submit_facility_report",
-            description="生成设施研判报告 - 两步流程：先上传PDF文件获得fileUrl，再提交业务数据生成研判报告。串联 /v1/file/upload 和 /v1/facility/decision/report 两个接口。注意：若尚无PDF文件，先用 document w 工具生成PDF（传入Markdown内容即可自动转换为PDF）。",
-            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告PDF文件本地路径，必填)","regionId":"(区域ID，必填)"}',
+            description="生成设施研判报告 - 两步流程：先上传DOCX报告文件获得fileUrl，再提交业务数据生成研判报告。串联 /v1/file/upload 和 /v1/facility/decision/report 两个接口。注意：若尚无DOCX文件，先用 document w 工具生成DOCX（file_path 必须用 .docx 结尾，传入Markdown内容即可自动转换为DOCX）。",
+            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告DOCX文件本地路径，必填)","regionId":"(区域ID，必填)"}',
             category="facility_report",
             executor=execute_submit_facility_report
         ),
         ToolDefinition(
             name="submit_facility_forecast",
-            description="提交设施预测报告 - 两步流程：先上传PDF文件获得fileUrl，再提交预测数据。串联 /v1/file/upload 和 /v1/facility/forecast/report 两个接口。注意：若尚无PDF文件，先用 document w 工具生成PDF（传入Markdown内容即可自动转换为PDF）。",
-            params='submit_facility_forecast:{"regionId":"(区域ID，必填)","facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: HIGH/MEDIUM/LOW)","summary":"(预测结论摘要，可选)"}',
+            description="提交设施预测报告 - 两步流程：先上传DOCX报告文件获得fileUrl，再提交预测数据。串联 /v1/file/upload 和 /v1/facility/forecast/report 两个接口。注意：若尚无DOCX文件，先用 document w 工具生成DOCX（file_path 必须用 .docx 结尾，传入Markdown内容即可自动转换为DOCX）。",
+            params='submit_facility_forecast:{"regionId":"(区域ID，必填)","facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告DOCX文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: HIGH/MEDIUM/LOW)","summary":"(预测结论摘要，可选)"}',
             category="facility_report",
             executor=execute_submit_facility_forecast_report
         ),
@@ -499,7 +499,7 @@ def execute_submit_facility_forecast_report(
 ) -> dict:
     """执行设施预测报告提交工具（两步流程）
 
-    步骤1: POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+    步骤1: POST /v1/file/upload - 上传 DOCX 文件，获得 fileUrl
     步骤2: POST /v1/facility/forecast/report - 用 fileUrl 作为 reportUrl 提交预测数据
 
     Args:
@@ -507,7 +507,7 @@ def execute_submit_facility_forecast_report(
             - regionId: 区域ID (必需)
             - facilityId: 设施ID (必需)
             - predictYear: 预测年份 (必需)
-            - reportFile: 报告PDF文件本地路径 (必需)
+            - reportFile: 报告DOCX文件本地路径 (必需)
             - facilityName: 设施名称 (可选)
             - predictedHealthScore: 预测健康分数 (可选)
             - predictedRiskLevel: 风险等级 (可选，如 HIGH/MEDIUM/LOW)
@@ -530,7 +530,7 @@ def execute_submit_facility_forecast_report(
     if not predict_year:
         return {"result": None, "error": "缺少必需参数: predictYear (预测年份)"}
     if not report_file:
-        return {"result": None, "error": "缺少必需参数: reportFile (报告PDF文件路径)"}
+        return {"result": None, "error": "缺少必需参数: reportFile (报告DOCX文件路径)"}
 
     # 解析 reportFile 相对路径到工作区绝对路径
     report_file = _resolve_report_file_path(report_file, message_context)
@@ -561,7 +561,7 @@ def execute_submit_facility_forecast_report(
     # ========== 步骤1: 上传 PDF 文件 ==========
     upload_url = f"{api_url}/v1/file/upload"
 
-    logger.info(f"[设施预测报告] 步骤1/2 - 上传PDF文件到: {upload_url}")
+    logger.info(f"[设施预测报告] 步骤1/2 - 上传DOCX文件到: {upload_url}")
 
     upload_response = _send_multipart_upload(upload_url, report_file)
 
