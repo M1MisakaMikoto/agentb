@@ -32,6 +32,7 @@ import os
 import json
 import logging
 import uuid
+import zipfile
 from typing import Optional, Dict, Any
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -321,6 +322,63 @@ def _extract_success_response(response, payload_keys=()):
     return False, response
 
 
+def _ensure_report_docx(report_file: str) -> tuple[str, Optional[str]]:
+    """确保报告文件为有效 DOCX，返回 (最终文件路径, 错误信息)。
+
+    若 reportFile 是 .md/.txt 等文本，或内容为文本但命名成 .docx 的伪文件
+    （Word/WPS 打开会提示损坏），用 pandoc 自动转换为真正的 DOCX 后返回新路径。
+    已是有效 DOCX 则原样返回。
+    """
+    if not report_file:
+        return report_file, None
+    if not os.path.exists(report_file):
+        return report_file, f"报告文件不存在: {report_file}"
+
+    ext = os.path.splitext(report_file)[1].lower()
+
+    # 已是有效 docx：直接返回
+    if ext == ".docx":
+        try:
+            with zipfile.ZipFile(report_file) as z:
+                names = z.namelist()
+                if "[Content_Types].xml" in names and "word/document.xml" in names:
+                    return report_file, None
+        except zipfile.BadZipFile:
+            pass  # 伪 docx，落到下方 pandoc 转换
+        except Exception:
+            pass
+
+    # 读取文本内容（md / txt / 伪 docx）
+    try:
+        with open(report_file, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        return report_file, f"读取报告文件失败: {str(e)}"
+
+    try:
+        from .document_tools import _docx_write
+    except ImportError:
+        return report_file, "无法导入 docx 生成模块"
+
+    out_path = os.path.splitext(report_file)[0] + ".docx"
+    # _docx_write 优先用 pandoc，pandoc 不可用时回退到 python-docx（纯 Python 依赖）
+    result = _docx_write(out_path, content)
+    if result.get("error"):
+        return report_file, f"DOCX 生成失败: {result['error']}"
+
+    # 确认生成的是有效 DOCX
+    try:
+        with zipfile.ZipFile(out_path) as z:
+            names = z.namelist()
+            if "[Content_Types].xml" not in names or "word/document.xml" not in names:
+                return report_file, "DOCX 生成结果无效（缺少 OOXML 关键部件）"
+    except Exception as e:
+        return report_file, f"DOCX 生成结果校验失败: {str(e)}"
+
+    logger.info(f"[报告文件转换] {report_file} -> {out_path}")
+    return out_path, None
+
+
 def execute_submit_facility_report(
     tool_args: dict,
     message_context: Optional[Dict[str, Any]] = None
@@ -368,6 +426,12 @@ def execute_submit_facility_report(
     passed, err_msg = _validate_region_id(region_id, message_context)
     if not passed:
         return {"result": None, "error": err_msg}
+
+    # 确保报告文件是有效 DOCX（md/文本/伪docx 自动用 pandoc 转换）
+    report_file, docx_err = _ensure_report_docx(report_file)
+    if docx_err:
+        logger.error(f"[设施研判报告] reportFile 处理失败: {docx_err}")
+        return {"result": None, "error": docx_err}
 
     # 构建请求头（regionId 通过 X-Region-Id 传递）
     region_headers = {"X-Region-Id": str(region_id)}
@@ -539,6 +603,12 @@ def execute_submit_facility_forecast_report(
     passed, err_msg = _validate_region_id(region_id, message_context)
     if not passed:
         return {"result": None, "error": err_msg}
+
+    # 确保报告文件是有效 DOCX（md/文本/伪docx 自动用 pandoc 转换）
+    report_file, docx_err = _ensure_report_docx(report_file)
+    if docx_err:
+        logger.error(f"[设施预测报告] reportFile 处理失败: {docx_err}")
+        return {"result": None, "error": docx_err}
 
     # 获取 API 地址（settings_service配置 > 硬编码默认值）
     api_url = DEFAULT_API_URL
