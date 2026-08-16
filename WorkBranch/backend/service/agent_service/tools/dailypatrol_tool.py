@@ -243,16 +243,21 @@ def execute_submit_dailypatrol_record(
 
     response = _send_http_request(full_url, "POST", request_body, headers=request_headers)
 
-    # ========== 处理响应 ==========
-    if not response.get("success"):
-        error_info = response.get("error", {})
+    # 兼容 cowservice 裸 ID 返回 {"id":123}（无 success/data 包装）
+    response_ok = response.get("success") is True or (
+        isinstance(response, dict)
+        and response.get("http_status") is None
+        and "id" in response
+    )
+    if not response_ok:
+        error_info = response.get("error", {}) if isinstance(response, dict) else {}
         error_msg = error_info.get("message", "未知错误")
-        http_status = response.get("http_status", "N/A")
+        http_status = response.get("http_status", "N/A") if isinstance(response, dict) else "N/A"
         logger.error(f"[日常巡查记录] 提交失败 (HTTP {http_status}): {error_msg}")
         return {"result": None, "error": f"提交日常巡查记录失败: {error_msg}"}
 
     # 成功响应
-    data = response.get("data", {})
+    data = response.get("data") or response
     record_id = data.get("id") or data.get("recordId")
 
     result_message = f"""日常巡查记录提交成功！

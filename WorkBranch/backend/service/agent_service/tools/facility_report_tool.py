@@ -297,6 +297,30 @@ def _validate_region_id(
     return True, ""
 
 
+def _extract_success_response(response, payload_keys=()):
+    """从 HTTP 响应中提取 (是否成功, 数据)。兼容三种格式：
+    1. 包装型: {"success": true, "data": {...}}
+    2. 服务端裸 VO: {"fileUrl": ...} / {"id": ...} / {"decisionId": ...}（无 success 包装）
+    3. 裸 Long/ID: 123 / "123"（json 解析为 int/str）
+
+    失败响应（HTTPError/URLError 分支）为 {"success": False, "error": {...}, "http_status": ...}。
+    """
+    if isinstance(response, bool):
+        return response, {}
+    if isinstance(response, (int, str)):
+        return True, {"id": response}
+    if not isinstance(response, dict):
+        return False, {}
+    if response.get("success") is True:
+        data = response.get("data")
+        return True, data if isinstance(data, dict) else {}
+    if response.get("http_status") is not None:
+        return False, response
+    if any(response.get(key) is not None for key in payload_keys):
+        return True, response
+    return False, response
+
+
 def execute_submit_facility_report(
     tool_args: dict,
     message_context: Optional[Dict[str, Any]] = None
@@ -374,13 +398,15 @@ def execute_submit_facility_report(
 
     upload_response = _send_multipart_upload(upload_url, report_file, headers=region_headers)
 
-    if not upload_response.get("success"):
-        error_info = upload_response.get("error", {})
+    upload_ok, upload_data = _extract_success_response(upload_response, ("fileUrl",))
+    if not upload_ok:
+        error_info = upload_response.get("error", {}) if isinstance(upload_response, dict) else {}
         error_msg = error_info.get("message", "未知错误")
-        logger.error(f"[设施研判报告] 步骤1失败: {error_msg}")
+        http_status = upload_response.get("http_status") if isinstance(upload_response, dict) else "N/A"
+        logger.error(f"[设施研判报告] 步骤1失败: {error_msg} | http_status={http_status} | error_info={error_info}")
         return {"result": None, "error": f"上传PDF失败: {error_msg}"}
 
-    file_url = upload_response.get("data", {}).get("fileUrl")
+    file_url = upload_data.get("fileUrl")
     if not file_url:
         logger.error("[设施研判报告] 步骤1响应中无 fileUrl")
         return {"result": None, "error": "上传成功但未返回 fileUrl"}
@@ -406,14 +432,15 @@ def execute_submit_facility_report(
         logger.error(f"[设施研判报告] {error_msg}")
         return {"result": None, "error": error_msg}
 
-    if not decision_response.get("success"):
-        error_info = decision_response.get("error", {})
+    decision_ok, decision_data = _extract_success_response(decision_response, ("decisionId", "id"))
+    if not decision_ok:
+        error_info = decision_response.get("error", {}) if isinstance(decision_response, dict) else {}
         error_msg = error_info.get("message", "未知错误")
         logger.error(f"[设施研判报告] 步骤2失败: {error_msg}")
         return {"result": None, "error": f"生成研判报告失败: {error_msg}"}
 
     # ========== 成功 - 汇总结果 ==========
-    decision_data = decision_response.get("data", {})
+    decision_id = decision_data.get("decisionId") or decision_data.get("id")
     result_message = f"""设施研判报告生成成功！
 
 📋 报告信息:
@@ -422,12 +449,12 @@ def execute_submit_facility_report(
 - 设施: {facility_name} (ID: {facility_id})
 
 📋 研判决策:
-- 决策ID: {decision_data.get('decisionId')}
+- 决策ID: {decision_id}
 - 状态: {decision_data.get('status')}
 - 生成时间: {decision_data.get('generatedAt')}
 - 消息: {decision_data.get('message')}"""
 
-    logger.info(f"[设施研判报告] 全部完成 - decisionId: {decision_data.get('decisionId')}")
+    logger.info(f"[设施研判报告] 全部完成 - decisionId: {decision_id}")
     return {"result": result_message, "error": None}
 
 
@@ -538,13 +565,15 @@ def execute_submit_facility_forecast_report(
 
     upload_response = _send_multipart_upload(upload_url, report_file)
 
-    if not upload_response.get("success"):
-        error_info = upload_response.get("error", {})
+    upload_ok, upload_data = _extract_success_response(upload_response, ("fileUrl",))
+    if not upload_ok:
+        error_info = upload_response.get("error", {}) if isinstance(upload_response, dict) else {}
         error_msg = error_info.get("message", "未知错误")
-        logger.error(f"[设施预测报告] 步骤1失败: {error_msg}")
+        http_status = upload_response.get("http_status") if isinstance(upload_response, dict) else "N/A"
+        logger.error(f"[设施预测报告] 步骤1失败: {error_msg} | http_status={http_status} | error_info={error_info}")
         return {"result": None, "error": f"上传PDF失败: {error_msg}"}
 
-    file_url = upload_response.get("data", {}).get("fileUrl")
+    file_url = upload_data.get("fileUrl")
     if not file_url:
         logger.error("[设施预测报告] 步骤1响应中无 fileUrl")
         return {"result": None, "error": "上传成功但未返回 fileUrl"}
@@ -580,16 +609,19 @@ def execute_submit_facility_forecast_report(
         logger.error(f"[设施预测报告] {error_msg}")
         return {"result": None, "error": error_msg}
 
-    if response.get("http_status") == 400:
-        return {"result": None, "error": response.get("error", {}).get("message", "请求参数错误或用户未分配区域")}
-    elif response.get("http_status") == 401:
-        return {"result": None, "error": "未登录或认证失败"}
-    elif not response.get("success") and response.get("error"):
-        error_info = response.get("error", {})
+    ok, response_data = _extract_success_response(response, ("id",))
+    if not ok:
+        error_info = response.get("error", {}) if isinstance(response, dict) else {}
+        http_status = response.get("http_status") if isinstance(response, dict) else None
+        if http_status == 400:
+            return {"result": None, "error": error_info.get("message", "请求参数错误或用户未分配区域")}
+        elif http_status == 401:
+            return {"result": None, "error": "未登录或认证失败"}
         error_msg = error_info.get("message", "未知错误")
+        logger.error(f"[设施预测报告] 步骤2失败: {error_msg}")
         return {"result": None, "error": f"提交预测报告失败: {error_msg}"}
 
-    report_id = response.get("data") or response.get("result")
+    report_id = response_data.get("id") or response_data.get("result") or response_data.get("reportId")
 
     result_message = f"""设施预测报告提交成功！
 
