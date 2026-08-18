@@ -244,6 +244,14 @@ ALL_TOOLS = {
     },
 }
 
+# get_tool_prompt injects params only, so keep the search-to-read contract here.
+ALL_TOOLS["document"]["params"] += (
+    " Search results include pattern, snippet, character offsets, segment number, "
+    "and read_hint. Pass read_hint.start_idx and read_hint.max_length directly "
+    "to operation r for targeted continuation."
+)
+
+
 FILE_TOOLS = {"read_file", "write_file", "delete_file", "list_dir", "create_dir"}
 EXPLORE_TOOLS = {"explore_code", "explore_internet"}
 SUBAGENT_TOOLS = {
