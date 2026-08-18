@@ -32,6 +32,28 @@ SUBAGENT_TOOLS = {
 INTERACTIVE_TOOLS = {"ask_user_question"}
 
 
+def _tool_valid_params(tool_name: str) -> list:
+    """从工具协议 ALL_TOOLS 提取该工具的合法参数名清单（与提示词同源），用于失败回执纠错"""
+    try:
+        from ...tools import ALL_TOOLS
+        meta = ALL_TOOLS.get(tool_name)
+    except Exception:
+        meta = None
+    if not meta or not meta.get("params"):
+        return []
+    params_text = meta["params"]
+    brace = params_text.find("{")
+    if brace < 0:
+        return []
+    import re as _re
+    names = _re.findall(r"\"([A-Za-z_][A-Za-z0-9_]*)\"", params_text[brace:])
+    seen: list = []
+    for n in names:
+        if n not in seen:
+            seen.append(n)
+    return seen
+
+
 def _auto_approve(settings_service) -> bool:
     if settings_service is None:
         return False
@@ -163,6 +185,10 @@ def _execute_single_call(
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     error = tool_result.get("error") if isinstance(tool_result, dict) else f"工具返回异常: {tool_result}"
+    if error:
+        valid = _tool_valid_params(tool_name)
+        if valid:
+            error = f"{error}\n[合法参数]: {", ".join(valid)}"
     return {
         **base_record,
         "status": "failed" if error else "success",
