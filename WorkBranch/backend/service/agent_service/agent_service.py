@@ -190,6 +190,12 @@ class AgentService:
             except Exception:
                 pass
 
+    @staticmethod
+    def _clear_pandoc_cache(conversation_id: str) -> None:
+        from .tools.pandoc_cache import clear_pandoc_conversation_cache
+
+        clear_pandoc_conversation_cache(conversation_id)
+
     def _get_intent_analysis_service(self) -> IntentAnalysisService:
         """获取意图分析服务"""
         return get_intent_analysis_service(self._get_settings())
@@ -692,12 +698,14 @@ class AgentService:
         if not conv:
             return
         
+        retain_pandoc_cache = False
         try:
             conv.result = task.result()
             if (
                 isinstance(conv.result, dict)
                 and conv.result.get("status") == "awaiting_user_input"
             ):
+                retain_pandoc_cache = True
                 conv.status = ConversationStatus.AWAITING_USER_INPUT
                 print(f"[Agent] 对话 {conversation_id} 等待用户输入")
             else:
@@ -710,6 +718,10 @@ class AgentService:
             conv.error = str(e)
             conv.status = ConversationStatus.FAILED
             print(f"[Agent] 对话 {conversation_id} 执行失败: {e}")
+
+        finally:
+            if not retain_pandoc_cache:
+                self._clear_pandoc_cache(conversation_id)
 
     def get_status(self, conversation_id: str) -> Optional[dict]:
         """
@@ -762,6 +774,7 @@ class AgentService:
             是否成功取消
         """
         self._close_conversation_http_clients(conversation_id)
+        self._clear_pandoc_cache(conversation_id)
         conv = self._conversations.get(conversation_id)
         if conv and conv.task and not conv.task.done():
             conv.task.cancel()
@@ -795,6 +808,7 @@ class AgentService:
             是否成功删除
         """
         if conversation_id in self._conversations:
+            self._clear_pandoc_cache(conversation_id)
             conv = self._conversations[conversation_id]
             if conv.task and not conv.task.done():
                 conv.task.cancel()

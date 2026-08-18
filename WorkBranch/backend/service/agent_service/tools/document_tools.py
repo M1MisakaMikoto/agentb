@@ -10,6 +10,7 @@ import gc
 from typing import Optional, Dict, Any, Tuple, List, Generator
 
 from .registry import ToolDefinition, ToolRegistry
+from .pandoc_cache import pandoc_conversation_cache
 from singleton import get_settings_service
 
 DOCUMENT_CHUNK_SIZE = 500
@@ -441,8 +442,50 @@ def _extract_table_data(table) -> Tuple[str, dict]:
     return formatted_text, metadata
 
 
-def _docx_read_via_pandoc(file_path: str, start_idx: int = 0, max_length: int = 100000,
-                          include_metadata: bool = True) -> Optional[dict]:
+def _build_pandoc_read_result(
+    file_path: str,
+    full_text: str,
+    start_idx: int,
+    max_length: int,
+    include_metadata: bool,
+) -> dict:
+    total_length = len(full_text)
+    if start_idx >= total_length and total_length > 0:
+        return {
+            "content": "",
+            "metadata": {},
+            "structure": [],
+            "total_length": total_length,
+            "read_range": f"{total_length}-{total_length}",
+            "truncated": False,
+            "status": "end_of_file",
+            "message": f"Document fully read (total length: {total_length})",
+        }
+
+    end_idx = min(start_idx + max_length, total_length)
+    metadata = {}
+    if include_metadata:
+        metadata = {
+            "file_type": str(_get_ext(file_path).lstrip(".")),
+            "method": "pandoc",
+        }
+    return {
+        "content": full_text[start_idx:end_idx],
+        "metadata": metadata,
+        "structure": [],
+        "total_length": total_length,
+        "read_range": f"{start_idx}-{end_idx}",
+        "truncated": end_idx < total_length,
+    }
+
+
+def _docx_read_via_pandoc(
+    file_path: str,
+    start_idx: int = 0,
+    max_length: int = 100000,
+    include_metadata: bool = True,
+    conversation_id: Optional[str] = None,
+) -> Optional[dict]:
     """
     使用 Pandoc 读取 Word 文档（高覆盖率方案）
 
@@ -460,6 +503,31 @@ def _docx_read_via_pandoc(file_path: str, start_idx: int = 0, max_length: int = 
     Returns:
         成功返回 dict，失败返回 None（调用方应降级到 python-docx）
     """
+    if conversation_id:
+        def load_uncached() -> Optional[str]:
+            uncached = _docx_read_via_pandoc(
+                file_path,
+                start_idx=0,
+                max_length=sys.maxsize,
+                include_metadata=False,
+            )
+            return uncached["content"] if uncached is not None else None
+
+        full_text = pandoc_conversation_cache.get_or_load(
+            conversation_id,
+            file_path,
+            load_uncached,
+        )
+        if full_text is None:
+            return None
+        return _build_pandoc_read_result(
+            file_path,
+            full_text,
+            start_idx,
+            max_length,
+            include_metadata,
+        )
+
     pandoc_path = _find_pandoc()
     if not pandoc_path:
         print("[DOCX-READ] ⚠️ Pandoc 未安装，将降级到 python-docx 模式")
@@ -560,8 +628,13 @@ def _docx_read_via_pandoc(file_path: str, start_idx: int = 0, max_length: int = 
         return None
 
 
-def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 100000,
-               include_metadata: bool = True) -> dict:
+def _docx_read(
+    file_path: str,
+    start_idx: int = 0,
+    max_length: int = 100000,
+    include_metadata: bool = True,
+    conversation_id: Optional[str] = None,
+) -> dict:
     """
     读取 Word 文档（双模式：Pandoc 优先 + python-docx 降级）
 
@@ -574,7 +647,13 @@ def _docx_read(file_path: str, start_idx: int = 0, max_length: int = 100000,
     print(f"[DOCX-READ] 开始读取文档: {file_path}")
     print("[DOCX-READ] 策略: 优先使用 Pandoc (高覆盖率模式)")
 
-    pandoc_result = _docx_read_via_pandoc(file_path, start_idx, max_length, include_metadata)
+    pandoc_result = _docx_read_via_pandoc(
+        file_path,
+        start_idx,
+        max_length,
+        include_metadata,
+        conversation_id,
+    )
 
     if pandoc_result is not None:
         # Pandoc 成功
@@ -796,14 +875,21 @@ def _search_canonical_text(
     })
 
 
-def _docx_search(file_path: str, pattern: str, case_sensitive: bool = False,
-                  context: int = 2, max_results: int = 50) -> dict:
+def _docx_search(
+    file_path: str,
+    pattern: str,
+    case_sensitive: bool = False,
+    context: int = 2,
+    max_results: int = 50,
+    conversation_id: Optional[str] = None,
+) -> dict:
     """Search the same canonical Word text used by document(r)."""
     read_result = _docx_read(
         file_path,
         start_idx=0,
         max_length=sys.maxsize,
         include_metadata=False,
+        conversation_id=conversation_id,
     )
     if read_result.get("error") is not None:
         return _make_result(error=f"Word文档搜索失败: {read_result['error']}")
@@ -1673,7 +1759,7 @@ def _redirect_to_workspace(file_path: str) -> str:
     return file_path
 
 
-def execute_document(tool_args: dict) -> dict:
+def execute_document(tool_args: dict, conversation_id: Optional[str] = None) -> dict:
     operation = tool_args.get("operation")
     file_path = tool_args.get("file_path")
     
@@ -1723,7 +1809,13 @@ def execute_document(tool_args: dict) -> dict:
         if ext == ".pdf":
             result = _pdf_read(file_path, start_idx, max_length, include_metadata, use_llm_parsing)
         elif ext in {".doc", ".docx"}:
-            result = _docx_read(file_path, start_idx, max_length, include_metadata)
+            result = _docx_read(
+                file_path,
+                start_idx,
+                max_length,
+                include_metadata,
+                conversation_id,
+            )
         elif ext in {".xls", ".xlsx"}:
             result = _excel_read(file_path, start_idx, max_length, include_metadata)
         else:
@@ -1808,7 +1900,14 @@ def execute_document(tool_args: dict) -> dict:
         if ext == ".pdf":
             result = _pdf_search(file_path, pattern, case_sensitive, context, max_results, use_llm_parsing)
         elif ext in {".doc", ".docx"}:
-            result = _docx_search(file_path, pattern, case_sensitive, context, max_results)
+            result = _docx_search(
+                file_path,
+                pattern,
+                case_sensitive,
+                context,
+                max_results,
+                conversation_id,
+            )
         elif ext in {".xls", ".xlsx"}:
             result = _excel_search(file_path, pattern, case_sensitive, context, max_results)
         else:
