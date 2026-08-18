@@ -29,10 +29,16 @@ class TokenCalculator:
         if not self.settings:
             return self.DEFAULT_CONTEXT_WINDOW
         try:
+            context_window = self.settings.get("llm:context_window")
+        except KeyError:
             model = self.settings.get("llm:model")
             return self.CONTEXT_WINDOWS.get(model, self.DEFAULT_CONTEXT_WINDOW)
-        except Exception:
-            return self.DEFAULT_CONTEXT_WINDOW
+        assert (
+            isinstance(context_window, int)
+            and not isinstance(context_window, bool)
+            and context_window > 0
+        ), "llm:context_window must be a positive integer"
+        return context_window
     
     def estimate_tokens(self, content: str) -> int:
         """估算文本token数量"""

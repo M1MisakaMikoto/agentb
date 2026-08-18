@@ -38,10 +38,16 @@ class TokenCalculator:
     def _get_context_window_size(self) -> int:
         """根据模型获取上下文窗口大小"""
         try:
+            context_window = self.settings.get("llm:context_window")
+        except KeyError:
             model = self.settings.get("llm:model")
             return self.CONTEXT_WINDOWS.get(model, self.DEFAULT_CONTEXT_WINDOW)
-        except:
-            return self.DEFAULT_CONTEXT_WINDOW
+        assert (
+            isinstance(context_window, int)
+            and not isinstance(context_window, bool)
+            and context_window > 0
+        ), "llm:context_window must be a positive integer"
+        return context_window
     
     def estimate_tokens(self, content: str) -> int:
         """估算文本token数量"""
