@@ -40,6 +40,14 @@ V4_SYSTEM_PROMPT = """你是一个任务执行代理（leader）。你的职责�
 {tool_prompt}"""
 
 
+V4_DIRECTOR_EXECUTION_PROMPT = """## Director 执行规则
+1. 禁止调用 thinking 或任何 call_*_agent 子代理工具；直接使用业务工具完成任务。
+2. 目录列表和工作区新文件信息会提供 size。根据文件大小、任务目标和上下文容量自行判断是否属于大文件。
+3. 遇到大文件，优先使用搜索类工具定位内容。DOC/DOCX/PDF/XLS/XLSX 优先用 document 的 s 操作，构造覆盖点位编号、目标字段、表头及常见同义词的正则，争取一次取得足够多的相关条目；不要从头到尾分段通读。
+4. document s 返回片段、匹配规则、字符偏移、段号和 read_hint。只有片段缺少完成任务所需上下文时，才把 read_hint 的 start_idx/max_length 原样用于 r 定点续读；不要重复整读同一文件。
+5. 每轮先判断现有证据是否已经覆盖任务所需维度。相关条目已足够支撑分析、预测、建议或成文时，必须立即推进并果断给出结果；不要为低价值边缘信息继续检索，不要在噪声中反复尝试提高完整度。"""
+
+
 _CURRENT_TASK_DEFAULT = (
     "请严格按输出协议输出：type 属于 {tool_calls, text, done}；"
     "tool_calls 的 content 必须是 {reason, calls[]}，calls 数组 1..N，call_seq 唯一，"
@@ -196,8 +204,13 @@ def build_tagged_prompt(
     from ..subgraphs.tool_registry import get_allowed_tools
 
     allowed_tools = get_allowed_tools(agent_type, settings_service)
+    if agent_type == "director_agent":
+        disabled_tools = {"thinking", *_SUBAGENT_TOOLS}
+        allowed_tools = [name for name in allowed_tools if name not in disabled_tools]
     tool_schema = build_tool_schema_prompt(allowed_tools, agent_type=agent_type)
     system_prompt = build_v4_system_prompt(tool_schema)
+    if agent_type == "director_agent":
+        system_prompt = system_prompt + "\n\n" + V4_DIRECTOR_EXECUTION_PROMPT
     if system_prompt_override:
         system_prompt = system_prompt + "\n\n" + system_prompt_override
 
