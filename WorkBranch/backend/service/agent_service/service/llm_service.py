@@ -73,6 +73,8 @@ class LLMService:
         logger = get_logging_runtime().get_logger("agent")
         if level == "ERROR":
             logger.error(event=event, msg=msg, extra=extra, exception=exception)
+        elif level == "WARNING":
+            logger.warning(event=event, msg=msg, extra=extra)
         else:
             logger.info(event=event, msg=msg, extra=extra)
 
@@ -161,22 +163,23 @@ class LLMService:
             
             raise TypeError(error_detail) from oe
         except Exception as exc:
-            # 🔴 强制打印所有异常到控制台
-            print(f"\n{'='*80}")
-            print(f"[LLM-ERROR] ❌ LLM 调用失败!")
-            print(f"[LLM-ERROR] Operation: {operation}")
-            print(f"[LLM-ERROR] Exception Type: {type(exc).__name__}")
-            print(f"[LLM-ERROR] Exception Message: {str(exc)}")
-            print(f"[LLM-ERROR] Full Traceback:\n{traceback.format_exc()}")
-            print(f"{'='*80}\n")
-
+            full_traceback = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
             self._log_llm_event(
                 "ERROR",
                 "llm.call.failed",
                 "llm call failed",
                 extra=self._build_llm_extra(operation, start_time, error=str(exc)),
-                exception="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                exception=full_traceback,
             )
+
+            # Keep the emergency console path ASCII-safe on Windows terminals.
+            print(f"\n{'='*80}")
+            print("[LLM-ERROR] LLM call failed")
+            print(f"[LLM-ERROR] Operation: {operation}")
+            print(f"[LLM-ERROR] Exception Type: {type(exc).__name__}")
+            print(f"[LLM-ERROR] Exception Message: {str(exc)}")
+            print(f"[LLM-ERROR] Full Traceback:\n{full_traceback}")
+            print(f"{'='*80}\n")
             raise
         self._log_llm_event(
             "INFO",
@@ -480,10 +483,11 @@ class LLMService:
                 raise
             self._json_schema_unavailable = True
             self._log_llm_event(
-                "WARNING",
+                "ERROR",
                 "llm.structured_output_fallback",
-                "json_schema 不受提供方支持，降级 json_object",
-                extra={"error": str(exc), "mode": mode},
+                "json_schema 调用失败，降级 json_object",
+                extra={"error": str(exc), "error_type": type(exc).__name__, "mode": mode},
+                exception="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
             )
             return self.chat_with_json_mode(
                 messages,

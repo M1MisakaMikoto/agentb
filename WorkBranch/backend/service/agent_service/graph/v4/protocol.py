@@ -149,10 +149,10 @@ def leader_output_json_schema() -> dict:
             "properties": {
                 "type": {"type": "string", "enum": ["tool_calls", "text", "done"]},
                 "content": {
-                    "oneOf": [
+                    "anyOf": [
                         _calls_schema(),
                         {"type": "string"},
-                        {"type": ["string", "null"]},
+                        {"type": "null"},
                     ]
                 },
             },

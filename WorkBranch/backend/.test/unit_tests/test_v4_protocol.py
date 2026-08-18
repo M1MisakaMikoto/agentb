@@ -115,6 +115,12 @@ class ValidateLeaderOutputTest(unittest.TestCase):
         schema = leader_output_json_schema()
         self.assertEqual(schema["name"], "leader_output")
         self.assertIn("tool_calls", schema["schema"]["properties"]["type"]["enum"])
+        content_schema = schema["schema"]["properties"]["content"]
+        self.assertNotIn("oneOf", content_schema)
+        self.assertEqual(
+            [branch.get("type") for branch in content_schema["anyOf"]],
+            ["object", "string", "null"],
+        )
 
 
 if __name__ == "__main__":
