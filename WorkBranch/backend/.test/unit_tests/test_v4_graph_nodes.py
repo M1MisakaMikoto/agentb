@@ -83,6 +83,17 @@ class ReasoningNodeTest(unittest.TestCase):
         self.assertIn("json_syntax", result["parse_error"])
         self.assertIn("这不是 JSON", result["parse_error"])
 
+    def test_malformed_outer_json_with_nested_text_retries_inside_reasoning(self):
+        raw = (
+            '{"type":"text","content": broken '
+            '{"type":"text","content":"不能截取为完成结果"}'
+        )
+        result = self._node(raw)(_base_state())
+        self.assertEqual(result["_route_target"], "reasoning")
+        self.assertEqual(result["decision_error_count"], 1)
+        self.assertIn("json_syntax", result["parse_error"])
+        self.assertNotIn("pending_final_text", result)
+
     def test_semantic_error_retries_inside_reasoning(self):
         raw = (
             '{"type":"tool_calls","content":{"reason":"r","calls":['

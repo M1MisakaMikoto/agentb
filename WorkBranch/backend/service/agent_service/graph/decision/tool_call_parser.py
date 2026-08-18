@@ -200,23 +200,48 @@ def parse_leader_output(response_text: str) -> dict[str, Any]:
     """
     解析 V4 leader 输出（{type: text/tool_calls/done, content}）。
 
-    复用统一容错链（直接 JSON → fence → 平衡提取 → 修复），
-    再经 protocol.LeaderOutput 判别模型校验。
+    leader 输出必须是完整的 JSON 对象，仅允许首尾空白。这里不复用
+    extract_json_object 的提取/修复能力，避免 text.content 内的 JSON、
+    code fence 或工具描述被误识别为外层协议。
 
     Raises:
         DecisionParseError: category 为 "json_syntax" / "schema" / "not_object"。
     """
     from ..v4.protocol import parse_leader_output_dict
 
-    raw = extract_json_object(response_text)
-    if isinstance(raw, list):
-        if not raw:
-            raise DecisionParseError("json_syntax", "leader 输出为空数组", response_text)
-        raw = raw[0]
+    if response_text is None:
+        raise DecisionParseError("json_syntax", "leader 输出为空", "")
+    stripped = response_text.strip()
+    if not stripped:
+        raise DecisionParseError("json_syntax", "leader 输出为空", response_text)
+    try:
+        raw = json.loads(stripped)
+    except json.JSONDecodeError as e:
+        raise DecisionParseError(
+            "json_syntax",
+            f"leader 输出必须是完整 JSON: {e.msg} (line {e.lineno}, column {e.colno})",
+            response_text,
+        ) from e
     if not isinstance(raw, dict):
         raise DecisionParseError(
             "not_object",
             f"leader 输出顶层必须是 JSON 对象，实际类型: {type(raw).__name__}",
+            response_text,
+        )
+    expected_keys = {"type", "content"}
+    actual_keys = set(raw)
+    if actual_keys != expected_keys:
+        missing_keys = sorted(expected_keys - actual_keys)
+        unexpected_keys = sorted(actual_keys - expected_keys)
+        details = []
+        if missing_keys:
+            details.append(f"missing keys: {missing_keys}")
+        if unexpected_keys:
+            details.append(f"unexpected keys: {unexpected_keys}")
+        raise DecisionParseError(
+            "schema",
+            "leader top-level keys must be exactly type and content; "
+            + "; ".join(details),
             response_text,
         )
     try:

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import unittest
@@ -41,15 +42,76 @@ class ParseLeaderOutputTest(unittest.TestCase):
         self.assertEqual(data["type"], "done")
         self.assertIsNone(data["content"])
 
-    def test_fenced(self):
-        raw = '```json\n{"type":"text","content":"ok"}\n```'
-        data = parse_leader_output(raw)
+    def test_accepts_outer_whitespace(self):
+        data = parse_leader_output(' \n\t{"type":"text","content":"ok"}\r\n ')
         self.assertEqual(data["content"], "ok")
+
+    def test_text_content_is_opaque(self):
+        content = (
+            '正文中的 {括号}、```json\n{"tool_name":"document"}\n``` '
+            '和工具说明都只是纯文本'
+        )
+        raw = json.dumps({"type": "text", "content": content}, ensure_ascii=False)
+        data = parse_leader_output(raw)
+        self.assertEqual(data["content"], content)
+
+    def test_rejects_fenced_outer_json(self):
+        with self.assertRaises(DecisionParseError) as ctx:
+            parse_leader_output('```json\n{"type":"text","content":"ok"}\n```')
+        self.assertEqual(ctx.exception.category, "json_syntax")
+
+    def test_rejects_explanatory_prefix_or_suffix(self):
+        for raw in (
+            '结果：{"type":"text","content":"ok"}',
+            '{"type":"text","content":"ok"}\n以上是结果',
+        ):
+            with self.subTest(raw=raw), self.assertRaises(DecisionParseError):
+                parse_leader_output(raw)
+
+    def test_rejects_json_repairs(self):
+        for raw in (
+            '{"type":"text","content":"ok"',
+            '{"type":"text","content":"ok",}',
+        ):
+            with self.subTest(raw=raw), self.assertRaises(DecisionParseError):
+                parse_leader_output(raw)
+
+    def test_does_not_recover_nested_content_object(self):
+        raw = (
+            '{"type":"text","content": broken '
+            '{"type":"text","content":"错误截取"}'
+        )
+        with self.assertRaises(DecisionParseError) as ctx:
+            parse_leader_output(raw)
+        self.assertEqual(ctx.exception.category, "json_syntax")
 
     def test_rejects_unknown_type(self):
         with self.assertRaises(DecisionParseError) as ctx:
             parse_leader_output('{"type":"chat","content":"x"}')
         self.assertEqual(ctx.exception.category, "schema")
+
+    def test_rejects_extra_top_level_key(self):
+        with self.assertRaises(DecisionParseError) as ctx:
+            parse_leader_output(
+                '{"type":"text","content":"complete","unexpected":"injected"}'
+            )
+        self.assertEqual(ctx.exception.category, "schema")
+        self.assertIn("unexpected", str(ctx.exception))
+
+    def test_rejects_v14_style_content_injected_as_top_level_keys(self):
+        raw = json.dumps(
+            {
+                "type": "text",
+                "content": "truncated content",
+                "** injected prose": "following prose",
+                "feature": "more prose parsed as a key",
+                ", ": "additional prose",
+            }
+        )
+        with self.assertRaises(DecisionParseError) as ctx:
+            parse_leader_output(raw)
+        self.assertEqual(ctx.exception.category, "schema")
+        self.assertIn("unexpected keys", str(ctx.exception))
 
     def test_rejects_missing_content(self):
         with self.assertRaises(DecisionParseError):
