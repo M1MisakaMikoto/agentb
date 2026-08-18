@@ -19,6 +19,8 @@ class ConvolutionWindow:
 
 class TokenCalculator:
     """Token计算器"""
+
+    DEFAULT_CONTEXT_WINDOW = 1_000_000
     
     CONTEXT_WINDOWS = {
         "gpt-4o-mini": 128000,
@@ -37,9 +39,9 @@ class TokenCalculator:
         """根据模型获取上下文窗口大小"""
         try:
             model = self.settings.get("llm:model")
-            return self.CONTEXT_WINDOWS.get(model, 128000)
+            return self.CONTEXT_WINDOWS.get(model, self.DEFAULT_CONTEXT_WINDOW)
         except:
-            return 128000
+            return self.DEFAULT_CONTEXT_WINDOW
     
     def estimate_tokens(self, content: str) -> int:
         """估算文本token数量"""
