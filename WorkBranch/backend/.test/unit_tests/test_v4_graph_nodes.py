@@ -10,7 +10,10 @@ sys.path.insert(0, BACKEND_DIR)
 from service.agent_service.graph.v4.acting import create_acting_node
 from service.agent_service.graph.director_agent import create_analyze_node
 from service.agent_service.graph.agent_graphs import create_agent_graph
-from service.agent_service.graph.v4.closuring import create_closuring_node
+from service.agent_service.graph.v4.closuring import (
+    _build_feedback_check_prompt,
+    create_closuring_node,
+)
 from service.agent_service.graph.v4.graph import (
     build_v4_graph,
     resume_v4_graph,
@@ -520,6 +523,45 @@ class ClosuringNodeTest(unittest.TestCase):
         judgment_prompt = fast_cls.return_value.chat.call_args[1]["messages"][0]["content"]
         self.assertIn("请记住暗号 ALPHA-9271", judgment_prompt)
         self.assertIn("ALPHA-9271", judgment_prompt)
+
+
+    @patch("service.agent_service.graph.v4.closuring.console.warning")
+    def test_tool_history_clips_request_and_result_separately(self, warning):
+        prompt = _build_feedback_check_prompt(_base_state(tool_records=[{
+            "round": 1,
+            "call_seq": 7,
+            "tool_name": "document",
+            "status": "success",
+            "args": {"query": "q" * 120},
+            "result": "r" * 130,
+        }]))
+
+        record_line = next(line for line in prompt.splitlines() if line.startswith("call_seq=7"))
+        request_text, result_text = record_line.split(" request=", 1)[1].split(" result=", 1)
+        self.assertEqual(len(request_text), 100)
+        self.assertEqual(len(result_text), 100)
+        self.assertTrue(request_text.startswith('{"query": "'))
+        self.assertEqual(result_text, "r" * 100)
+        self.assertEqual(warning.call_count, 2)
+        warnings = "\\n".join(call.args[0] for call in warning.call_args_list)
+        self.assertIn("field=request", warnings)
+        self.assertIn("field=result", warnings)
+        self.assertIn("call_seq=7", warnings)
+
+    @patch("service.agent_service.graph.v4.closuring.console.warning")
+    def test_tool_history_short_fields_are_not_warned(self, warning):
+        prompt = _build_feedback_check_prompt(_base_state(tool_records=[{
+            "round": 1,
+            "call_seq": 2,
+            "tool_name": "read_file",
+            "status": "failed",
+            "args": {"path": "short.txt"},
+            "error": "not found",
+        }]))
+
+        self.assertIn('request={"path": "short.txt"}', prompt)
+        self.assertIn("result=not found", prompt)
+        warning.assert_not_called()
 
 
 class PlanSubagentExecutorTest(unittest.TestCase):

@@ -30,6 +30,27 @@ CLOSURING_PROMPT = """你是一个收尾校验助手。判断 leader 是否已�
 """
 
 
+_TOOL_HISTORY_FIELD_LIMIT = 100
+
+
+def _serialize_tool_history_field(value) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _clip_tool_history_field(*, value, field: str, record: dict) -> str:
+    serialized = _serialize_tool_history_field(value)
+    if len(serialized) > _TOOL_HISTORY_FIELD_LIMIT:
+        console.warning(
+            "[sidekick-closuring] tool history field truncated "
+            f"tool={record.get('tool_name')} call_seq={record.get('call_seq')} "
+            f"field={field} original_length={len(serialized)} "
+            f"limit={_TOOL_HISTORY_FIELD_LIMIT}"
+        )
+    return serialized[:_TOOL_HISTORY_FIELD_LIMIT]
+
+
 def _max_rounds(settings_service, default: int = 8) -> int:
     if settings_service is None:
         return default
@@ -70,9 +91,22 @@ def _build_feedback_check_prompt(state: AgentState) -> str:
     records = []
     for r in state.get("tool_records") or []:
         if isinstance(r, dict) and r.get("call_seq") is not None:
+            result = r.get("result")
+            if result is None:
+                result = r.get("error") or ""
+            request_text = _clip_tool_history_field(
+                value=r.get("args") or {},
+                field="request",
+                record=r,
+            )
+            result_text = _clip_tool_history_field(
+                value=result,
+                field="result",
+                record=r,
+            )
             records.append(
                 f"call_seq={r.get('call_seq')} {r.get('tool_name')} "
-                f"status={r.get('status')} result={str(r.get('result') or '')[:300]}"
+                f"status={r.get('status')} request={request_text} result={result_text}"
             )
     user_question = state.get("current_user_message_text") or state.get("user_message") or ""
     context = ""
