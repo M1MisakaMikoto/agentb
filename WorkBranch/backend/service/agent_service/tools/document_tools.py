@@ -866,7 +866,6 @@ def _search_canonical_text(
         "matches": matches,
         "total_matches": total_matches,
         "returned_matches": len(matches),
-        "truncated": total_matches > len(matches),
         "pattern": pattern,
         "file": file_path,
         "index_unit": "character",

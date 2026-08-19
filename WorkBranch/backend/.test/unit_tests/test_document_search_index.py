@@ -49,7 +49,7 @@ def test_canonical_search_reports_all_matches_when_results_are_limited():
     assert result["error"] is None
     assert result["result"]["total_matches"] == 2
     assert result["result"]["returned_matches"] == 1
-    assert result["result"]["truncated"] is True
+    assert "truncated" not in result["result"]
 
 
 def test_docx_table_match_can_be_read_by_returned_hint(tmp_path):
