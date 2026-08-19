@@ -53,8 +53,8 @@ def test_director_prompt_disables_thinking_and_subagents_and_guides_large_files(
     assert "根据文件大小" in system_prompt
     assert "document 的 s 操作" in system_prompt
     assert "read_hint" in system_prompt
-    assert "相关条目已足够" in system_prompt
-    assert "必须立即推进" in system_prompt
+    assert "不以命中数、返回数或文本长度作为依据" in system_prompt
+    assert "若缺失信息会影响结论则继续查，否则立即推进工作" in system_prompt
 
 
 def test_non_director_tool_schema_is_not_filtered(monkeypatch):
