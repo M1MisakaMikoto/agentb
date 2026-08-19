@@ -35,6 +35,9 @@ def test_v4_document_prompt_explains_search_index_and_read_hint():
     assert 'read_hint.start_idx' in params
     assert 'read_hint.max_length' in params
     assert 'operation r' in params
+    assert 'one result per matching line' in params
+    assert 'occurrences' in params
+    assert 'next_start_idx' in params
 
 
 def test_canonical_search_reports_all_matches_when_results_are_limited():
@@ -48,8 +51,76 @@ def test_canonical_search_reports_all_matches_when_results_are_limited():
 
     assert result["error"] is None
     assert result["result"]["total_matches"] == 2
+    assert result["result"]["total_occurrences"] == 2
     assert result["result"]["returned_matches"] == 1
+    assert result["result"]["next_start_idx"] == len("target one\n")
     assert "truncated" not in result["result"]
+
+
+def test_canonical_search_groups_all_occurrences_on_each_matching_line():
+    result = _search_canonical_text(
+        "report.txt",
+        "位移和累计位移都需要检查\n下一行没有结果\n",
+        "位移|累计",
+        context=0,
+    )
+
+    assert result["error"] is None
+    data = result["result"]
+    assert data["total_matches"] == 1
+    assert data["total_occurrences"] == 3
+    assert data["returned_matches"] == 1
+    assert data["matches"][0]["matched_texts"] == ["位移", "累计", "位移"]
+    assert len(data["matches"][0]["occurrences"]) == 3
+    assert data["matches"][0]["segment_number"] == 1
+
+
+def test_canonical_search_pages_by_next_start_idx_without_overlap():
+    full_text = "target one\nmiddle\ntarget two\ntarget three\n"
+    first = _search_canonical_text(
+        "report.txt",
+        full_text,
+        "target",
+        context=0,
+        max_results=1,
+    )["result"]
+    second = _search_canonical_text(
+        "report.txt",
+        full_text,
+        "target",
+        context=0,
+        max_results=1,
+        start_idx=first["next_start_idx"],
+    )["result"]
+    third = _search_canonical_text(
+        "report.txt",
+        full_text,
+        "target",
+        context=0,
+        max_results=1,
+        start_idx=second["next_start_idx"],
+    )["result"]
+
+    assert first["total_matches"] == second["total_matches"] == third["total_matches"] == 3
+    assert [
+        first["matches"][0]["segment_number"],
+        second["matches"][0]["segment_number"],
+        third["matches"][0]["segment_number"],
+    ] == [1, 3, 4]
+    assert first["search_start_idx"] == 0
+    assert second["search_start_idx"] == len("target one\n")
+    assert third["next_start_idx"] is None
+
+
+def test_canonical_search_rejects_negative_start_idx():
+    result = _search_canonical_text(
+        "report.txt",
+        "target\n",
+        "target",
+        start_idx=-1,
+    )
+
+    assert result["error"] == "start_idx 不能小于 0"
 
 
 def test_docx_table_match_can_be_read_by_returned_hint(tmp_path):

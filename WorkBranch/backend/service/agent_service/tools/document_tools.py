@@ -786,8 +786,9 @@ def _search_canonical_text(
     case_sensitive: bool = False,
     context: int = 2,
     max_results: int = 50,
+    start_idx: int = 0,
 ) -> dict:
-    """grep-like search whose offsets are directly consumable by document(r)."""
+    """Search canonical text with grep-like, one-result-per-line semantics."""
     flags = 0 if case_sensitive else re.IGNORECASE
     try:
         regex = re.compile(pattern, flags)
@@ -797,8 +798,11 @@ def _search_canonical_text(
     try:
         context = max(0, int(context))
         max_results = max(1, int(max_results))
+        start_idx = int(start_idx)
     except (TypeError, ValueError):
-        return _make_result(error="context 和 max_results 必须是整数")
+        return _make_result(error="context、max_results 和 start_idx 必须是整数")
+    if start_idx < 0:
+        return _make_result(error="start_idx 不能小于 0")
 
     segments = []
     offset = 0
@@ -822,50 +826,87 @@ def _search_canonical_text(
             "raw_end": len(full_text),
         })
 
-    matches = []
-    total_matches = 0
+    matching_segments = []
+    total_occurrences = 0
     for segment in segments:
         line = segment["line"]
         if not line.strip():
             continue
+        occurrences = []
+        segment_index = segment["segment_index"]
         for match in regex.finditer(line):
-            total_matches += 1
-            if len(matches) >= max_results:
-                continue
-
-            segment_index = segment["segment_index"]
-            context_start_index = max(0, segment_index - context)
-            context_end_index = min(len(segments) - 1, segment_index + context)
-            read_start = segments[context_start_index]["char_start"]
-            read_end = segments[context_end_index]["raw_end"]
             char_start = segment["char_start"] + match.start()
             char_end = segment["char_start"] + match.end()
-            index = {
+            total_occurrences += 1
+            occurrences.append({
+                "matched_text": match.group(),
                 "char_start": char_start,
                 "char_end": char_end,
                 "segment_index": segment_index,
                 "segment_number": segment_index + 1,
-            }
-            matches.append({
-                "pattern": pattern,
-                "matched_text": match.group(),
-                "snippet": full_text[read_start:read_end],
-                "line": line,
-                "index": index,
-                **index,
-                "segment_type": "line",
                 "position_in_segment": match.start(),
                 "position": match.start(),
-                "read_hint": {
-                    "start_idx": read_start,
-                    "max_length": max(1, read_end - read_start),
-                },
             })
+
+        if occurrences:
+            matching_segments.append((segment, occurrences))
+
+    page_candidates = [
+        (segment, occurrences)
+        for segment, occurrences in matching_segments
+        if any(occurrence["char_start"] >= start_idx for occurrence in occurrences)
+    ]
+    page = page_candidates[:max_results]
+    matches = []
+    for segment, occurrences in page:
+        visible_occurrences = [
+            occurrence
+            for occurrence in occurrences
+            if occurrence["char_start"] >= start_idx
+        ]
+        first = visible_occurrences[0]
+        segment_index = segment["segment_index"]
+        context_start_index = max(0, segment_index - context)
+        context_end_index = min(len(segments) - 1, segment_index + context)
+        read_start = segments[context_start_index]["char_start"]
+        read_end = segments[context_end_index]["raw_end"]
+        index = {
+            "char_start": first["char_start"],
+            "char_end": first["char_end"],
+            "segment_index": segment_index,
+            "segment_number": segment_index + 1,
+        }
+        matches.append({
+            "pattern": pattern,
+            "matched_text": first["matched_text"],
+            "matched_texts": [
+                occurrence["matched_text"] for occurrence in visible_occurrences
+            ],
+            "occurrences": visible_occurrences,
+            "snippet": full_text[read_start:read_end],
+            "line": segment["line"],
+            "index": index,
+            **index,
+            "segment_type": "line",
+            "position_in_segment": first["position_in_segment"],
+            "position": first["position"],
+            "read_hint": {
+                "start_idx": read_start,
+                "max_length": max(1, read_end - read_start),
+            },
+        })
+
+    next_start_idx = None
+    if len(page_candidates) > len(page) and page:
+        next_start_idx = page[-1][0]["raw_end"]
 
     return _make_result({
         "matches": matches,
-        "total_matches": total_matches,
+        "total_matches": len(matching_segments),
+        "total_occurrences": total_occurrences,
         "returned_matches": len(matches),
+        "search_start_idx": start_idx,
+        "next_start_idx": next_start_idx,
         "pattern": pattern,
         "file": file_path,
         "index_unit": "character",
@@ -881,6 +922,7 @@ def _docx_search(
     context: int = 2,
     max_results: int = 50,
     conversation_id: Optional[str] = None,
+    start_idx: int = 0,
 ) -> dict:
     """Search the same canonical Word text used by document(r)."""
     read_result = _docx_read(
@@ -900,11 +942,13 @@ def _docx_search(
         case_sensitive,
         context,
         max_results,
+        start_idx,
     )
 
 
 def _pdf_search(file_path: str, pattern: str, case_sensitive: bool = False,
-                context: int = 2, max_results: int = 50, use_llm_parsing: bool = True) -> dict:
+                context: int = 2, max_results: int = 50, use_llm_parsing: bool = True,
+                start_idx: int = 0) -> dict:
     """Search the same canonical PDF text used by document(r)."""
     read_result = _pdf_read(
         file_path,
@@ -923,11 +967,13 @@ def _pdf_search(file_path: str, pattern: str, case_sensitive: bool = False,
         case_sensitive,
         context,
         max_results,
+        start_idx,
     )
 
 
 def _excel_search(file_path: str, pattern: str, case_sensitive: bool = False,
-                  context: int = 2, max_results: int = 50) -> dict:
+                  context: int = 2, max_results: int = 50,
+                  start_idx: int = 0) -> dict:
     """Search the same canonical spreadsheet text used by document(r)."""
     read_result = _excel_read(
         file_path,
@@ -945,6 +991,7 @@ def _excel_search(file_path: str, pattern: str, case_sensitive: bool = False,
         case_sensitive,
         context,
         max_results,
+        start_idx,
     )
     if result.get("error") is None:
         result["result"]["sheets_searched"] = (
@@ -1895,9 +1942,18 @@ def execute_document(tool_args: dict, conversation_id: Optional[str] = None) -> 
         case_sensitive = tool_args.get("case_sensitive", False)
         context = tool_args.get("context", 2)
         max_results = tool_args.get("max_results", 50)
+        start_idx = tool_args.get("start_idx", 0)
 
         if ext == ".pdf":
-            result = _pdf_search(file_path, pattern, case_sensitive, context, max_results, use_llm_parsing)
+            result = _pdf_search(
+                file_path,
+                pattern,
+                case_sensitive,
+                context,
+                max_results,
+                use_llm_parsing,
+                start_idx,
+            )
         elif ext in {".doc", ".docx"}:
             result = _docx_search(
                 file_path,
@@ -1906,9 +1962,17 @@ def execute_document(tool_args: dict, conversation_id: Optional[str] = None) -> 
                 context,
                 max_results,
                 conversation_id,
+                start_idx,
             )
         elif ext in {".xls", ".xlsx"}:
-            result = _excel_search(file_path, pattern, case_sensitive, context, max_results)
+            result = _excel_search(
+                file_path,
+                pattern,
+                case_sensitive,
+                context,
+                max_results,
+                start_idx,
+            )
         else:
             result = _make_result(error=f"搜索暂不支持: {ext}")
     
@@ -1926,8 +1990,8 @@ def execute_document(tool_args: dict, conversation_id: Optional[str] = None) -> 
 DOCUMENT_TOOLS = {
     "document": ToolDefinition(
         name="document",
-        description="统一文档操作，支持 PDF/DOC/DOCX/XLS/XLSX；operation: r=读 w=写 a=追加 u=修改 s=搜索(grep)。s 返回匹配规则、上下文片段、字符偏移、段号和 read_hint；可将 read_hint 的 start_idx/max_length 直接用于 r 定点续读",
-        params='document:(仅支持doc/docx/pdf/xls/xlsx；写md/txt/json等文本文件请用write_file){"operation":"r|w|a|u|s(必填)","file_path":"(必填)","content":"(文本)","data":"(Excel)","pattern":"(搜索正则)","case_sensitive":false,"context":2,"max_results":50}',
+        description="统一文档操作，支持 PDF/DOC/DOCX/XLS/XLSX；operation: r=读 w=写 a=追加 u=修改 s=搜索(grep)。s 按命中行返回，行内命中汇总在 occurrences；返回上下文片段、字符偏移、段号、read_hint 和 next_start_idx",
+        params='document:(仅支持doc/docx/pdf/xls/xlsx；写md/txt/json等文本文件请用write_file){"operation":"r|w|a|u|s(必填)","file_path":"(必填)","content":"(文本)","data":"(Excel)","pattern":"(搜索正则)","case_sensitive":false,"context":2,"max_results":50,"start_idx":"(r读取起点；s搜索起点，默认0；后续页传上次next_start_idx)"}',
         category="document",
         executor=execute_document
     )

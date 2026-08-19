@@ -157,7 +157,7 @@ ALL_TOOLS = {
     "document": {
         "name": "document",
         "description": "统一文档操作工具(类似fopen)，支持PDF/DOC/DOCX/XLS/XLSX的读写追加修改。r=读 w=写 a=追加 u=修改 s=搜索(grep)。重要提示：文件过大时(如>1MB)，请使用 s 操作配合 pattern 参数搜索关键词(如'病害'、'裂缝'、'BCI')快速定位目标内容，而不要逐段读取整文件",
-        "params": 'document:{"operation":"(必填)r|w|a|u|s","file_path":"(必填)文档路径","content":"(文本内容, PDF/Word用)","data":"(JSON数组, Excel用, 如{\\"Sheet1\\":[[行1],[行2]]})","target":"(update定位, 如段落索引/单元格A1)","field":"(字段类型, paragraph/metadata/cell)","metadata":"(文档元数据, {author,title})","start_idx":"(读取起始位置)","max_length":"(最大读取长度)","include_metadata":"(是否包含元数据)","pattern":"(搜索正则，用于 s 操作)","case_sensitive":"(大小写敏感，默认false)","context":"(匹配上下文行数，默认2)","max_results":"(最大结果数，默认50)"}'
+        "params": 'document:{"operation":"(必填)r|w|a|u|s","file_path":"(必填)文档路径","content":"(文本内容, PDF/Word用)","data":"(JSON数组, Excel用, 如{\\"Sheet1\\":[[行1],[行2]]})","target":"(update定位, 如段落索引/单元格A1)","field":"(字段类型, paragraph/metadata/cell)","metadata":"(文档元数据, {author,title})","start_idx":"(r读取起点；s搜索起点，默认0；后续页传上次next_start_idx)","max_length":"(最大读取长度)","include_metadata":"(是否包含元数据)","pattern":"(搜索正则，用于 s 操作)","case_sensitive":"(大小写敏感，默认false)","context":"(匹配上下文行数，默认2)","max_results":"(最大结果行数，默认50)"}'
     },
     "sql_query": {
         "name": "sql_query",
@@ -246,9 +246,11 @@ ALL_TOOLS = {
 
 # get_tool_prompt injects params only, so keep the search-to-read contract here.
 ALL_TOOLS["document"]["params"] += (
-    " Search results include pattern, snippet, character offsets, segment number, "
-    "and read_hint. Pass read_hint.start_idx and read_hint.max_length directly "
-    "to operation r for targeted continuation."
+    " Search returns one result per matching line in document order and groups all "
+    "matches on that line in occurrences. Results include pattern, snippet, character "
+    "offsets, segment number, total_matches, returned_matches, next_start_idx, and "
+    "read_hint. Pass next_start_idx to operation s start_idx for the next page, or pass "
+    "read_hint.start_idx and read_hint.max_length to operation r for targeted reading."
 )
 
 

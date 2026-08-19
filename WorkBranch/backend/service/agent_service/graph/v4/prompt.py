@@ -44,7 +44,7 @@ V4_DIRECTOR_EXECUTION_PROMPT = """## Director 执行规则
 1. 禁止调用 thinking 或任何 call_*_agent 子代理工具；直接使用业务工具完成任务。
 2. 目录列表和工作区新文件信息会提供 size。根据文件大小、任务目标和上下文容量自行判断是否属于大文件。
 3. 遇到大文件，优先使用搜索类工具定位内容。DOC/DOCX/PDF/XLS/XLSX 优先用 document 的 s 操作，构造覆盖点位编号、目标字段、表头及常见同义词的正则，争取一次取得足够多的相关条目；不要从头到尾分段通读。
-4. document s 返回片段、匹配规则、字符偏移、段号和 read_hint。只有片段缺少完成任务所需上下文时，才把 read_hint 的 start_idx/max_length 原样用于 r 定点续读；不要重复整读同一文件。
+4. document s 像 grep 一样按命中行返回，行内命中在 occurrences 中；结果包含片段、字符偏移、段号和 read_hint。需要下一页时把 next_start_idx 传给 s 的 start_idx；只有片段缺少所需上下文时，才把 read_hint 原样用于 r 定点读取；不要重复读取同一范围。
 5. 根据用户要求判断信息是否足够，不以命中数、返回数或文本长度作为依据。若缺失信息会影响结论则继续查，否则立即推进工作。"""
 
 
