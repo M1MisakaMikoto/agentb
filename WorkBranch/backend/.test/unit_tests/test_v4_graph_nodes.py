@@ -509,22 +509,26 @@ class ClosuringNodeTest(unittest.TestCase):
         self.assertEqual(out["closure_rounds"], 9)
 
     @patch("service.agent_service.service.llm_service.FastLLMService")
-    def test_judgment_prompt_includes_conversation_history(self, fast_cls):
+    def test_judgment_prompt_excludes_conversation_history(self, fast_cls):
         fast_cls.return_value.chat.return_value = (
-            '{"passed": true, "reason": "leader 依据历史对话作答", "feedback": ""}'
+            '{"passed": true, "reason": "leader 已输出总结", "feedback": ""}'
         )
         state = _base_state(
-            pending_final_text="上一轮对话中的暗号是：ALPHA-9271",
+            current_user_message_text="USER-QUESTION-9271",
+            pending_final_text="FINAL-TEXT-9271",
             tool_records=[{
                 "round": 1,
                 "call_seq": 1,
-                "tool_name": "chat",
-                "status": "failed",
-                "error": "chat 工具已退役",
+                "tool_name": "read_file",
+                "status": "success",
+                "args": {"path": "TOOL-REQUEST-9271"},
+                "result": "TOOL-RESULT-9271",
             }],
             parent_chain_messages=[
-                {"role": "user", "content": "请记住暗号 ALPHA-9271"},
-                {"role": "assistant", "content": "ALPHA-9271"},
+                {"role": "user", "content": "PARENT-CONTEXT-9271"},
+            ],
+            current_conversation_messages=[
+                {"role": "assistant", "content": "CURRENT-CONTEXT-9271"},
             ],
         )
 
@@ -532,8 +536,12 @@ class ClosuringNodeTest(unittest.TestCase):
 
         self.assertEqual(out["_route_target"], "finalize")
         judgment_prompt = fast_cls.return_value.chat.call_args[1]["messages"][0]["content"]
-        self.assertIn("请记住暗号 ALPHA-9271", judgment_prompt)
-        self.assertIn("ALPHA-9271", judgment_prompt)
+        self.assertIn("USER-QUESTION-9271", judgment_prompt)
+        self.assertIn("FINAL-TEXT-9271", judgment_prompt)
+        self.assertIn("TOOL-REQUEST-9271", judgment_prompt)
+        self.assertIn("TOOL-RESULT-9271", judgment_prompt)
+        self.assertNotIn("PARENT-CONTEXT-9271", judgment_prompt)
+        self.assertNotIn("CURRENT-CONTEXT-9271", judgment_prompt)
 
 
     @patch("service.agent_service.graph.v4.closuring.console.warning")

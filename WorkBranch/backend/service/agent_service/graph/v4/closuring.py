@@ -109,19 +109,8 @@ def _build_feedback_check_prompt(state: AgentState) -> str:
                 f"status={r.get('status')} request={request_text} result={result_text}"
             )
     user_question = state.get("current_user_message_text") or state.get("user_message") or ""
-    context = ""
-    try:
-        from .prompt import format_context_section
-        context = format_context_section(
-            state.get("parent_chain_messages") or [],
-            state.get("current_conversation_messages") or [],
-            None,
-        )
-    except Exception:
-        context = ""
     return (
         f"用户问题：{user_question}\n\n"
-        f"历史对话（leader 可依据的内容）：\n{context or '（无）'}\n\n"
         f"leader 的 text 总结：\n{final_text[:2000]}\n\n"
         f"工具执行记录：\n" + ("\n".join(records[-20:]) or "（无）") + "\n\n"
         "请按判定标准输出 JSON。"
