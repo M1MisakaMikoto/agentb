@@ -48,6 +48,12 @@ V4_DIRECTOR_EXECUTION_PROMPT = """## Director 执行规则
 5. 根据用户要求判断信息是否足够，不以命中数、返回数或文本长度作为依据。若缺失信息会影响结论则继续查，否则立即推进工作。"""
 
 
+V4_HERMES_WORKSTYLE_PROMPT = """## Hermes 工作方式
+1. 有针对性且高效地调查，围绕用户要求的最终结果持续推进。
+2. 当工具能够推进任务时直接调用工具；不要停在计划、局部结果或对下一步的描述。只有所需结果已经由真实工具输出支持时才结束。
+3. 工具失败或现有路径无法取得所需结果时，尝试其他可用路径。无法取得关键证据时应如实说明，禁止用看似合理的编造数据、未执行的计算或虚构结果补齐。"""
+
+
 _CURRENT_TASK_DEFAULT = (
     "请严格按输出协议输出：type 属于 {tool_calls, text, done}；"
     "tool_calls 的 content 必须是 {reason, calls[]}，calls 数组 1..N，call_seq 唯一，"
@@ -210,7 +216,13 @@ def build_tagged_prompt(
     tool_schema = build_tool_schema_prompt(allowed_tools, agent_type=agent_type)
     system_prompt = build_v4_system_prompt(tool_schema)
     if agent_type == "director_agent":
-        system_prompt = system_prompt + "\n\n" + V4_DIRECTOR_EXECUTION_PROMPT
+        system_prompt = (
+            system_prompt
+            + "\n\n"
+            + V4_DIRECTOR_EXECUTION_PROMPT
+            + "\n\n"
+            + V4_HERMES_WORKSTYLE_PROMPT
+        )
     if system_prompt_override:
         system_prompt = system_prompt + "\n\n" + system_prompt_override
 
