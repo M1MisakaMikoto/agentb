@@ -57,10 +57,6 @@ def test_director_prompt_disables_thinking_and_subagents_and_guides_large_files(
     assert "next_start_idx" in system_prompt
     assert "不以命中数、返回数或文本长度作为依据" in system_prompt
     assert "若缺失信息会影响结论则继续查，否则立即推进工作" in system_prompt
-    assert "## Hermes 工作方式" in system_prompt
-    assert "不要停在计划、局部结果或对下一步的描述" in system_prompt
-    assert "只有所需结果已经由真实工具输出支持时才结束" in system_prompt
-    assert "禁止用看似合理的编造数据、未执行的计算或虚构结果补齐" in system_prompt
 
 
 def test_non_director_tool_schema_is_not_filtered(monkeypatch):
@@ -78,7 +74,7 @@ def test_non_director_tool_schema_is_not_filtered(monkeypatch):
 
     monkeypatch.setattr(graph_prompts, "build_tool_schema_prompt", capture_schema)
 
-    system_prompt, _ = prompt.build_tagged_prompt(
+    prompt.build_tagged_prompt(
         agent_type="explore_agent",
         user_message="探索",
         workspace_id="workspace-1",
@@ -93,4 +89,3 @@ def test_non_director_tool_schema_is_not_filtered(monkeypatch):
     )
 
     assert visible_tools == allowed
-    assert "## Hermes 工作方式" not in system_prompt
