@@ -1,6 +1,6 @@
 """sidekick-closuring 节点（V4 定稿）。
 
-判定目标单一：快速模型只判断 leader 是否在完成工作后输出了 text 总结。
+判定目标：快速模型只审查业务内容无关、可客观验证的收尾行为。
 - 通过 -> finalize（done）；
 - 不通过 -> 注入 <closur-feedback> 回 leader-reasoning 继续；
 - 预算 agent:closure_max_rounds（默认 8）：每次进入 +1，超过计数后
@@ -16,14 +16,19 @@ from typing import Optional
 
 from ...state import AgentState
 from core.logging import console, open_trace_log
+from .prompt import build_agent_tool_schema
 
 
-CLOSURING_PROMPT = """你是一个收尾校验助手。判断 leader 是否已经完成用户任务，并在工作最后输出了 text 总结。
+CLOSURING_PROMPT = """你是一个收尾校验助手。你只审查与业务内容无关、可客观验证的收尾行为，不审查业务结果质量。
 
-判定标准（必须同时满足）：
-1. leader 已经通过工具获取了完成任务所需的材料，或任务确实无法继续并已说明原因；
-2. leader 已经输出 type=text 的最终总结文本，内容对用户问题给出了结论；
-3. 如果任务没有完成，或缺少 text 总结，都必须判定为未通过。
+检查范围：
+1. Director 是否在结束前输出了面向用户的 type=text 最终回复；
+2. 用户明确要求生成文件或执行外部动作时，工具记录是否表明该程序性要求已执行；
+3. 用户明确要求产物文件类型时，Director 是否至少尝试生成该文件类型。例如用户要求 PDF，Director 未尝试生成 PDF 而只生成 Markdown，应判定为未通过；
+4. 仅当工具记录或 Director 可见的工具描述能证明目标路径不可达、工具不支持或操作失败，且 Director 已在最终回复中说明限制和已完成的可行部分时，才可放宽对应要求。
+
+格式只指用户明确要求的产物文件类型。不要检查回复或文件的排版、章节、字数、字段、文本结构及其他内容格式。
+禁止审查事实准确性、业务内容完整性、分析质量、预测合理性、证据充分度及文件内部内容是否正确；这些均由 Director 负责。
 
 输出（严格 JSON）：
 {"passed": true/false, "reason": "一句话理由", "feedback": "未通过时给 leader 的改进提示（不超过 120 字）"}
@@ -86,7 +91,7 @@ def _extract_json(text: str) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def _build_feedback_check_prompt(state: AgentState) -> str:
+def _build_feedback_check_prompt(state: AgentState, settings_service=None) -> str:
     final_text = state.get("pending_final_text") or state.get("final_reply") or ""
     records = []
     for r in state.get("tool_records") or []:
@@ -109,9 +114,12 @@ def _build_feedback_check_prompt(state: AgentState) -> str:
                 f"status={r.get('status')} request={request_text} result={result_text}"
             )
     user_question = state.get("current_user_message_text") or state.get("user_message") or ""
+    tool_schema = build_agent_tool_schema("director_agent", settings_service)
     return (
         f"用户问题：{user_question}\n\n"
         f"leader 的 text 总结：\n{final_text[:2000]}\n\n"
+        "Director 可见的工具描述（Director 决策时能看到以下描述）：\n"
+        f"{tool_schema}\n\n"
         f"工具执行记录：\n" + ("\n".join(records[-20:]) or "（无）") + "\n\n"
         "请按判定标准输出 JSON。"
     )
@@ -138,7 +146,10 @@ def create_closuring_node(llm_service=None, settings_service=None, message_conte
             fast = FastLLMService(settings_service)
             response = fast.chat(
                 messages=[
-                    {"role": "user", "content": _build_feedback_check_prompt(state)}
+                    {
+                        "role": "user",
+                        "content": _build_feedback_check_prompt(state, settings_service),
+                    }
                 ],
                 system_prompt=CLOSURING_PROMPT,
             )

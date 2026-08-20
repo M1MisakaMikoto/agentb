@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,7 @@ from service.agent_service.graph.v4.acting import create_acting_node
 from service.agent_service.graph.director_agent import create_analyze_node
 from service.agent_service.graph.agent_graphs import create_agent_graph
 from service.agent_service.graph.v4.closuring import (
+    CLOSURING_PROMPT,
     _build_feedback_check_prompt,
     create_closuring_node,
 )
@@ -309,6 +311,18 @@ class PromptTagTest(unittest.TestCase):
         self.assertIn("round=1", text)
         self.assertIn("round=2", text)
         self.assertIn("status=failed", text)
+        self.assertIn('reason="第二批"', text)
+
+    def test_tool_records_include_complete_call_information(self):
+        text = format_tool_records([
+            {"round": 1, "reason": "读取目标"},
+            {"round": 1, "call_seq": 1, "tool_name": "read_file",
+             "status": "success", "args": {"file_path": "目标.txt"},
+             "task_description": "读取目标文件", "result": "内容"},
+        ])
+        self.assertIn('request={"file_path": "目标.txt"}', text)
+        self.assertIn('task_description="读取目标文件"', text)
+        self.assertIn("result=内容", text)
 
     def test_tool_records_do_not_clip_regular_tool_result(self):
         long_result = "数" * 5000
@@ -341,16 +355,36 @@ class _SeqLLM:
         return self.responses.pop(0)
 
 
+class _CapturingLLM(_SeqLLM):
+    def chat_with_structured_output(self, **kwargs):
+        self.last_kwargs = kwargs
+        return super().chat_with_structured_output(**kwargs)
+
+
 class V4GraphSmokeTest(unittest.TestCase):
+    def test_director_sends_only_xml_embedded_system_prompt(self):
+        llm = _CapturingLLM(['{"type":"text","content":"完成"}'])
+        node = create_reasoning_node(llm_service=llm)
+
+        out = node(_base_state())
+
+        self.assertEqual(out["_route_target"], "finalize")
+        self.assertIsNone(llm.last_kwargs["system_prompt"])
+        message = llm.last_kwargs["messages"][0]
+        self.assertEqual(message["role"], "user")
+        self.assertTrue(message["content"].startswith("<system>\n"))
+        self.assertEqual(len(re.findall(r"(?m)^<system>$", message["content"])), 1)
+
     @patch(
         "service.agent_service.graph.subgraphs.tool_executor.run_tool_execution",
         return_value={"result": "ok", "error": None},
     )
     def test_reasoning_acting_loop_ends_with_text(self, _mock):
-        llm = _SeqLLM([
+        llm = _CapturingLLM([
             (
                 '{"type":"tool_calls","content":{"reason":"r","calls":['
-                '{"call_seq":1,"tool_name":"read_file","tool_args":{"file_path":"a.txt"}}]}}'
+                '{"call_seq":1,"tool_name":"read_file","tool_args":{"file_path":"a.txt"},'
+                '"task_description":"读取文件"}]}}'
             ),
             '{"type":"text","content":"任务完成总结"}',
         ])
@@ -366,6 +400,12 @@ class V4GraphSmokeTest(unittest.TestCase):
         self.assertGreaterEqual(out.get("iteration_count", 0), 1)
         records = out.get("tool_records") or []
         self.assertTrue(any(r.get("call_seq") == 1 for r in records))
+        call = next(r for r in records if r.get("call_seq") == 1)
+        self.assertEqual(call.get("round"), 1)
+        self.assertEqual(call.get("args"), {"file_path": "a.txt"})
+        self.assertEqual(call.get("task_description"), "读取文件")
+        self.assertEqual(out.get("current_conversation_messages"), [])
+        self.assertNotIn("\n\n<context>\n", llm.last_kwargs["messages"][0]["content"])
 
     @patch(
         "service.agent_service.graph.subgraphs.tool_executor.run_tool_execution",
@@ -542,6 +582,25 @@ class ClosuringNodeTest(unittest.TestCase):
         self.assertIn("TOOL-RESULT-9271", judgment_prompt)
         self.assertNotIn("PARENT-CONTEXT-9271", judgment_prompt)
         self.assertNotIn("CURRENT-CONTEXT-9271", judgment_prompt)
+
+    def test_prompt_limits_closure_to_programmatic_checks(self):
+        self.assertIn("只审查与业务内容无关、可客观验证的收尾行为", CLOSURING_PROMPT)
+        self.assertIn("type=text 最终回复", CLOSURING_PROMPT)
+        self.assertIn("产物文件类型", CLOSURING_PROMPT)
+        self.assertIn("工具描述能证明目标路径不可达", CLOSURING_PROMPT)
+        self.assertIn("不要检查回复或文件的排版、章节、字数、字段", CLOSURING_PROMPT)
+        self.assertIn("禁止审查事实准确性", CLOSURING_PROMPT)
+        self.assertIn("业务内容完整性", CLOSURING_PROMPT)
+        self.assertIn("预测合理性", CLOSURING_PROMPT)
+        self.assertIn("证据充分度", CLOSURING_PROMPT)
+
+    def test_judgment_prompt_includes_director_visible_tool_descriptions(self):
+        prompt = _build_feedback_check_prompt(_base_state(), _FakeSettings())
+
+        self.assertIn("Director 可见的工具描述", prompt)
+        self.assertIn("document:", prompt)
+        self.assertNotIn("thinking:", prompt)
+        self.assertNotIn("call_review_agent:", prompt)
 
 
     @patch("service.agent_service.graph.v4.closuring.console.warning")

@@ -94,6 +94,7 @@ def _execute_single_call(
         "call_seq": call_seq,
         "tool_name": tool_name,
         "args": tool_args,
+        "task_description": task_description,
     }
 
     # chat 工具已退役：直接输出 text，不经过工具
@@ -293,23 +294,15 @@ def create_acting_node(
 
         # 按 call_seq 排序（保持批次内顺序稳定）
         results.sort(key=lambda r: r.get("call_seq", 0))
+        results = [{**result, "round": round_no} for result in results]
 
         # 写 tool_records（批次头 + 逐条结果）
         tool_records = list(state.get("tool_records") or [])
         tool_records.append({"round": round_no, "reason": reason})
         tool_records.extend(results)
 
-        # 追加到 current_conversation_messages（供 <context> 展示工具执行）
-        new_conv = list(state.get("current_conversation_messages") or [])
-        for r in results:
-            content = f"[工具执行: {r.get('tool_name')}]\n结果: {r.get('result') or ''}"
-            if r.get("error"):
-                content += f"\n错误: {r.get('error')}"
-            new_conv.append({"role": "assistant", "content": content})
-
         update: dict[str, Any] = {
             "tool_records": tool_records,
-            "current_conversation_messages": new_conv,
             "iteration_count": round_no,
             "pending_batch": None,
             "has_tool_use": False,

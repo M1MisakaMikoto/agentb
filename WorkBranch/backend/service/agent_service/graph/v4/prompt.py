@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 
@@ -97,14 +98,31 @@ _SUBAGENT_TOOLS = {
 }
 
 
+def build_agent_tool_schema(agent_type: str, settings_service=None) -> str:
+    """Build the exact tool description exposed to an agent type."""
+    from ...prompts.graph_prompts import build_tool_schema_prompt
+    from ..subgraphs.tool_registry import get_allowed_tools
+
+    allowed_tools = get_allowed_tools(agent_type, settings_service)
+    if agent_type == "director_agent":
+        disabled_tools = {"thinking", *_SUBAGENT_TOOLS}
+        allowed_tools = [name for name in allowed_tools if name not in disabled_tools]
+    return build_tool_schema_prompt(allowed_tools, agent_type=agent_type)
+
+
 def format_tool_records(tool_records: list[dict], max_rounds: int = 10) -> str:
     """<tool_records>：按 round 分组、批内按 call_seq 排序。"""
     if not tool_records:
         return "（暂无工具执行记录）"
 
     by_round: dict[Any, list[dict]] = {}
+    reasons: dict[Any, str] = {}
     for r in tool_records:
-        if not isinstance(r, dict) or r.get("call_seq") is None:
+        if not isinstance(r, dict):
+            continue
+        if r.get("call_seq") is None:
+            if r.get("round") is not None and r.get("reason"):
+                reasons[r.get("round")] = str(r.get("reason"))
             continue
         by_round.setdefault(r.get("round"), []).append(r)
 
@@ -115,7 +133,9 @@ def format_tool_records(tool_records: list[dict], max_rounds: int = 10) -> str:
     lines: list[str] = []
     for rnd in rounds:
         items = sorted(by_round[rnd], key=lambda x: x.get("call_seq", 0))
-        reason = next((i.get("reason") for i in items if i.get("reason")), "")
+        reason = reasons.get(rnd) or next(
+            (i.get("reason") for i in items if i.get("reason")), ""
+        )
         header = f"round={rnd}"
         if reason:
             header += f' reason="{_clip(reason, 200)}"'
@@ -123,6 +143,15 @@ def format_tool_records(tool_records: list[dict], max_rounds: int = 10) -> str:
         for item in items:
             status = item.get("status", "success")
             body = f"  call_seq={item.get('call_seq')} {item.get('tool_name')} status={status}"
+            request = json.dumps(
+                item.get("args") or {}, ensure_ascii=False, sort_keys=True, default=str
+            )
+            body += f" request={request}"
+            if item.get("task_description"):
+                task_description = json.dumps(
+                    str(item.get("task_description")), ensure_ascii=False
+                )
+                body += f" task_description={task_description}"
             if status == "failed":
                 body += f" error={_clip(item.get('error') or '', 500)}"
             else:
@@ -200,14 +229,7 @@ def build_tagged_prompt(
     system_prompt_override: Optional[str] = None,
 ) -> tuple[str, str]:
     """组装 V4 标签化提示词，返回 (system_prompt, user_message)。"""
-    from ...prompts.graph_prompts import build_tool_schema_prompt
-    from ..subgraphs.tool_registry import get_allowed_tools
-
-    allowed_tools = get_allowed_tools(agent_type, settings_service)
-    if agent_type == "director_agent":
-        disabled_tools = {"thinking", *_SUBAGENT_TOOLS}
-        allowed_tools = [name for name in allowed_tools if name not in disabled_tools]
-    tool_schema = build_tool_schema_prompt(allowed_tools, agent_type=agent_type)
+    tool_schema = build_agent_tool_schema(agent_type, settings_service)
     system_prompt = build_v4_system_prompt(tool_schema)
     if agent_type == "director_agent":
         system_prompt = system_prompt + "\n\n" + V4_DIRECTOR_EXECUTION_PROMPT

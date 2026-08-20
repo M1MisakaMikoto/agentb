@@ -103,13 +103,12 @@ def _recent_results(tool_records: list[dict]) -> list[str]:
     ]
 
 
-def _write_reasoning_trace(agent_type: str, round_no: int, system_prompt: str, user_message: str, raw_response: str) -> None:
+def _write_reasoning_trace(agent_type: str, round_no: int, user_message: str, raw_response: str) -> None:
     try:
         with open_trace_log() as f:
             f.write(f"\n[{round_no}] === V4 REASONING REQUEST ===\n")
             f.write(f"agent_type={agent_type} round={round_no}\n")
-            f.write(f"--- SYSTEM ({len(system_prompt)} chars) ---\n{system_prompt}\n")
-            f.write(f"--- USER ({len(user_message)} chars) ---\n{user_message}\n")
+            f.write(f"--- USER (includes <system>, {len(user_message)} chars) ---\n{user_message}\n")
             f.write(f"--- RAW RESPONSE ({len(raw_response)} chars) ---\n{raw_response}\n")
             f.write("=== V4 REASONING END ===\n\n")
             f.flush()
@@ -165,7 +164,7 @@ def create_reasoning_node(llm_service=None, settings_service=None, message_conte
             except Exception:
                 system_prompt_override = None
 
-        system_prompt, user_message_text = build_tagged_prompt(
+        _, user_message_text = build_tagged_prompt(
             agent_type=agent_type,
             user_message=user_message,
             workspace_id=workspace_id,
@@ -192,13 +191,13 @@ def create_reasoning_node(llm_service=None, settings_service=None, message_conte
             if chat_method is not None:
                 raw_response = chat_method(
                     messages=[{"role": "user", "content": user_message_text}],
-                    system_prompt=system_prompt,
+                    system_prompt=None,
                     schema=leader_output_json_schema(),
                 )
             else:
                 raw_response = llm_service.chat_with_json_mode(
                     messages=[{"role": "user", "content": user_message_text}],
-                    system_prompt=system_prompt,
+                    system_prompt=None,
                 )
             raw_response = str(raw_response or "").strip()
             if not raw_response:
@@ -216,7 +215,7 @@ def create_reasoning_node(llm_service=None, settings_service=None, message_conte
                 "_route_target": "reasoning",
             }
 
-        _write_reasoning_trace(agent_type, iteration_count + 1, system_prompt, user_message_text, raw_response)
+        _write_reasoning_trace(agent_type, iteration_count + 1, user_message_text, raw_response)
 
         # ===== 解析（容错链）=====
         try:
