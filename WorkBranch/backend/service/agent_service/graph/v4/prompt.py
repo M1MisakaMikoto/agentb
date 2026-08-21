@@ -90,6 +90,60 @@ def _clip(text: Any, limit: int = 3000) -> str:
     return f"{s[:1500]}\n[中间省略 {len(s) - limit} 字符]\n{s[-1500:]}"
 
 
+def _format_hermes_document_read_result(result: dict) -> str:
+    """Render a Pandoc read in Hermes read_file's model-facing style."""
+    required = {
+        "content",
+        "total_lines",
+        "start_line",
+        "end_line",
+        "file_size",
+        "read_range",
+        "truncated",
+    }
+    missing = required.difference(result)
+    assert not missing, f"Pandoc document read missing Hermes fields: {sorted(missing)}"
+
+    content = str(result["content"] or "")
+    start_line = int(result["start_line"])
+    numbered_content = "\n".join(
+        f"{start_line + index}|{line}"
+        for index, line in enumerate(content.splitlines())
+    )
+    payload = {
+        "content": numbered_content,
+        "total_lines": int(result["total_lines"]),
+        "file_size": int(result["file_size"]),
+        "truncated": bool(result["truncated"]),
+        "extracted_document": True,
+    }
+    if payload["truncated"]:
+        next_start_idx = result.get("next_start_idx")
+        assert next_start_idx is not None, "truncated Pandoc read missing next_start_idx"
+        payload["hint"] = (
+            f"Use start_idx={next_start_idx} to continue reading "
+            f"(showing lines {result['start_line']}-{result['end_line']} "
+            f"of {result['total_lines']} lines; character range "
+            f"{result['read_range']} of {result['total_length']})"
+        )
+    payload["read_range"] = str(result["read_range"])
+    if payload["truncated"]:
+        payload["next_start_idx"] = int(result["next_start_idx"])
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _model_facing_tool_result(item: dict, result: Any) -> str:
+    metadata = result.get("metadata") if isinstance(result, dict) else None
+    if (
+        item.get("tool_name") == "document"
+        and (item.get("args") or {}).get("operation") == "r"
+        and isinstance(metadata, dict)
+        and metadata.get("method") == "pandoc"
+    ):
+        return _format_hermes_document_read_result(result)
+    return str(result)
+
+
 _SUBAGENT_TOOLS = {
     "call_explore_agent",
     "call_review_agent",
@@ -160,7 +214,7 @@ def format_tool_records(tool_records: list[dict], max_rounds: int = 10) -> str:
                 # 仅子代理回传的生成文本允许裁剪，避免全文报告二次进上下文。
                 if item.get("tool_name") in _SUBAGENT_TOOLS:
                     result = _clip(result, 3000)
-                body += f" result={result}"
+                body += f" result={_model_facing_tool_result(item, result)}"
             if item.get("duration_ms") is not None:
                 body += f" duration_ms={item.get('duration_ms')}"
             lines.append(body)

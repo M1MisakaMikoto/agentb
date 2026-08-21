@@ -450,12 +450,18 @@ def _build_pandoc_read_result(
     include_metadata: bool,
 ) -> dict:
     total_length = len(full_text)
+    total_lines = len(full_text.splitlines())
+    file_size = os.path.getsize(file_path)
     if start_idx >= total_length and total_length > 0:
         return {
             "content": "",
             "metadata": {},
             "structure": [],
             "total_length": total_length,
+            "total_lines": total_lines,
+            "start_line": total_lines + 1,
+            "end_line": total_lines,
+            "file_size": file_size,
             "read_range": f"{total_length}-{total_length}",
             "truncated": False,
             "status": "end_of_file",
@@ -463,6 +469,10 @@ def _build_pandoc_read_result(
         }
 
     end_idx = min(start_idx + max_length, total_length)
+    content = full_text[start_idx:end_idx]
+    start_line = full_text.count("\n", 0, start_idx) + 1
+    returned_line_count = len(content.splitlines())
+    end_line = start_line + returned_line_count - 1 if returned_line_count else start_line - 1
     metadata = {}
     if include_metadata:
         metadata = {
@@ -470,11 +480,16 @@ def _build_pandoc_read_result(
             "method": "pandoc",
         }
     return {
-        "content": full_text[start_idx:end_idx],
+        "content": content,
         "metadata": metadata,
         "structure": [],
         "total_length": total_length,
+        "total_lines": total_lines,
+        "start_line": start_line,
+        "end_line": end_line,
+        "file_size": file_size,
         "read_range": f"{start_idx}-{end_idx}",
+        "next_start_idx": end_idx if end_idx < total_length else None,
         "truncated": end_idx < total_length,
     }
 
@@ -583,41 +598,14 @@ def _docx_read_via_pandoc(
         if cleanup and actual_path != file_path and os.path.exists(actual_path):
             os.unlink(actual_path)
 
-        total_length = len(full_text)
-
-        # 防御性处理
-        if start_idx >= total_length and total_length > 0:
-            return {
-                "content": "",
-                "metadata": {},
-                "structure": [],
-                "total_length": total_length,
-                "read_range": f"{total_length}-{total_length}",
-                "truncated": False,
-                "status": "end_of_file",
-                "message": f"文档已读取完毕（总长度: {total_length}）"
-            }
-
-        end_idx = min(start_idx + max_length, total_length)
-        content = full_text[start_idx:end_idx]
-
-        metadata = {}
-        if include_metadata:
-            metadata = {
-                "file_type": str(_get_ext(file_path).lstrip(".")),
-                "method": "pandoc",  # 标记使用的读取方法
-            }
-
-        print(f"[DOCX-READ] ✅ Pandoc 读取成功 (方法: pandoc, 长度: {total_length})")
-
-        return {
-            "content": content,
-            "metadata": metadata,
-            "structure": [],  # pandoc 模式不提供结构化信息
-            "total_length": total_length,
-            "read_range": f"{start_idx}-{end_idx}",
-            "truncated": end_idx < total_length
-        }
+        print(f"[DOCX-READ] ✅ Pandoc 读取成功 (方法: pandoc, 长度: {len(full_text)})")
+        return _build_pandoc_read_result(
+            file_path,
+            full_text,
+            start_idx,
+            max_length,
+            include_metadata,
+        )
 
     except subprocess.TimeoutExpired:
         print("[DOCX-READ] ❌ Pandoc 读取超时（60秒），降级到 python-docx")

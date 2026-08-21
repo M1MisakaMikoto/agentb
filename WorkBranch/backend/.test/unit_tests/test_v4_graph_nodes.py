@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -28,6 +29,7 @@ from service.agent_service.graph.v4.prompt import (
     format_tool_records,
 )
 from service.agent_service.graph.v4.reasoning import create_reasoning_node
+from service.agent_service.tools.document_tools import _build_pandoc_read_result
 
 
 def _base_state(**updates):
@@ -257,6 +259,27 @@ class AnalyzeNodeTest(unittest.TestCase):
         mock_create_child.assert_called_once()
 
 class PromptTagTest(unittest.TestCase):
+    @patch(
+        "service.agent_service.tools.document_tools.os.path.getsize",
+        return_value=12345,
+    )
+    def test_pandoc_result_has_hermes_pagination_metadata(self, _mock_size):
+        full_text = "标题\n\n测点|值\nCGY-QX01-1|12.91\n尾行"
+        result = _build_pandoc_read_result(
+            "report.docx",
+            full_text,
+            start_idx=0,
+            max_length=len("标题\n\n测点|值\nCGY-QX01-1|12.91\n"),
+            include_metadata=True,
+        )
+
+        self.assertEqual(result["total_lines"], 5)
+        self.assertEqual(result["start_line"], 1)
+        self.assertEqual(result["end_line"], 4)
+        self.assertEqual(result["file_size"], 12345)
+        self.assertEqual(result["next_start_idx"], len(result["content"]))
+        self.assertTrue(result["truncated"])
+
     def test_default_current_task_is_protocol(self):
         task = build_current_task()
         self.assertIn("输出协议", task)
@@ -333,6 +356,80 @@ class PromptTagTest(unittest.TestCase):
         ])
         self.assertIn(long_result, text)
         self.assertNotIn("中间省略", text)
+
+    def test_pandoc_document_read_uses_hermes_style_result(self):
+        raw_content = "标题\n\n测点|值\nCGY-QX01-1|12.91\n"
+        text = format_tool_records([
+            {"round": 1, "reason": "读取报告"},
+            {
+                "round": 1,
+                "call_seq": 1,
+                "tool_name": "document",
+                "status": "success",
+                "args": {
+                    "operation": "r",
+                    "file_path": "report.docx",
+                    "start_idx": 0,
+                    "max_length": len(raw_content),
+                },
+                "result": {
+                    "content": raw_content,
+                    "metadata": {"file_type": "docx", "method": "pandoc"},
+                    "structure": [],
+                    "total_length": 100,
+                    "total_lines": 10,
+                    "start_line": 1,
+                    "end_line": 4,
+                    "file_size": 12345,
+                    "read_range": f"0-{len(raw_content)}",
+                    "next_start_idx": len(raw_content),
+                    "truncated": True,
+                },
+            },
+        ])
+
+        payload = json.loads(text.split(" result=", 1)[1])
+        self.assertEqual(
+            set(payload),
+            {
+                "content",
+                "total_lines",
+                "file_size",
+                "truncated",
+                "extracted_document",
+                "hint",
+                "read_range",
+                "next_start_idx",
+            },
+        )
+        self.assertEqual(
+            payload["content"],
+            "1|标题\n2|\n3|测点|值\n4|CGY-QX01-1|12.91",
+        )
+        recovered = "\n".join(
+            line.split("|", 1)[1] for line in payload["content"].splitlines()
+        )
+        self.assertEqual(recovered, raw_content.rstrip("\n"))
+        self.assertEqual(payload["total_lines"], 10)
+        self.assertEqual(payload["file_size"], 12345)
+        self.assertTrue(payload["truncated"])
+        self.assertTrue(payload["extracted_document"])
+        self.assertEqual(payload["next_start_idx"], len(raw_content))
+        self.assertIn(f"start_idx={len(raw_content)}", payload["hint"])
+
+    def test_non_pandoc_document_result_keeps_existing_format(self):
+        result = {"content": "PDF", "metadata": {"file_type": "pdf"}}
+        text = format_tool_records([
+            {
+                "round": 1,
+                "call_seq": 1,
+                "tool_name": "document",
+                "status": "success",
+                "args": {"operation": "r", "file_path": "report.pdf"},
+                "result": result,
+            },
+        ])
+        self.assertIn(f"result={result}", text)
 
     def test_tool_records_clip_subagent_return_only(self):
         long_result = "数" * 5000
