@@ -51,12 +51,19 @@ def test_director_prompt_disables_thinking_and_subagents_and_guides_large_files(
 
     assert visible_tools == ["document", "write_file"]
     assert "根据文件大小" in system_prompt
-    assert "document 的 s 操作" in system_prompt
+    assert "阅读文档时先读开头" in system_prompt
+    assert "必要时再读末尾（开头更重要）" in system_prompt
+    assert "搜索只能用于定位信息" in system_prompt
+    assert "命中后应使用 read_hint 调用 r" in system_prompt
+    assert "扩展读取相关段落或章节" in system_prompt
+    assert "仅在继续相同 pattern 时" in system_prompt
     assert "read_hint" in system_prompt
     assert "occurrences" in system_prompt
     assert "next_start_idx" in system_prompt
     assert "不以命中数、返回数或文本长度作为依据" in system_prompt
     assert "若缺失信息会影响结论则继续查，否则立即推进工作" in system_prompt
+    assert "优先使用搜索类工具" not in system_prompt
+    assert "只有片段缺少所需上下文时" not in system_prompt
 
 
 def test_non_director_tool_schema_is_not_filtered(monkeypatch):
