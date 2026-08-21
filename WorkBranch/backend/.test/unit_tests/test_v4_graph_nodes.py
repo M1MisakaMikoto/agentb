@@ -29,7 +29,10 @@ from service.agent_service.graph.v4.prompt import (
     format_tool_records,
 )
 from service.agent_service.graph.v4.reasoning import create_reasoning_node
-from service.agent_service.tools.document_tools import _build_pandoc_read_result
+from service.agent_service.tools.document_tools import (
+    _build_pandoc_read_result,
+    execute_document,
+)
 
 
 def _base_state(**updates):
@@ -280,6 +283,46 @@ class PromptTagTest(unittest.TestCase):
         self.assertEqual(result["next_start_idx"], len(result["content"]))
         self.assertTrue(result["truncated"])
 
+    @patch(
+        "service.agent_service.tools.document_tools.os.path.getsize",
+        return_value=12345,
+    )
+    def test_character_page_stops_at_complete_line(self, _mock_size):
+        result = _build_pandoc_read_result(
+            "report.docx",
+            "alpha\nbeta-long\nomega",
+            start_idx=0,
+            max_length=10,
+            include_metadata=True,
+        )
+
+        self.assertEqual(result["content"], "alpha\n")
+        self.assertEqual(result["read_range"], "0-6")
+        self.assertEqual(result["next_start_idx"], 6)
+        self.assertEqual(result["end_line"], 1)
+
+    @patch(
+        "service.agent_service.tools.document_tools.os.path.getsize",
+        return_value=12345,
+    )
+    def test_pandoc_result_supports_hermes_line_pagination(self, _mock_size):
+        result = _build_pandoc_read_result(
+            "report.docx",
+            "one\ntwo\nthree\nfour\n",
+            start_idx=0,
+            max_length=100000,
+            include_metadata=True,
+            offset=2,
+            limit=2,
+        )
+
+        self.assertEqual(result["content"], "two\nthree\n")
+        self.assertEqual(result["start_line"], 2)
+        self.assertEqual(result["end_line"], 3)
+        self.assertEqual(result["next_offset"], 4)
+        self.assertEqual(result["pagination_mode"], "lines")
+        self.assertTrue(result["truncated"])
+
     def test_default_current_task_is_protocol(self):
         task = build_current_task()
         self.assertIn("输出协议", task)
@@ -416,6 +459,170 @@ class PromptTagTest(unittest.TestCase):
         self.assertTrue(payload["extracted_document"])
         self.assertEqual(payload["next_start_idx"], len(raw_content))
         self.assertIn(f"start_idx={len(raw_content)}", payload["hint"])
+
+    def test_line_paginated_docx_uses_exact_hermes_continuation_style(self):
+        text = format_tool_records([
+            {
+                "round": 1,
+                "call_seq": 1,
+                "tool_name": "document",
+                "status": "success",
+                "args": {
+                    "operation": "r",
+                    "file_path": "report.docx",
+                    "offset": 2,
+                    "limit": 2,
+                },
+                "result": {
+                    "content": "two\nthree\n",
+                    "metadata": {"file_type": "docx", "method": "pandoc"},
+                    "structure": [],
+                    "total_length": 19,
+                    "total_lines": 4,
+                    "start_line": 2,
+                    "end_line": 3,
+                    "file_size": 12345,
+                    "read_range": "4-14",
+                    "pagination_mode": "lines",
+                    "next_offset": 4,
+                    "truncated": True,
+                },
+            },
+        ])
+
+        payload = json.loads(text.split(" result=", 1)[1])
+        self.assertEqual(
+            set(payload),
+            {
+                "content",
+                "total_lines",
+                "file_size",
+                "truncated",
+                "extracted_document",
+                "hint",
+            },
+        )
+        self.assertEqual(payload["content"], "2|two\n3|three")
+        self.assertEqual(
+            payload["hint"],
+            "Use offset=4 to continue reading (showing 2-3 of 4 lines)",
+        )
+
+    def test_python_docx_read_uses_hermes_style_result(self):
+        text = format_tool_records([
+            {
+                "round": 1,
+                "call_seq": 1,
+                "tool_name": "document",
+                "status": "success",
+                "args": {
+                    "operation": "r",
+                    "file_path": "report.docx",
+                    "start_idx": 0,
+                    "max_length": 5,
+                },
+                "result": {
+                    "content": "alpha",
+                    "metadata": {"file_type": "docx", "method": "python-docx"},
+                    "structure": [],
+                    "total_length": 10,
+                    "total_lines": 2,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "file_size": 12345,
+                    "read_range": "0-5",
+                    "next_start_idx": 5,
+                    "truncated": True,
+                },
+            },
+        ])
+
+        payload = json.loads(text.split(" result=", 1)[1])
+        self.assertEqual(payload["content"], "1|alpha")
+        self.assertTrue(payload["extracted_document"])
+
+    @patch("service.agent_service.tools.document_tools.get_settings_service")
+    @patch("service.agent_service.tools.document_tools._docx_read")
+    @patch("service.agent_service.tools.document_tools.os.path.isfile", return_value=True)
+    @patch("service.agent_service.tools.document_tools.os.path.exists", return_value=True)
+    def test_execute_document_passes_line_pagination(
+        self,
+        _mock_exists,
+        _mock_isfile,
+        mock_docx_read,
+        mock_settings,
+    ):
+        mock_settings.return_value.get.return_value = True
+        mock_docx_read.return_value = {"result": {"content": "x"}, "error": None}
+
+        execute_document({
+            "operation": "r",
+            "file_path": "report.docx",
+            "offset": 5,
+            "limit": 20,
+        })
+
+        mock_docx_read.assert_called_once_with(
+            "report.docx",
+            0,
+            100000,
+            True,
+            None,
+            offset=5,
+            limit=20,
+        )
+
+    @patch("service.agent_service.tools.document_tools.get_settings_service")
+    @patch("service.agent_service.tools.document_tools._docx_read")
+    @patch("service.agent_service.tools.document_tools.os.path.isfile", return_value=True)
+    @patch("service.agent_service.tools.document_tools.os.path.exists", return_value=True)
+    def test_execute_document_fills_missing_line_pagination_default(
+        self,
+        _mock_exists,
+        _mock_isfile,
+        mock_docx_read,
+        mock_settings,
+    ):
+        mock_settings.return_value.get.return_value = True
+        mock_docx_read.return_value = {"result": {"content": "x"}, "error": None}
+
+        execute_document({
+            "operation": "r",
+            "file_path": "report.docx",
+            "offset": 5,
+        })
+
+        mock_docx_read.assert_called_once_with(
+            "report.docx",
+            0,
+            100000,
+            True,
+            None,
+            offset=5,
+            limit=2000,
+        )
+
+    @patch("service.agent_service.tools.document_tools.get_settings_service")
+    @patch("service.agent_service.tools.document_tools._docx_read")
+    @patch("service.agent_service.tools.document_tools.os.path.isfile", return_value=True)
+    @patch("service.agent_service.tools.document_tools.os.path.exists", return_value=True)
+    def test_execute_document_rejects_line_limit_above_hermes_maximum(
+        self,
+        _mock_exists,
+        _mock_isfile,
+        mock_docx_read,
+        mock_settings,
+    ):
+        mock_settings.return_value.get.return_value = True
+
+        result = execute_document({
+            "operation": "r",
+            "file_path": "report.docx",
+            "limit": 2001,
+        })
+
+        self.assertEqual(result["error"], "limit must be between 1 and 2000")
+        mock_docx_read.assert_not_called()
 
     def test_non_pandoc_document_result_keeps_existing_format(self):
         result = {"content": "PDF", "metadata": {"file_type": "pdf"}}

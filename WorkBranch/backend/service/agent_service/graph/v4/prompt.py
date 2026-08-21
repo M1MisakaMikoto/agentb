@@ -91,7 +91,7 @@ def _clip(text: Any, limit: int = 3000) -> str:
 
 
 def _format_hermes_document_read_result(result: dict) -> str:
-    """Render a Pandoc read in Hermes read_file's model-facing style."""
+    """Render a DOC/DOCX read in Hermes read_file's model-facing style."""
     required = {
         "content",
         "total_lines",
@@ -102,7 +102,7 @@ def _format_hermes_document_read_result(result: dict) -> str:
         "truncated",
     }
     missing = required.difference(result)
-    assert not missing, f"Pandoc document read missing Hermes fields: {sorted(missing)}"
+    assert not missing, f"DOCX read missing Hermes fields: {sorted(missing)}"
 
     content = str(result["content"] or "")
     start_line = int(result["start_line"])
@@ -117,9 +117,22 @@ def _format_hermes_document_read_result(result: dict) -> str:
         "truncated": bool(result["truncated"]),
         "extracted_document": True,
     }
+    if result.get("pagination_mode") == "lines":
+        if payload["truncated"]:
+            next_offset = result.get("next_offset")
+            assert next_offset is not None, "truncated DOCX line read missing next_offset"
+            payload["hint"] = (
+                f"Use offset={next_offset} to continue reading "
+                f"(showing {result['start_line']}-{result['end_line']} "
+                f"of {result['total_lines']} lines)"
+            )
+        return json.dumps(payload, ensure_ascii=False)
+
     if payload["truncated"]:
         next_start_idx = result.get("next_start_idx")
-        assert next_start_idx is not None, "truncated Pandoc read missing next_start_idx"
+        assert next_start_idx is not None, (
+            "truncated DOCX character read missing next_start_idx"
+        )
         payload["hint"] = (
             f"Use start_idx={next_start_idx} to continue reading "
             f"(showing lines {result['start_line']}-{result['end_line']} "
@@ -133,16 +146,18 @@ def _format_hermes_document_read_result(result: dict) -> str:
 
 
 def _model_facing_tool_result(item: dict, result: Any) -> str:
-    metadata = result.get("metadata") if isinstance(result, dict) else None
+    args = item.get("args") or {}
+    file_path = str(args.get("file_path") or "").lower()
     if (
         item.get("tool_name") == "document"
-        and (item.get("args") or {}).get("operation") == "r"
-        and isinstance(metadata, dict)
-        and metadata.get("method") == "pandoc"
+        and args.get("operation") == "r"
+        and file_path.endswith((".doc", ".docx"))
+        and isinstance(result, dict)
+        and "total_lines" in result
+        and "file_size" in result
     ):
         return _format_hermes_document_read_result(result)
     return str(result)
-
 
 _SUBAGENT_TOOLS = {
     "call_explore_agent",

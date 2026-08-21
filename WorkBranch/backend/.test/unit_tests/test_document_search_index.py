@@ -35,6 +35,9 @@ def test_v4_document_prompt_explains_search_index_and_read_hint():
     assert 'file_size' in params
     assert 'next_start_idx' in params
     assert 'start_idx and max_length' in params
+    assert 'offset' in params
+    assert 'limit' in params
+    assert 'complete line' in params
     assert 'character offsets' in params
     assert 'segment number' in params
     assert 'read_hint.start_idx' in params

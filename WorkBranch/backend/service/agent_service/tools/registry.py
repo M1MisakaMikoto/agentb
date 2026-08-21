@@ -246,10 +246,13 @@ ALL_TOOLS = {
 
 # get_tool_prompt injects params only, so keep the search-to-read contract here.
 ALL_TOOLS["document"]["params"] += (
-    " Read results use line-numbered content in LINE_NUM|CONTENT format. Pandoc "
-    "reads return JSON metadata including total_lines, file_size, truncated, "
-    "extracted_document, hint, read_range, and next_start_idx. Use start_idx and "
-    "max_length to continue reading large documents."
+    " For DOC/DOCX operation r, prefer 1-indexed line pagination with offset "
+    "(default 1) and limit (default 2000, max 2000). Read results use line-numbered "
+    "content in LINE_NUM|CONTENT format and return JSON metadata including "
+    "total_lines, file_size, truncated, extracted_document, and hint. Use the "
+    "returned next offset to continue. Character pagination with start_idx and "
+    "max_length remains supported and stops at a complete line when possible; "
+    "those results also include read_range and next_start_idx."
     " Search returns one result per matching line in document order and groups all "
     "matches on that line in occurrences. Results include pattern, snippet, character "
     "offsets, segment number, total_matches, returned_matches, next_start_idx, and "

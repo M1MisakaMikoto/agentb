@@ -204,19 +204,6 @@ def _pdf_read(file_path: str, start_idx: int = 0, max_length: int = 100000,
 
         total_length = len(full_text)
 
-        # 防御性处理：当 start_idx >= total_length 时，说明文档已经读完
-        # ⚠️ 这个检查必须在切片之前！
-        if start_idx >= total_length and total_length > 0:
-            return _make_result({
-                "content": "",
-                "metadata": {},
-                "total_length": total_length,
-                "read_range": f"{total_length}-{total_length}",
-                "truncated": False,
-                "status": "end_of_file",
-                "message": f"文档已读取完毕（总长度: {total_length}）"
-            })
-
         end_idx = min(start_idx + max_length, total_length)
         content = full_text[start_idx:end_idx]
 
@@ -442,56 +429,134 @@ def _extract_table_data(table) -> Tuple[str, dict]:
     return formatted_text, metadata
 
 
-def _build_pandoc_read_result(
+def _build_docx_read_result(
     file_path: str,
     full_text: str,
     start_idx: int,
     max_length: int,
     include_metadata: bool,
+    method: str,
+    structure: Optional[list] = None,
+    metadata_extra: Optional[dict] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
 ) -> dict:
     total_length = len(full_text)
     total_lines = len(full_text.splitlines())
     file_size = os.path.getsize(file_path)
-    if start_idx >= total_length and total_length > 0:
-        return {
+    line_mode = offset is not None or limit is not None
+    if line_mode:
+        assert offset is not None and limit is not None
+        assert offset >= 1
+        assert limit >= 1
+        raw_lines = full_text.splitlines(keepends=True)
+        if offset > total_lines:
+            start_idx = total_length
+            end_idx = total_length
+            content = ""
+            start_line = total_lines + 1
+            end_line = total_lines
+        else:
+            start_line = offset
+            end_line = min(offset + limit - 1, total_lines)
+            start_idx = sum(len(line) for line in raw_lines[: offset - 1])
+            page_lines = raw_lines[offset - 1 : end_line]
+            content = "".join(page_lines)
+            end_idx = start_idx + len(content)
+    else:
+        if start_idx >= total_length and total_length > 0:
+            end_idx = total_length
+            content = ""
+            start_line = total_lines + 1
+            end_line = total_lines
+        else:
+            requested_end = min(start_idx + max_length, total_length)
+            end_idx = requested_end
+            if requested_end < total_length:
+                last_newline = full_text.rfind("\n", start_idx, requested_end)
+                if last_newline >= start_idx:
+                    end_idx = last_newline + 1
+            content = full_text[start_idx:end_idx]
+            start_line = full_text.count("\n", 0, start_idx) + 1
+            returned_line_count = len(content.splitlines())
+            end_line = (
+                start_line + returned_line_count - 1
+                if returned_line_count
+                else start_line - 1
+            )
+
+    metadata = {}
+    if include_metadata:
+        metadata = {
+            "file_type": str(_get_ext(file_path).lstrip(".")),
+            "method": method,
+            **(metadata_extra or {}),
+        }
+
+    if (line_mode and offset > total_lines) or (
+        not line_mode and start_idx >= total_length and total_length > 0
+    ):
+        result = {
             "content": "",
-            "metadata": {},
-            "structure": [],
+            "metadata": metadata,
+            "structure": structure or [],
             "total_length": total_length,
             "total_lines": total_lines,
             "start_line": total_lines + 1,
             "end_line": total_lines,
             "file_size": file_size,
             "read_range": f"{total_length}-{total_length}",
+            "pagination_mode": "lines" if line_mode else "characters",
             "truncated": False,
             "status": "end_of_file",
             "message": f"Document fully read (total length: {total_length})",
         }
+        if line_mode:
+            result["next_offset"] = None
+        else:
+            result["next_start_idx"] = None
+        return result
 
-    end_idx = min(start_idx + max_length, total_length)
-    content = full_text[start_idx:end_idx]
-    start_line = full_text.count("\n", 0, start_idx) + 1
-    returned_line_count = len(content.splitlines())
-    end_line = start_line + returned_line_count - 1 if returned_line_count else start_line - 1
-    metadata = {}
-    if include_metadata:
-        metadata = {
-            "file_type": str(_get_ext(file_path).lstrip(".")),
-            "method": "pandoc",
-        }
-    return {
+    result = {
         "content": content,
         "metadata": metadata,
-        "structure": [],
+        "structure": structure or [],
         "total_length": total_length,
         "total_lines": total_lines,
         "start_line": start_line,
         "end_line": end_line,
         "file_size": file_size,
         "read_range": f"{start_idx}-{end_idx}",
-        "next_start_idx": end_idx if end_idx < total_length else None,
-        "truncated": end_idx < total_length,
+        "pagination_mode": "lines" if line_mode else "characters",
     }
+    if line_mode:
+        result["truncated"] = end_line < total_lines
+        result["next_offset"] = end_line + 1 if result["truncated"] else None
+    else:
+        result["truncated"] = end_idx < total_length
+        result["next_start_idx"] = end_idx if result["truncated"] else None
+    return result
+
+
+def _build_pandoc_read_result(
+    file_path: str,
+    full_text: str,
+    start_idx: int,
+    max_length: int,
+    include_metadata: bool,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> dict:
+    return _build_docx_read_result(
+        file_path,
+        full_text,
+        start_idx,
+        max_length,
+        include_metadata,
+        method="pandoc",
+        offset=offset,
+        limit=limit,
+    )
 
 
 def _docx_read_via_pandoc(
@@ -500,6 +565,8 @@ def _docx_read_via_pandoc(
     max_length: int = 100000,
     include_metadata: bool = True,
     conversation_id: Optional[str] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
 ) -> Optional[dict]:
     """
     使用 Pandoc 读取 Word 文档（高覆盖率方案）
@@ -541,6 +608,8 @@ def _docx_read_via_pandoc(
             start_idx,
             max_length,
             include_metadata,
+            offset,
+            limit,
         )
 
     pandoc_path = _find_pandoc()
@@ -605,6 +674,8 @@ def _docx_read_via_pandoc(
             start_idx,
             max_length,
             include_metadata,
+            offset,
+            limit,
         )
 
     except subprocess.TimeoutExpired:
@@ -622,6 +693,8 @@ def _docx_read(
     max_length: int = 100000,
     include_metadata: bool = True,
     conversation_id: Optional[str] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
 ) -> dict:
     """
     读取 Word 文档（双模式：Pandoc 优先 + python-docx 降级）
@@ -641,6 +714,8 @@ def _docx_read(
         max_length,
         include_metadata,
         conversation_id,
+        offset,
+        limit,
     )
 
     if pandoc_result is not None:
@@ -711,23 +786,9 @@ def _docx_read(
 
         full_text = "\n\n".join(content_parts)
         total_length = len(full_text)
+        paragraph_count = sum(1 for item in structure if item["type"] == "paragraph")
+        table_count = sum(1 for item in structure if item["type"] == "table")
 
-        # 防御性处理：当 start_idx >= total_length 时，说明文档已经读完
-        # ⚠️ 这个检查必须在切片之前！
-        if start_idx >= total_length and total_length > 0:
-            return _make_result({
-                "content": "",
-                "metadata": {},
-                "structure": structure[:20],
-                "total_length": total_length,
-                "read_range": f"{total_length}-{total_length}",
-                "truncated": False,
-                "status": "end_of_file",
-                "message": f"文档已读取完毕（总长度: {total_length}）"
-            })
-
-        end_idx = min(start_idx + max_length, total_length)
-        content = full_text[start_idx:end_idx]
 
         metadata = {}
         if include_metadata:
@@ -754,14 +815,22 @@ def _docx_read(
         print(f"[DOCX-READ] 📊 统计: {paragraph_count} 个段落, {table_count} 个表格, 总长度 {total_length} 字符")
         print("[DOCX-READ] 💡 提示: 安装 Pandoc 可获得更完整的文档内容（含图片/页眉页脚/脚注等）")
 
-        return _make_result({
-            "content": content,
-            "metadata": metadata,
-            "structure": structure[:20],
-            "total_length": total_length,
-            "read_range": f"{start_idx}-{end_idx}",
-            "truncated": end_idx < total_length
-        })
+        return _make_result(_build_docx_read_result(
+            file_path,
+            full_text,
+            start_idx,
+            max_length,
+            include_metadata,
+            method="python-docx",
+            structure=structure[:20],
+            metadata_extra={
+                key: value
+                for key, value in metadata.items()
+                if key not in {"file_type", "method"}
+            },
+            offset=offset,
+            limit=limit,
+        ))
     except Exception as e:
         print(f"[DOCX-READ] ❌ python-docx 降级模式也失败了: {str(e)}")
         return _make_result(error=f"Word文档读取失败: {str(e)}")
@@ -1840,6 +1909,24 @@ def execute_document(tool_args: dict, conversation_id: Optional[str] = None) -> 
             max_length = 100000
         include_metadata = tool_args.get("include_metadata", True)
 
+        line_pagination_requested = "offset" in tool_args or "limit" in tool_args
+        offset = None
+        limit = None
+        if line_pagination_requested:
+            if ext not in {".doc", ".docx"}:
+                return _make_result(
+                    error="offset and limit are only supported for DOC/DOCX reads"
+                )
+            try:
+                offset = int(tool_args.get("offset", 1))
+                limit = int(tool_args.get("limit", 2000))
+            except (ValueError, TypeError):
+                return _make_result(error="offset and limit must be integers")
+            if offset < 1:
+                return _make_result(error="offset must be at least 1")
+            if limit < 1 or limit > 2000:
+                return _make_result(error="limit must be between 1 and 2000")
+
         if ext == ".pdf":
             result = _pdf_read(file_path, start_idx, max_length, include_metadata, use_llm_parsing)
         elif ext in {".doc", ".docx"}:
@@ -1849,6 +1936,8 @@ def execute_document(tool_args: dict, conversation_id: Optional[str] = None) -> 
                 max_length,
                 include_metadata,
                 conversation_id,
+                offset=offset,
+                limit=limit,
             )
         elif ext in {".xls", ".xlsx"}:
             result = _excel_read(file_path, start_idx, max_length, include_metadata)
