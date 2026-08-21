@@ -19,29 +19,81 @@ from core.logging import console, open_trace_log
 from .prompt import build_agent_tool_schema
 
 
-CLOSURING_PROMPT = """你是一个收尾校验助手。你只审查与业务内容无关、可客观验证的收尾行为，不审查业务结果质量。
+CLOSURING_PROMPT = """你是一个收尾行为校验助手。你只审查与业务内容无关、可客观验证的 Agent 行为，不审查业务结果质量。
 
-检查范围：
-1. Director 是否在结束前输出了面向用户的 type=text 最终回复；
-2. 用户明确要求生成文件或执行外部动作时，工具记录是否表明该程序性要求已执行；
-3. 用户明确要求产物文件类型时，Director 是否至少尝试生成该文件类型。例如用户要求 PDF，Director 未尝试生成 PDF 而只生成 Markdown，应判定为未通过；
-4. 仅当工具记录或 Director 可见的工具描述能证明目标路径不可达、工具不支持或操作失败，且 Director 已在最终回复中说明限制和已完成的可行部分时，才可放宽对应要求。
+检查范围仅限：
+1. Director 是否输出了面向用户的 type=text 最终回复。final_reply_present=true 即满足；不读取或评价最终回复正文，不管回复写了什么。
+2. 用户明确要求生成某种产物文件时，成功的工具行为是否表明该文件类型已经生成；不检查文件内部内容、排版或质量。
+3. 用户明确要求执行外部动作时，成功的工具行为是否表明该动作已经执行；不检查动作产生的业务结果质量。
+4. 如果 Director 可见的工具描述能证明目标路径不可达或工具不支持该文件类型或外部动作，且 final_reply_present=true，则对应要求视为满足；不得检查回复是否解释了限制。
 
-格式只指用户明确要求的产物文件类型。不要检查回复或文件的排版、章节、字数、字段、文本结构及其他内容格式。
-禁止审查事实准确性、业务内容完整性、分析质量、预测合理性、证据充分度及文件内部内容是否正确；这些均由 Director 负责。
+只有用户明确提出的文件或外部动作要求才能作为拒绝理由，不得把阅读、搜索、分析、计算、预测、回答质量或信息充分程度解释成产物或外部动作要求。
+禁止审查事实准确性、业务内容完整性、分析质量、预测合理性、证据充分度、读取范围及文件内部内容是否正确。如果只有业务问题，必须通过。
 
-输出（严格 JSON）：
-{"passed": true/false, "reason": "一句话理由", "feedback": "未通过时给 leader 的改进提示（不超过 120 字）"}
+输出严格 JSON。passed=false 时 failure_kind 只能是以下三种之一：
+- missing_final_reply
+- required_artifact_not_generated
+- required_external_action_not_executed
+
+不存在上述行为问题时必须输出：
+{"passed": true, "failure_kind": "none", "reason": "程序性收尾行为已完成", "feedback": ""}
+
+存在行为问题时输出：
+{"passed": false, "failure_kind": "上述三种之一", "reason": "只描述缺失的可观察行为", "feedback": "只要求补做该行为，不得要求修改业务内容"}
 """
 
 
 _TOOL_HISTORY_FIELD_LIMIT = 100
+
+_ALLOWED_MODEL_FAILURE_KINDS = {
+    "required_artifact_not_generated",
+    "required_external_action_not_executed",
+}
+
+_TOOL_PAYLOAD_FIELDS = {
+    "body",
+    "code",
+    "command",
+    "content",
+    "context",
+    "data",
+    "description",
+    "feedback",
+    "input",
+    "instructions",
+    "message",
+    "metadata",
+    "options",
+    "pattern",
+    "prompt",
+    "query",
+    "question",
+    "raw",
+    "remark",
+    "sql",
+    "summary",
+    "task",
+    "text",
+    "title",
+}
 
 
 def _serialize_tool_history_field(value) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _behavior_only_tool_args(value):
+    if isinstance(value, dict):
+        return {
+            key: _behavior_only_tool_args(item)
+            for key, item in value.items()
+            if str(key).lower() not in _TOOL_PAYLOAD_FIELDS
+        }
+    if isinstance(value, list):
+        return [_behavior_only_tool_args(item) for item in value]
+    return value
 
 
 def _clip_tool_history_field(*, value, field: str, record: dict) -> str:
@@ -92,35 +144,37 @@ def _extract_json(text: str) -> Optional[dict]:
 
 
 def _build_feedback_check_prompt(state: AgentState, settings_service=None) -> str:
-    final_text = state.get("pending_final_text") or state.get("final_reply") or ""
+    final_reply_present = (
+        state.get("pending_final_text") is not None
+        or state.get("final_reply") is not None
+    )
     records = []
     for r in state.get("tool_records") or []:
         if isinstance(r, dict) and r.get("call_seq") is not None:
-            result = r.get("result")
-            if result is None:
-                result = r.get("error") or ""
             request_text = _clip_tool_history_field(
-                value=r.get("args") or {},
+                value=_behavior_only_tool_args(r.get("args") or {}),
                 field="request",
                 record=r,
             )
-            result_text = _clip_tool_history_field(
-                value=result,
-                field="result",
-                record=r,
-            )
-            records.append(
-                f"call_seq={r.get('call_seq')} {r.get('tool_name')} "
-                f"status={r.get('status')} request={request_text} result={result_text}"
-            )
+            records.append({
+                "call_seq": r.get("call_seq"),
+                "tool_name": r.get("tool_name"),
+                "status": r.get("status"),
+                "request": request_text,
+            })
     user_question = state.get("current_user_message_text") or state.get("user_message") or ""
     tool_schema = build_agent_tool_schema("director_agent", settings_service)
+    behavior_facts = {
+        "final_reply_present": final_reply_present,
+        "tool_records": records[-20:],
+    }
     return (
-        f"用户问题：{user_question}\n\n"
-        f"leader 的 text 总结：\n{final_text[:2000]}\n\n"
+        "用户原始要求（仅用于识别明确要求的文件类型和外部动作）：\n"
+        f"{user_question}\n\n"
+        "Director 可观察行为事实（不含回复正文和工具结果正文）：\n"
+        f"{json.dumps(behavior_facts, ensure_ascii=False, indent=2)}\n\n"
         "Director 可见的工具描述（Director 决策时能看到以下描述）：\n"
         f"{tool_schema}\n\n"
-        f"工具执行记录：\n" + ("\n".join(records[-20:]) or "（无）") + "\n\n"
         "请按判定标准输出 JSON。"
     )
 
@@ -140,6 +194,19 @@ def create_closuring_node(llm_service=None, settings_service=None, message_conte
             )
             return {"closure_rounds": closure_rounds, "_route_target": "finalize"}
 
+        has_final_reply = (
+            state.get("pending_final_text") is not None
+            or state.get("final_reply") is not None
+        )
+        if not has_final_reply:
+            return {
+                "closure_rounds": closure_rounds,
+                "closur_feedback": "结束前必须先输出面向用户的 type=text 最终回复。",
+                "pending_final_text": None,
+                "final_reply": None,
+                "_route_target": "reasoning",
+            }
+
         # fastllm 判定
         try:
             from service.agent_service.service.llm_service import FastLLMService
@@ -155,17 +222,25 @@ def create_closuring_node(llm_service=None, settings_service=None, message_conte
             )
             data = _extract_json(response) or {}
             passed = bool(data.get("passed"))
+            failure_kind = str(data.get("failure_kind") or "none")
             feedback = str(data.get("feedback") or "")
             reason = str(data.get("reason") or "")
         except Exception as e:
             console.warning(f"[sidekick-closuring] 判定异常，按通过处理: {e}")
             return {"closure_rounds": closure_rounds, "_route_target": "finalize"}
 
+        if not passed and failure_kind not in _ALLOWED_MODEL_FAILURE_KINDS:
+            console.warning(
+                "[sidekick-closuring] ignored out-of-scope rejection "
+                f"failure_kind={failure_kind} reason={reason}"
+            )
+            passed = True
+
         try:
             with open_trace_log() as f:
                 f.write(
                     f"[closuring] round={closure_rounds} passed={passed} "
-                    f"reason={reason} feedback={feedback}\n"
+                    f"failure_kind={failure_kind} reason={reason} feedback={feedback}\n"
                 )
                 f.flush()
         except Exception:

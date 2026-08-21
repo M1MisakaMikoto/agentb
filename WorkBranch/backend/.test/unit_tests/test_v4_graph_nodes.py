@@ -532,15 +532,72 @@ class ClosuringNodeTest(unittest.TestCase):
         self.assertEqual(out["closure_rounds"], 1)
 
     @patch("service.agent_service.service.llm_service.FastLLMService")
-    def test_failed_injects_feedback_and_returns_reasoning(self, fast_cls):
+    def test_business_quality_rejection_cannot_return_to_reasoning(self, fast_cls):
         fast_cls.return_value.chat.return_value = (
-            '{"passed": false, "reason": "缺少总结", '
-            '"feedback": "请先输出 text 总结再 done"}'
+            '{"passed": false, '
+            '"reason": "数据不完整，无法准确分析变化规律及预测值", '
+            '"feedback": "补充读取业务数据后重写报告"}'
         )
-        out = self._node()(_base_state(pending_final_text="done"))
+
+        out = self._node()(_base_state(pending_final_text="已向用户回复"))
+
+        self.assertEqual(out["_route_target"], "finalize")
+        self.assertEqual(out["closure_rounds"], 1)
+
+    @patch("service.agent_service.service.llm_service.FastLLMService")
+    def test_missing_final_reply_returns_to_reasoning_without_llm(self, fast_cls):
+        out = self._node()(_base_state(
+            pending_final_text=None,
+            final_reply=None,
+        ))
+
         self.assertEqual(out["_route_target"], "reasoning")
-        self.assertIn("text 总结", out["closur_feedback"])
+        self.assertIn("最终回复", out["closur_feedback"])
+        fast_cls.assert_not_called()
+
+    @patch("service.agent_service.service.llm_service.FastLLMService")
+    def test_false_missing_reply_claim_cannot_return_to_reasoning(self, fast_cls):
+        fast_cls.return_value.chat.return_value = (
+            '{"passed": false, "failure_kind": "missing_final_reply", '
+            '"reason": "没有最终回复", "feedback": "请回复用户"}'
+        )
+
+        out = self._node()(_base_state(pending_final_text="实际已经回复"))
+
+        self.assertEqual(out["_route_target"], "finalize")
+
+    @patch("service.agent_service.service.llm_service.FastLLMService")
+    def test_missing_required_artifact_returns_to_reasoning(self, fast_cls):
+        fast_cls.return_value.chat.return_value = (
+            '{"passed": false, '
+            '"failure_kind": "required_artifact_not_generated", '
+            '"reason": "用户要求的 PDF 未生成", '
+            '"feedback": "请生成 PDF 文件"}'
+        )
+        out = self._node()(_base_state(
+            current_user_message_text="请生成 PDF 报告",
+            pending_final_text="已回复",
+        ))
+        self.assertEqual(out["_route_target"], "reasoning")
+        self.assertIn("PDF", out["closur_feedback"])
         self.assertIsNone(out["pending_final_text"])
+
+    @patch("service.agent_service.service.llm_service.FastLLMService")
+    def test_missing_required_external_action_returns_to_reasoning(self, fast_cls):
+        fast_cls.return_value.chat.return_value = (
+            '{"passed": false, '
+            '"failure_kind": "required_external_action_not_executed", '
+            '"reason": "用户要求的提交动作未执行", '
+            '"feedback": "请执行提交动作"}'
+        )
+
+        out = self._node()(_base_state(
+            current_user_message_text="请将报告提交到平台",
+            pending_final_text="已回复",
+        ))
+
+        self.assertEqual(out["_route_target"], "reasoning")
+        self.assertIn("提交动作", out["closur_feedback"])
 
     @patch("service.agent_service.service.llm_service.FastLLMService")
     def test_budget_exceeded_forces_finalize(self, _fast_cls):
@@ -549,7 +606,7 @@ class ClosuringNodeTest(unittest.TestCase):
         self.assertEqual(out["closure_rounds"], 9)
 
     @patch("service.agent_service.service.llm_service.FastLLMService")
-    def test_judgment_prompt_excludes_conversation_history(self, fast_cls):
+    def test_judgment_prompt_contains_behavior_facts_without_business_content(self, fast_cls):
         fast_cls.return_value.chat.return_value = (
             '{"passed": true, "reason": "leader 已输出总结", "feedback": ""}'
         )
@@ -577,18 +634,22 @@ class ClosuringNodeTest(unittest.TestCase):
         self.assertEqual(out["_route_target"], "finalize")
         judgment_prompt = fast_cls.return_value.chat.call_args[1]["messages"][0]["content"]
         self.assertIn("USER-QUESTION-9271", judgment_prompt)
-        self.assertIn("FINAL-TEXT-9271", judgment_prompt)
+        self.assertIn('"final_reply_present": true', judgment_prompt)
+        self.assertNotIn("FINAL-TEXT-9271", judgment_prompt)
         self.assertIn("TOOL-REQUEST-9271", judgment_prompt)
-        self.assertIn("TOOL-RESULT-9271", judgment_prompt)
+        self.assertNotIn("TOOL-RESULT-9271", judgment_prompt)
         self.assertNotIn("PARENT-CONTEXT-9271", judgment_prompt)
         self.assertNotIn("CURRENT-CONTEXT-9271", judgment_prompt)
 
     def test_prompt_limits_closure_to_programmatic_checks(self):
-        self.assertIn("只审查与业务内容无关、可客观验证的收尾行为", CLOSURING_PROMPT)
+        self.assertIn("只审查与业务内容无关、可客观验证的 Agent 行为", CLOSURING_PROMPT)
         self.assertIn("type=text 最终回复", CLOSURING_PROMPT)
-        self.assertIn("产物文件类型", CLOSURING_PROMPT)
+        self.assertIn("文件类型已经生成", CLOSURING_PROMPT)
         self.assertIn("工具描述能证明目标路径不可达", CLOSURING_PROMPT)
-        self.assertIn("不要检查回复或文件的排版、章节、字数、字段", CLOSURING_PROMPT)
+        self.assertIn("不读取或评价最终回复正文", CLOSURING_PROMPT)
+        self.assertIn("如果只有业务问题，必须通过", CLOSURING_PROMPT)
+        self.assertIn("failure_kind", CLOSURING_PROMPT)
+        self.assertNotIn("已完成的可行部分", CLOSURING_PROMPT)
         self.assertIn("禁止审查事实准确性", CLOSURING_PROMPT)
         self.assertIn("业务内容完整性", CLOSURING_PROMPT)
         self.assertIn("预测合理性", CLOSURING_PROMPT)
@@ -604,26 +665,21 @@ class ClosuringNodeTest(unittest.TestCase):
 
 
     @patch("service.agent_service.graph.v4.closuring.console.warning")
-    def test_tool_history_clips_request_and_result_separately(self, warning):
+    def test_tool_history_clips_request_and_excludes_result_content(self, warning):
         prompt = _build_feedback_check_prompt(_base_state(tool_records=[{
             "round": 1,
             "call_seq": 7,
             "tool_name": "document",
             "status": "success",
-            "args": {"query": "q" * 120},
+            "args": {"file_path": "q" * 120 + ".pdf"},
             "result": "r" * 130,
         }]))
 
-        record_line = next(line for line in prompt.splitlines() if line.startswith("call_seq=7"))
-        request_text, result_text = record_line.split(" request=", 1)[1].split(" result=", 1)
-        self.assertEqual(len(request_text), 100)
-        self.assertEqual(len(result_text), 100)
-        self.assertTrue(request_text.startswith('{"query": "'))
-        self.assertEqual(result_text, "r" * 100)
-        self.assertEqual(warning.call_count, 2)
+        self.assertIn("q" * 80, prompt)
+        self.assertNotIn("r" * 80, prompt)
+        self.assertEqual(warning.call_count, 1)
         warnings = "\\n".join(call.args[0] for call in warning.call_args_list)
         self.assertIn("field=request", warnings)
-        self.assertIn("field=result", warnings)
         self.assertIn("call_seq=7", warnings)
 
     @patch("service.agent_service.graph.v4.closuring.console.warning")
@@ -637,9 +693,30 @@ class ClosuringNodeTest(unittest.TestCase):
             "error": "not found",
         }]))
 
-        self.assertIn('request={"path": "short.txt"}', prompt)
-        self.assertIn("result=not found", prompt)
+        self.assertIn("short.txt", prompt)
+        self.assertNotIn("not found", prompt)
         warning.assert_not_called()
+
+    def test_tool_history_excludes_business_payload_arguments(self):
+        prompt = _build_feedback_check_prompt(_base_state(tool_records=[{
+            "round": 1,
+            "call_seq": 3,
+            "tool_name": "document",
+            "status": "success",
+            "args": {
+                "operation": "w",
+                "file_path": "report.pdf",
+                "content": "BUSINESS-CONTENT-4731",
+                "query": "BUSINESS-QUERY-4731",
+            },
+            "result": "BUSINESS-RESULT-4731",
+        }]))
+
+        self.assertIn("report.pdf", prompt)
+        self.assertIn('\\\"operation\\\": \\\"w\\\"', prompt)
+        self.assertNotIn("BUSINESS-CONTENT-4731", prompt)
+        self.assertNotIn("BUSINESS-QUERY-4731", prompt)
+        self.assertNotIn("BUSINESS-RESULT-4731", prompt)
 
 
 class PlanSubagentExecutorTest(unittest.TestCase):
