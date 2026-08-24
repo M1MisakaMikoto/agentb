@@ -161,8 +161,8 @@ ALL_TOOLS = {
     },
     "sql_query": {
         "name": "sql_query",
-        "description": "执行只读 SQL 查询或结构探查；支持 query(SELECT)、show_databases(列出数据库)、show_tables(列出表)、describe(查看表结构)、show_create(查看建表语句)，以及面向facility_detail索引查询的 facility_trend/facility_report",
-        "params": 'sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create|facility_trend|facility_report，必填)","query":"(query 模式必填；其他模式忽略)","database":"(数据库名称，可选；show_databases 模式忽略，show_tables/describe/show_create 使用该库或默认库)","table":"(表名；describe/show_create 模式必填，其他模式忽略)","limit":"(仅 query/facility_* 模式生效，默认100，最大1000)","table_name":"(facility_* 模式可选，默认 facility_detail)","start_time":"(facility_* 可选，例 2026-05-01 00:00:00)","end_time":"(facility_* 可选，建议与start_time一起传)","device_type_name":"(facility_* 可选，等值过滤)","device_id":"(facility_* 可选，等值过滤)","content_keyword":"(facility_* 可选，LIKE过滤)","group_by":"(facility_trend 可选: hour|day|device_type|device)"}'
+        "description": "执行只读 SQL 查询或结构探查；支持 query(SELECT)、show_databases(列出数据库)、show_tables(列出表)、describe(查看表结构)、show_create(查看建表语句)，以及面向设施表（自动发现或指定）索引查询的 facility_trend/facility_report",
+        "params": 'sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create|facility_trend|facility_report，必填)","query":"(query 模式必填；其他模式忽略；不同设施表的字段映射: 桥梁表t_Bridge/mc=名称, id=ID；道路表t_Road/mc=名称；人行桥表t_Footbridge/mc=名称)","database":"(数据库名称，可选；show_databases 模式忽略，show_tables/describe/show_create 使用该库或默认库)","table":"(表名；describe/show_create 模式必填；query/facility_* 模式可用于指定设施表)","limit":"(仅 query/facility_* 模式生效，默认100，最大1000)","table_name":"(facility_* 模式可选，指定设施表名；不指定则自动发现)","start_time":"(facility_* 可选，例 2026-05-01 00:00:00)","end_time":"(facility_* 可选，建议与start_time一起传)","device_type_name":"(facility_* 可选，设施类型如桥梁/道路/人行桥，用于自动表发现)","device_id":"(facility_* 可选，等值过滤)","content_keyword":"(facility_* 可选，LIKE过滤)","group_by":"(facility_trend 可选: hour|day|device_type|device)"}'
     },
     # --- Prediction Tools ---
     "calculate_bci": {
@@ -194,13 +194,13 @@ ALL_TOOLS = {
     # --- 设施研判报告工具 ---
     "submit_facility_report": {
         "name": "submit_facility_report",
-        "description": "生成设施研判报告 - 将检测报告(PDF)上传后自动生成研判报告",
-        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告PDF文件本地路径，必填)","regionId":"(区域ID，必填，从元数据中获取)"}'
+        "description": "生成设施研判报告 - 将检测报告(DOCX)上传后自动生成研判报告。注意：若尚无DOCX文件，先用 document w 工具生成DOCX（file_path 必须用 .docx 结尾，传入Markdown内容即可自动转换为DOCX），再传 reportFile 给本工具。",
+        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告DOCX文件本地路径，必填)","regionId":"(区域ID，必填，从元数据中获取)"}'
     },
     "submit_facility_forecast": {
         "name": "submit_facility_forecast",
-        "description": "提交设施预测报告 - 将桥梁预测分析结果(PDF)上传到系统。调用 POST /v1/facility/forecast/report 接口。",
-        "params": 'submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)"}'
+        "description": "提交设施预测报告 - 将桥梁预测分析结果(DOCX)上传到系统。调用 POST /v1/facility/forecast/report 接口。若尚无DOCX文件，先用 document w 工具生成DOCX（file_path 必须用 .docx 结尾，传入Markdown内容即可自动转换为DOCX）。",
+        "params": 'submit_facility_forecast:{"facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告DOCX文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: 高/中/低)","summary":"(预测结论摘要，可选)"}'
     },
     # --- 日常巡查记录工具 ---
     "submit_dailypatrol_record": {

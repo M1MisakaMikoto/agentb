@@ -8,7 +8,7 @@
 API 端点:
 1. POST /v1/file - 上传报告文件信息（Header: X-Region-Id）【决策报告用】
 2. POST /v1/facility/decision/report - 生成研判报告（需要先调用 file 接口）
-3. POST /v1/file/upload - 上传 PDF 文件（MultipartFile）【预测报告用】
+3. POST /v1/file/upload - 上传 DOCX 文件（MultipartFile）【预测报告用】
 4. POST /v1/facility/forecast/report - 提交预测报告（需要先调用 upload 接口）
 5. GET  /health - 健康检查
 """
@@ -284,7 +284,7 @@ def run_mock_server(host: str = "localhost", port: int = 8001):
 +============================================================+
 |  地址: http://{host}:{port}                             |
 |  接口:                                                    |
-|    1. POST /v1/file/upload           (上传PDF文件)         |
+|    1. POST /v1/file/upload           (上传DOCX文件)        |
 |    2. POST /v1/facility/decision/report (生成研判报告)      |
 |    3. POST /v1/facility/forecast/report (提交预测报告)      |
 |    4. GET  /health                    (健康检查)           |

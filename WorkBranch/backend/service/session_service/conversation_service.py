@@ -292,6 +292,7 @@ class ConversationService:
         await self._dao.update_conversation(
             conversation_id,
             user_content=serialize_parts(normalized_parts),
+            assistant_content=None,  # 重置 assistant_content，确保流式逻辑不会返回旧内容
         )
 
         message_id = f"msg-{conversation_id}-{int(datetime.now().timestamp() * 1000)}"

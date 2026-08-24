@@ -2,17 +2,17 @@
 设施研判报告工具 - 用于生成设施检测研判报告
 
 工具名称: submit_facility_report
-功能: 上传 PDF 文件后生成研判报告
+功能: 上传 DOCX 文件后生成研判报告
 
 API 流程（两步）:
-1. POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+1. POST /v1/file/upload - 上传 DOCX 文件，获得 fileUrl
 2. POST /v1/facility/decision/report - 用 fileUrl + 业务字段生成研判报告
 
 预测报告工具名称: submit_facility_forecast
-功能: 上传 PDF 文件后提交预测数据
+功能: 上传 DOCX 文件后提交预测数据
 
 API 流程（两步）:
-1. POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+1. POST /v1/file/upload - 上传 DOCX 文件，获得 fileUrl
 2. POST /v1/facility/forecast/report - 用 fileUrl 提交预测数据
 
 使用方法:
@@ -20,7 +20,7 @@ API 流程（两步）:
         reportName="2026年5月沪渝高速大桥定期检测报告",
         facilityId="BR-001",
         facilityName="沪渝高速大桥",
-        reportFile="/path/to/report.pdf",
+        reportFile="/path/to/report.docx",
         regionId="region-001"
     )
 
@@ -32,6 +32,7 @@ import os
 import json
 import logging
 import uuid
+import zipfile
 from typing import Optional, Dict, Any
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -297,13 +298,94 @@ def _validate_region_id(
     return True, ""
 
 
+def _extract_success_response(response, payload_keys=()):
+    """从 HTTP 响应中提取 (是否成功, 数据)。兼容三种格式：
+    1. 包装型: {"success": true, "data": {...}}
+    2. 服务端裸 VO: {"fileUrl": ...} / {"id": ...} / {"decisionId": ...}（无 success 包装）
+    3. 裸 Long/ID: 123 / "123"（json 解析为 int/str）
+
+    失败响应（HTTPError/URLError 分支）为 {"success": False, "error": {...}, "http_status": ...}。
+    """
+    if isinstance(response, bool):
+        return response, {}
+    if isinstance(response, (int, str)):
+        return True, {"id": response}
+    if not isinstance(response, dict):
+        return False, {}
+    if response.get("success") is True:
+        data = response.get("data")
+        return True, data if isinstance(data, dict) else {}
+    if response.get("http_status") is not None:
+        return False, response
+    if any(response.get(key) is not None for key in payload_keys):
+        return True, response
+    return False, response
+
+
+def _ensure_report_docx(report_file: str) -> tuple[str, Optional[str]]:
+    """确保报告文件为有效 DOCX，返回 (最终文件路径, 错误信息)。
+
+    若 reportFile 是 .md/.txt 等文本，或内容为文本但命名成 .docx 的伪文件
+    （Word/WPS 打开会提示损坏），用 pandoc 自动转换为真正的 DOCX 后返回新路径。
+    已是有效 DOCX 则原样返回。
+    """
+    if not report_file:
+        return report_file, None
+    if not os.path.exists(report_file):
+        return report_file, f"报告文件不存在: {report_file}"
+
+    ext = os.path.splitext(report_file)[1].lower()
+
+    # 已是有效 docx：直接返回
+    if ext == ".docx":
+        try:
+            with zipfile.ZipFile(report_file) as z:
+                names = z.namelist()
+                if "[Content_Types].xml" in names and "word/document.xml" in names:
+                    return report_file, None
+        except zipfile.BadZipFile:
+            pass  # 伪 docx，落到下方 pandoc 转换
+        except Exception:
+            pass
+
+    # 读取文本内容（md / txt / 伪 docx）
+    try:
+        with open(report_file, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        return report_file, f"读取报告文件失败: {str(e)}"
+
+    try:
+        from .document_tools import _docx_write
+    except ImportError:
+        return report_file, "无法导入 docx 生成模块"
+
+    out_path = os.path.splitext(report_file)[0] + ".docx"
+    # _docx_write 优先用 pandoc，pandoc 不可用时回退到 python-docx（纯 Python 依赖）
+    result = _docx_write(out_path, content)
+    if result.get("error"):
+        return report_file, f"DOCX 生成失败: {result['error']}"
+
+    # 确认生成的是有效 DOCX
+    try:
+        with zipfile.ZipFile(out_path) as z:
+            names = z.namelist()
+            if "[Content_Types].xml" not in names or "word/document.xml" not in names:
+                return report_file, "DOCX 生成结果无效（缺少 OOXML 关键部件）"
+    except Exception as e:
+        return report_file, f"DOCX 生成结果校验失败: {str(e)}"
+
+    logger.info(f"[报告文件转换] {report_file} -> {out_path}")
+    return out_path, None
+
+
 def execute_submit_facility_report(
     tool_args: dict,
     message_context: Optional[Dict[str, Any]] = None
 ) -> dict:
     """执行设施研判报告工具（两步流程）
 
-    步骤1: POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+    步骤1: POST /v1/file/upload - 上传 DOCX 文件，获得 fileUrl
     步骤2: POST /v1/facility/decision/report - 用 fileUrl + 业务字段生成研判报告
 
     Args:
@@ -311,7 +393,7 @@ def execute_submit_facility_report(
             - reportName: 报告名称 (必需)
             - facilityId: 设施ID (必需)
             - facilityName: 设施名称 (必需)
-            - reportFile: 报告PDF文件本地路径 (必需)
+            - reportFile: 报告DOCX文件本地路径 (必需)
             - regionId: 区域ID (必需)
         message_context: 消息上下文
 
@@ -333,7 +415,7 @@ def execute_submit_facility_report(
     if not facility_name:
         return {"result": None, "error": "缺少必需参数: facilityName (设施名称)"}
     if not report_file:
-        return {"result": None, "error": "缺少必需参数: reportFile (报告PDF文件路径)"}
+        return {"result": None, "error": "缺少必需参数: reportFile (报告DOCX文件路径)"}
     if not region_id:
         return {"result": None, "error": "缺少必需参数: regionId (区域ID)"}
 
@@ -344,6 +426,12 @@ def execute_submit_facility_report(
     passed, err_msg = _validate_region_id(region_id, message_context)
     if not passed:
         return {"result": None, "error": err_msg}
+
+    # 确保报告文件是有效 DOCX（md/文本/伪docx 自动用 pandoc 转换）
+    report_file, docx_err = _ensure_report_docx(report_file)
+    if docx_err:
+        logger.error(f"[设施研判报告] reportFile 处理失败: {docx_err}")
+        return {"result": None, "error": docx_err}
 
     # 构建请求头（regionId 通过 X-Region-Id 传递）
     region_headers = {"X-Region-Id": str(region_id)}
@@ -370,17 +458,19 @@ def execute_submit_facility_report(
     # ========== 步骤1: 上传 PDF 文件 ==========
     upload_url = f"{api_url}/v1/file/upload"
 
-    logger.info(f"[设施研判报告] 步骤1/2 - 上传PDF文件到: {upload_url}")
+    logger.info(f"[设施研判报告] 步骤1/2 - 上传DOCX文件到: {upload_url}")
 
     upload_response = _send_multipart_upload(upload_url, report_file, headers=region_headers)
 
-    if not upload_response.get("success"):
-        error_info = upload_response.get("error", {})
+    upload_ok, upload_data = _extract_success_response(upload_response, ("fileUrl",))
+    if not upload_ok:
+        error_info = upload_response.get("error", {}) if isinstance(upload_response, dict) else {}
         error_msg = error_info.get("message", "未知错误")
-        logger.error(f"[设施研判报告] 步骤1失败: {error_msg}")
+        http_status = upload_response.get("http_status") if isinstance(upload_response, dict) else "N/A"
+        logger.error(f"[设施研判报告] 步骤1失败: {error_msg} | http_status={http_status} | error_info={error_info}")
         return {"result": None, "error": f"上传PDF失败: {error_msg}"}
 
-    file_url = upload_response.get("data", {}).get("fileUrl")
+    file_url = upload_data.get("fileUrl")
     if not file_url:
         logger.error("[设施研判报告] 步骤1响应中无 fileUrl")
         return {"result": None, "error": "上传成功但未返回 fileUrl"}
@@ -406,14 +496,15 @@ def execute_submit_facility_report(
         logger.error(f"[设施研判报告] {error_msg}")
         return {"result": None, "error": error_msg}
 
-    if not decision_response.get("success"):
-        error_info = decision_response.get("error", {})
+    decision_ok, decision_data = _extract_success_response(decision_response, ("decisionId", "id"))
+    if not decision_ok:
+        error_info = decision_response.get("error", {}) if isinstance(decision_response, dict) else {}
         error_msg = error_info.get("message", "未知错误")
         logger.error(f"[设施研判报告] 步骤2失败: {error_msg}")
         return {"result": None, "error": f"生成研判报告失败: {error_msg}"}
 
     # ========== 成功 - 汇总结果 ==========
-    decision_data = decision_response.get("data", {})
+    decision_id = decision_data.get("decisionId") or decision_data.get("id")
     result_message = f"""设施研判报告生成成功！
 
 📋 报告信息:
@@ -422,12 +513,12 @@ def execute_submit_facility_report(
 - 设施: {facility_name} (ID: {facility_id})
 
 📋 研判决策:
-- 决策ID: {decision_data.get('decisionId')}
+- 决策ID: {decision_id}
 - 状态: {decision_data.get('status')}
 - 生成时间: {decision_data.get('generatedAt')}
 - 消息: {decision_data.get('message')}"""
 
-    logger.info(f"[设施研判报告] 全部完成 - decisionId: {decision_data.get('decisionId')}")
+    logger.info(f"[设施研判报告] 全部完成 - decisionId: {decision_id}")
     return {"result": result_message, "error": None}
 
 
@@ -437,15 +528,15 @@ def register_facility_report_tools():
     tools = [
         ToolDefinition(
             name="submit_facility_report",
-            description="生成设施研判报告 - 两步流程：先上传PDF文件获得fileUrl，再提交业务数据生成研判报告。串联 /v1/file/upload 和 /v1/facility/decision/report 两个接口。注意：若尚无PDF文件，先用 document w 工具生成PDF（传入Markdown内容即可自动转换为PDF）。",
-            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告PDF文件本地路径，必填)","regionId":"(区域ID，必填)"}',
+            description="生成设施研判报告 - 两步流程：先上传DOCX报告文件获得fileUrl，再提交业务数据生成研判报告。串联 /v1/file/upload 和 /v1/facility/decision/report 两个接口。注意：若尚无DOCX文件，先用 document w 工具生成DOCX（file_path 必须用 .docx 结尾，传入Markdown内容即可自动转换为DOCX）。",
+            params='submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告DOCX文件本地路径，必填)","regionId":"(区域ID，必填)"}',
             category="facility_report",
             executor=execute_submit_facility_report
         ),
         ToolDefinition(
             name="submit_facility_forecast",
-            description="提交设施预测报告 - 两步流程：先上传PDF文件获得fileUrl，再提交预测数据。串联 /v1/file/upload 和 /v1/facility/forecast/report 两个接口。注意：若尚无PDF文件，先用 document w 工具生成PDF（传入Markdown内容即可自动转换为PDF）。",
-            params='submit_facility_forecast:{"regionId":"(区域ID，必填)","facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告PDF文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: HIGH/MEDIUM/LOW)","summary":"(预测结论摘要，可选)"}',
+            description="提交设施预测报告 - 两步流程：先上传DOCX报告文件获得fileUrl，再提交预测数据。串联 /v1/file/upload 和 /v1/facility/forecast/report 两个接口。注意：若尚无DOCX文件，先用 document w 工具生成DOCX（file_path 必须用 .docx 结尾，传入Markdown内容即可自动转换为DOCX）。",
+            params='submit_facility_forecast:{"regionId":"(区域ID，必填)","facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告DOCX文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: HIGH/MEDIUM/LOW)","summary":"(预测结论摘要，可选)"}',
             category="facility_report",
             executor=execute_submit_facility_forecast_report
         ),
@@ -472,7 +563,7 @@ def execute_submit_facility_forecast_report(
 ) -> dict:
     """执行设施预测报告提交工具（两步流程）
 
-    步骤1: POST /v1/file/upload - 上传 PDF 文件，获得 fileUrl
+    步骤1: POST /v1/file/upload - 上传 DOCX 文件，获得 fileUrl
     步骤2: POST /v1/facility/forecast/report - 用 fileUrl 作为 reportUrl 提交预测数据
 
     Args:
@@ -480,7 +571,7 @@ def execute_submit_facility_forecast_report(
             - regionId: 区域ID (必需)
             - facilityId: 设施ID (必需)
             - predictYear: 预测年份 (必需)
-            - reportFile: 报告PDF文件本地路径 (必需)
+            - reportFile: 报告DOCX文件本地路径 (必需)
             - facilityName: 设施名称 (可选)
             - predictedHealthScore: 预测健康分数 (可选)
             - predictedRiskLevel: 风险等级 (可选，如 HIGH/MEDIUM/LOW)
@@ -503,7 +594,7 @@ def execute_submit_facility_forecast_report(
     if not predict_year:
         return {"result": None, "error": "缺少必需参数: predictYear (预测年份)"}
     if not report_file:
-        return {"result": None, "error": "缺少必需参数: reportFile (报告PDF文件路径)"}
+        return {"result": None, "error": "缺少必需参数: reportFile (报告DOCX文件路径)"}
 
     # 解析 reportFile 相对路径到工作区绝对路径
     report_file = _resolve_report_file_path(report_file, message_context)
@@ -512,6 +603,12 @@ def execute_submit_facility_forecast_report(
     passed, err_msg = _validate_region_id(region_id, message_context)
     if not passed:
         return {"result": None, "error": err_msg}
+
+    # 确保报告文件是有效 DOCX（md/文本/伪docx 自动用 pandoc 转换）
+    report_file, docx_err = _ensure_report_docx(report_file)
+    if docx_err:
+        logger.error(f"[设施预测报告] reportFile 处理失败: {docx_err}")
+        return {"result": None, "error": docx_err}
 
     # 获取 API 地址（settings_service配置 > 硬编码默认值）
     api_url = DEFAULT_API_URL
@@ -534,17 +631,19 @@ def execute_submit_facility_forecast_report(
     # ========== 步骤1: 上传 PDF 文件 ==========
     upload_url = f"{api_url}/v1/file/upload"
 
-    logger.info(f"[设施预测报告] 步骤1/2 - 上传PDF文件到: {upload_url}")
+    logger.info(f"[设施预测报告] 步骤1/2 - 上传DOCX文件到: {upload_url}")
 
     upload_response = _send_multipart_upload(upload_url, report_file)
 
-    if not upload_response.get("success"):
-        error_info = upload_response.get("error", {})
+    upload_ok, upload_data = _extract_success_response(upload_response, ("fileUrl",))
+    if not upload_ok:
+        error_info = upload_response.get("error", {}) if isinstance(upload_response, dict) else {}
         error_msg = error_info.get("message", "未知错误")
-        logger.error(f"[设施预测报告] 步骤1失败: {error_msg}")
+        http_status = upload_response.get("http_status") if isinstance(upload_response, dict) else "N/A"
+        logger.error(f"[设施预测报告] 步骤1失败: {error_msg} | http_status={http_status} | error_info={error_info}")
         return {"result": None, "error": f"上传PDF失败: {error_msg}"}
 
-    file_url = upload_response.get("data", {}).get("fileUrl")
+    file_url = upload_data.get("fileUrl")
     if not file_url:
         logger.error("[设施预测报告] 步骤1响应中无 fileUrl")
         return {"result": None, "error": "上传成功但未返回 fileUrl"}
@@ -580,16 +679,19 @@ def execute_submit_facility_forecast_report(
         logger.error(f"[设施预测报告] {error_msg}")
         return {"result": None, "error": error_msg}
 
-    if response.get("http_status") == 400:
-        return {"result": None, "error": response.get("error", {}).get("message", "请求参数错误或用户未分配区域")}
-    elif response.get("http_status") == 401:
-        return {"result": None, "error": "未登录或认证失败"}
-    elif not response.get("success") and response.get("error"):
-        error_info = response.get("error", {})
+    ok, response_data = _extract_success_response(response, ("id",))
+    if not ok:
+        error_info = response.get("error", {}) if isinstance(response, dict) else {}
+        http_status = response.get("http_status") if isinstance(response, dict) else None
+        if http_status == 400:
+            return {"result": None, "error": error_info.get("message", "请求参数错误或用户未分配区域")}
+        elif http_status == 401:
+            return {"result": None, "error": "未登录或认证失败"}
         error_msg = error_info.get("message", "未知错误")
+        logger.error(f"[设施预测报告] 步骤2失败: {error_msg}")
         return {"result": None, "error": f"提交预测报告失败: {error_msg}"}
 
-    report_id = response.get("data") or response.get("result")
+    report_id = response_data.get("id") or response_data.get("result") or response_data.get("reportId")
 
     result_message = f"""设施预测报告提交成功！
 

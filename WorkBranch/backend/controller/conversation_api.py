@@ -244,11 +244,17 @@ async def stream_conversation_message(
             )
 
             try:
+                print(f"[DEBUG-STREAM] 开始流式处理: conversation_id={conversation_id}, last_seq={last_seq}")
+                print(f"[DEBUG-STREAM] stream_state: {stream_state}")
+                print(f"[DEBUG-STREAM] conversation state: {conversation.get('state')}")
+
                 if stream_state["is_completed"] or conversation.get("state") in {
                     "completed", "failed", "cancelled"
                 }:
+                    print(f"[DEBUG-STREAM] ✓ 对话已完成或已取消/失败，尝试从历史或数据库返回")
                     messages_after = mq.get_messages_after(conversation_id, last_seq)
                     if messages_after:
+                        print(f"[DEBUG-STREAM] 从消息队列获取到 {len(messages_after)} 条消息")
                         for idx, msg in enumerate(messages_after):
                             event_data = msg.to_dict() if hasattr(msg, "to_dict") else dict(msg)
                             event_data["seq"] = int(event_data.get("seq") or last_seq + idx + 1)
@@ -272,10 +278,12 @@ async def stream_conversation_message(
                             yield f"data: {json.dumps(terminal_event, ensure_ascii=False)}\n\n"
                             return
                         # 首次请求且 Agent 已完成，从数据库获取结果
+                        print(f"[DEBUG-STREAM] ⚠️ 从数据库获取之前的回答 (conversation_id={conversation_id})")
                         from singleton import get_conversation_dao
                         dao = get_conversation_dao()
                         persisted_conv = await dao.get_conversation_by_id(conversation_id)
                         if persisted_conv and persisted_conv.assistant_content:
+                            print(f"[DEBUG-STREAM] 🔁 返回数据库中的旧回答 (conversation_id={conversation_id})")
                             # 构造 chat_start + chat_delta + chat_end 事件
                             chat_start = {'type': 'chat_start', 'conversation_id': conversation_id, 'message_id': persisted_conv.id, 'content': ''}
                             stream_logger.log(chat_start, 1)
@@ -289,6 +297,7 @@ async def stream_conversation_message(
                             stream_logger.log(chat_end, 3)
                             yield f"data: {json.dumps(chat_end, ensure_ascii=False)}\n\n"
                         else:
+                            print(f"[DEBUG-STREAM] 数据库中没有找到之前的回答")
                             done_event = {'type': 'stream_completed', 'conversation_id': conversation_id, 'last_seq': last_seq, 'message': '对话已完成，请调用历史API获取完整数据'}
                             stream_logger.log(done_event, 0)
                             yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
@@ -303,6 +312,8 @@ async def stream_conversation_message(
                         extra={"conversation_id": conversation_id, "last_seq": last_seq},
                     )
                     return
+
+                print(f"[DEBUG-STREAM] 对话正在处理中，开始流式接收消息")
 
                 await mq.start_consumer()
                 subscriber = mq.subscribe(conversation_id, last_seq=last_seq)

@@ -17,8 +17,20 @@ QueryMode = Literal["query", "show_databases", "show_tables", "describe", "show_
 MODE_SET = {"query", "show_databases", "show_tables", "describe", "show_create", "facility_trend", "facility_report"}
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
-DEFAULT_FACILITY_TABLE = "facility_detail"
 GROUP_BY_SET = {"hour", "day", "device_type", "device"}
+
+
+# 设施类型与表名的模糊匹配规则（用于动态表发现）
+FACILITY_TABLE_PATTERNS = {
+    "桥梁": ["bridge"],
+    "bridge": ["bridge"],
+    "道路": ["road"],
+    "road": ["road"],
+    "人行桥": ["footbridge"],
+    "footbridge": ["footbridge"],
+    "隧道": ["tunnel"],
+    "tunnel": ["tunnel"],
+}
 
 
 @dataclass
@@ -745,6 +757,74 @@ async def _execute_facility_trend_async(
     return await _execute_with_connection(db_config, timeout, operation, database=database)
 
 
+async def _discover_facility_table(
+    db_name: str,
+    db_config: DatabaseConfig,
+    timeout: int,
+    device_type_name: str = "",
+    facility_keyword: str = "",
+) -> str:
+    """
+    动态发现设施相关的表名。
+
+    策略：
+    1. 根据设备类型名称（如"桥梁"、"道路"）匹配表名
+    2. 查询数据库表结构，查找包含 facility_name 或 mc 字段的表
+    3. 返回最佳匹配的表名
+    """
+
+    async def operation(cursor: Any) -> str:
+        # 获取所有表名
+        await asyncio.wait_for(cursor.execute("SHOW TABLES"), timeout=timeout)
+        rows = await asyncio.wait_for(cursor.fetchall(), timeout=timeout)
+
+        if not rows:
+            return ""
+
+        all_tables = [(_extract_first_value(row), _extract_first_value(row).lower()) for row in rows]
+
+        # 策略1：根据设施类型名称匹配表名（最精确）
+        if device_type_name:
+            patterns = FACILITY_TABLE_PATTERNS.get(device_type_name.lower(), [])
+            for pattern in patterns:
+                for original_name, lower_name in all_tables:
+                    if pattern in lower_name:
+                        return original_name
+
+        # 策略2：查找名称中包含设施关键词的表
+        facility_keywords = ["bridge", "road", "tunnel", "footbridge", "facility"]
+        for original_name, lower_name in all_tables:
+            for keyword in facility_keywords:
+                if keyword in lower_name:
+                    return original_name
+
+        # 策略3：在设施相关表中查找包含 mc 字段的表
+        # 先筛选出可能的设施表（以 t_ 开头且名称长度合理）
+        candidate_tables = [
+            original_name for original_name, lower_name in all_tables
+            if lower_name.startswith("t_") and len(lower_name) > 3
+        ]
+
+        for table_name in candidate_tables:
+            try:
+                # 检查表是否有 mc 字段（名称字段）
+                await asyncio.wait_for(
+                    cursor.execute(f"SHOW COLUMNS FROM `{table_name}` LIKE 'mc'"),
+                    timeout=timeout,
+                )
+                columns = await asyncio.wait_for(cursor.fetchall(), timeout=timeout)
+                if columns:
+                    return table_name
+            except Exception:
+                # 跳过无法查询的表
+                continue
+
+        return ""
+
+    result = await _execute_with_connection(db_config, timeout, operation, database=db_name)
+    return result.get("result", "") if result.get("error") is None else ""
+
+
 async def _execute_show_databases_async(db_config: DatabaseConfig, timeout: int) -> dict:
     """执行 SHOW DATABASES"""
 
@@ -923,7 +1003,22 @@ async def execute_sql_query_async(
     if mode in {"facility_trend", "facility_report"}:
         table_name = table  # 兼容现有 table 入参优先
         if not table_name:
-            table_name = str(tool_args.get("table_name") or DEFAULT_FACILITY_TABLE)
+            # 从 table_name 参数获取
+            table_name = tool_args.get("table_name")
+
+        if not table_name:
+            # 动态发现设施表
+            device_type_name = tool_args.get("device_type_name", "")
+            content_keyword = tool_args.get("content_keyword", "")
+            table_name = await _discover_facility_table(
+                db_name, db_config, timeout, device_type_name, content_keyword
+            )
+            if not table_name:
+                return {
+                    "result": None,
+                    "error": "无法自动发现设施表；请通过 table/table_name 参数指定表名（如 t_Bridge、t_Road、t_Footbridge），或通过 device_type_name 参数指定设施类型（如 桥梁、道路、人行桥）"
+                }
+
         is_valid, error_msg = _validate_identifier(table_name, "table_name")
         if not is_valid:
             return {"result": None, "error": error_msg}
@@ -1022,8 +1117,8 @@ def register_sql_tools() -> None:
     ToolRegistry.register(
         ToolDefinition(
             name="sql_query",
-            description="执行只读 SQL 查询或结构探查；支持 query(SELECT)、show_databases、show_tables、describe、show_create，以及面向facility_detail索引查询的 facility_trend/ facility_report",
-            params='sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create|facility_trend|facility_report，必填)","query":"(query 模式必填)","database":"(数据库名称，可选)","table":"(describe/show_create 可用)","table_name":"(facility_* 模式可选，默认 facility_detail)","start_time":"(facility_* 可选，例 2026-05-01 00:00:00)","end_time":"(facility_* 可选，建议与start_time一起传)","device_type_name":"(facility_* 可选，等值过滤)","device_id":"(facility_* 可选，等值过滤)","content_keyword":"(facility_* 可选，LIKE过滤)","group_by":"(facility_trend 可选: hour|day|device_type|device)","limit":"(query/facility_* 生效，最大1000)"}',
+            description="执行只读 SQL 查询或结构探查；支持 query(SELECT)、show_databases、show_tables、describe、show_create，以及面向桥梁设施表（t_Bridge/t_Footbridge）索引查询的 facility_trend/ facility_report",
+            params='sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create|facility_trend|facility_report，必填)","query":"(query 模式必填；不同设施表的字段映射: 桥梁表t_Bridge/mc=名称, id=ID；道路表t_Road/mc=名称；人行桥表t_Footbridge/mc=名称)","database":"(数据库名称，可选)","table":"(describe/show_create 模式必填；query/facility_* 模式可用于指定设施表)","table_name":"(facility_* 模式可选，指定设施表名如 t_Bridge、t_Road、t_Footbridge；不指定则自动发现)","start_time":"(facility_* 可选，例 2026-05-01 00:00:00)","end_time":"(facility_* 可选，建议与start_time一起传)","device_type_name":"(facility_* 可选，设施类型如桥梁/道路/人行桥，用于自动表发现)","device_id":"(facility_* 可选，等值过滤)","content_keyword":"(facility_* 可选，LIKE过滤)","group_by":"(facility_trend 可选: hour|day|device_type|device)","limit":"(query/facility_* 生效，最大1000)"}',
             category="sql",
             executor=execute_sql_query,
         )

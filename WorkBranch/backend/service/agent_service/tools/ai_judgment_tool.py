@@ -181,18 +181,21 @@ def execute_submit_ai_judgment_issue(
     try:
         response = _send_http_request(url, "POST", request_body)
 
-        if response.get("success"):
-            data = response.get("data", {})
+        if response.get("success") or "id" in response:
+            # 兼容两种响应：包装型 {"success":true,"data":{...}} 与 aiservice 裸 VO {"id":...,"state":...}
+            data = response.get("data") or response
+            issue_id = data.get("id") or data.get("issueId")
+            message_line = f"- 消息: {data.get('message')}\n" if data.get("message") else ""
             result_message = f"""AI 研判问题提交成功！
 
 📋 工单信息:
-- 工单ID: {data.get('issueId')}
+- 工单ID: {issue_id}
 - 设施: {data.get('facilityName')} (ID: {data.get('facilityId')})
 - 区域: {data.get('areaId')}
-- 状态: {data.get('status')}
+- 状态: {data.get('state') or data.get('status')}
 - 创建时间: {data.get('createdAt')}
-- 消息: {data.get('message')}"""
-            logger.info(f"[AI 研判] 提交成功: {data.get('issueId')}")
+{message_line}"""
+            logger.info(f"[AI 研判] 提交成功: {issue_id}")
             return {"result": result_message, "error": None}
         else:
             error_info = response.get("error", {})
