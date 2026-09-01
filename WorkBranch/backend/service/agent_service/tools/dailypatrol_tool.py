@@ -243,6 +243,15 @@ def execute_submit_dailypatrol_record(
 
     response = _send_http_request(full_url, "POST", request_body, headers=request_headers)
 
+    if not isinstance(response, dict):
+        raw = str(response)
+        error_msg = (
+            f"接口返回格式异常：期望 JSON 对象，实际为 {type(response).__name__}"
+            f"；响应内容: {raw[:200]}"
+        )
+        logger.error(f"[日常巡查记录] 提交失败: {error_msg}")
+        return {"result": None, "error": f"提交日常巡查记录失败: {error_msg}"}
+
     # 兼容 cowservice 裸 ID 返回 {"id":123}（无 success/data 包装）
     response_ok = response.get("success") is True or (
         isinstance(response, dict)
