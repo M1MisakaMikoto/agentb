@@ -41,12 +41,15 @@ V4_SYSTEM_PROMPT = """你是一个任务执行代理（leader）。你的职责�
 {tool_prompt}"""
 
 
+V4_DOCUMENT_READING_PROMPT = """## 文档读取规则
+1. 目录列表和工作区新文件信息会提供 size。根据文件大小、任务目标和上下文容量自行判断是否属于大文件。
+2. 文档头尾通常包含目录、表头、章节结构或索引信息。阅读文档时先读开头，必要时再读末尾（开头更重要），以建立结构认知，然后继续读取或搜索。
+3. document s 像 grep 一样按命中行返回，行内命中在 occurrences 中；结果包含片段、字符偏移、段号和 read_hint。搜索只能用于定位信息；命中后应使用 read_hint 调用 r，并按需扩展读取相关段落或章节，确认字段语义与上下文后再分析。仅在继续相同 pattern 时，才把 next_start_idx 传给 s 的 start_idx；不要重复读取同一范围。
+4. 根据用户要求判断信息是否足够，不以命中数、返回数或文本长度作为依据。若缺失信息会影响结论则继续查，否则立即推进工作。"""
+
+
 V4_DIRECTOR_EXECUTION_PROMPT = """## Director 执行规则
-1. 禁止调用 thinking 或任何 call_*_agent 子代理工具；直接使用业务工具完成任务。
-2. 目录列表和工作区新文件信息会提供 size。根据文件大小、任务目标和上下文容量自行判断是否属于大文件。
-3. 文档头尾通常包含目录、表头、章节结构或索引信息。阅读文档时先读开头，必要时再读末尾（开头更重要），以建立结构认知，然后继续读取或搜索。
-4. document s 像 grep 一样按命中行返回，行内命中在 occurrences 中；结果包含片段、字符偏移、段号和 read_hint。搜索只能用于定位信息；命中后应使用 read_hint 调用 r，并按需扩展读取相关段落或章节，确认字段语义与上下文后再分析。仅在继续相同 pattern 时，才把 next_start_idx 传给 s 的 start_idx；不要重复读取同一范围。
-5. 根据用户要求判断信息是否足够，不以命中数、返回数或文本长度作为依据。若缺失信息会影响结论则继续查，否则立即推进工作。"""
+1. 禁止调用 thinking 及除 call_prediction_agent 外的 call_*_agent 子代理工具；桥梁预测/BCI/趋势分析任务应委托 call_prediction_agent，其余任务直接使用业务工具完成。"""
 
 
 _CURRENT_TASK_DEFAULT = (
@@ -174,7 +177,7 @@ def build_agent_tool_schema(agent_type: str, settings_service=None) -> str:
 
     allowed_tools = get_allowed_tools(agent_type, settings_service)
     if agent_type == "director_agent":
-        disabled_tools = {"thinking", *_SUBAGENT_TOOLS}
+        disabled_tools = {"thinking", *(_SUBAGENT_TOOLS - {"call_prediction_agent"})}
         allowed_tools = [name for name in allowed_tools if name not in disabled_tools]
     return build_tool_schema_prompt(allowed_tools, agent_type=agent_type)
 
@@ -302,6 +305,9 @@ def build_tagged_prompt(
     system_prompt = build_v4_system_prompt(tool_schema)
     if agent_type == "director_agent":
         system_prompt = system_prompt + "\n\n" + V4_DIRECTOR_EXECUTION_PROMPT
+        system_prompt = system_prompt + "\n\n" + V4_DOCUMENT_READING_PROMPT
+    elif agent_type == "prediction_agent":
+        system_prompt = system_prompt + "\n\n" + V4_DOCUMENT_READING_PROMPT
     if system_prompt_override:
         system_prompt = system_prompt + "\n\n" + system_prompt_override
 

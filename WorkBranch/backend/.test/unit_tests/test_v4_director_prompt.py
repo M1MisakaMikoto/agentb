@@ -10,7 +10,7 @@ from service.agent_service.graph.subgraphs import tool_registry
 from service.agent_service.prompts import graph_prompts
 
 
-def test_director_prompt_disables_thinking_and_subagents_and_guides_large_files(
+def test_director_prompt_keeps_prediction_and_guides_document_reading(
     monkeypatch,
 ):
     visible_tools = []
@@ -49,7 +49,10 @@ def test_director_prompt_disables_thinking_and_subagents_and_guides_large_files(
         current_conversation_messages=[],
     )
 
-    assert visible_tools == ["document", "write_file"]
+    assert visible_tools == ["call_prediction_agent", "document", "write_file"]
+    assert prompt.V4_DIRECTOR_EXECUTION_PROMPT in system_prompt
+    assert prompt.V4_DOCUMENT_READING_PROMPT in system_prompt
+    assert "call_prediction_agent" in prompt.V4_DIRECTOR_EXECUTION_PROMPT
     assert "根据文件大小" in system_prompt
     assert "阅读文档时先读开头" in system_prompt
     assert "必要时再读末尾（开头更重要）" in system_prompt
@@ -96,3 +99,21 @@ def test_non_director_tool_schema_is_not_filtered(monkeypatch):
     )
 
     assert visible_tools == allowed
+
+
+def test_prediction_prompt_includes_document_reading_guidance():
+    system_prompt, _ = prompt.build_tagged_prompt(
+        agent_type="prediction_agent",
+        user_message="predict bridge trend",
+        workspace_id="workspace-1",
+        round_no=1,
+        max_iterations=8,
+        tool_records=[],
+        todos=[],
+        current_todo_index=0,
+        plan_content=None,
+        parent_chain_messages=[],
+        current_conversation_messages=[],
+    )
+    assert prompt.V4_DOCUMENT_READING_PROMPT in system_prompt
+    assert prompt.V4_DIRECTOR_EXECUTION_PROMPT not in system_prompt
