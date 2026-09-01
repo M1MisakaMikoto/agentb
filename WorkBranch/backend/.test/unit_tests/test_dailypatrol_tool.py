@@ -64,3 +64,97 @@ def test_dict_error_response_keeps_working(monkeypatch):
 
     assert result["result"] is None
     assert "业务校验失败" in result["error"]
+
+
+def test_numeric_fields_are_coerced_to_int(monkeypatch):
+    captured = {}
+
+    def fake_send(url, method, body, headers=None, timeout=30):
+        captured["body"] = body
+        return {"success": True, "data": {"id": 123}}
+
+    monkeypatch.setattr(dailypatrol_tool, "_send_http_request", fake_send)
+    args = dict(VALID_ARGS)
+    args.update({
+        "typeid": "2",
+        "nameid": "134",
+        "xcunitid": "169295800118025732",
+        "isdjrw": "0",
+        "isyhby": "1",
+        "dq": "320100",
+        "xcdate": "1746057600000",
+        "status": "1",
+        "source": "2",
+    })
+
+    result = dailypatrol_tool.execute_submit_dailypatrol_record(args)
+    body = captured["body"]
+
+    assert result["error"] is None
+    assert body["typeid"] == 2
+    assert body["nameid"] == 134
+    assert body["xcunitid"] == 169295800118025732
+    assert body["isdjrw"] == 0
+    assert body["isyhby"] == 1
+    assert body["dq"] == 320100
+    assert body["xcdate"] == 1746057600000
+    assert body["status"] == 1
+    assert body["source"] == 2
+
+
+def test_non_numeric_string_passes_through(monkeypatch):
+    captured = {}
+
+    def fake_send(url, method, body, headers=None, timeout=30):
+        captured["body"] = body
+        return {"success": True, "data": {"id": 123}}
+
+    monkeypatch.setattr(dailypatrol_tool, "_send_http_request", fake_send)
+    args = dict(VALID_ARGS)
+    args["dq"] = "江北区"  # ???
+
+    result = dailypatrol_tool.execute_submit_dailypatrol_record(args)
+
+    assert result["error"] is None
+    assert captured["body"]["dq"] == "江北区"
+
+
+def test_bool_values_coerced_to_int(monkeypatch):
+    captured = {}
+
+    def fake_send(url, method, body, headers=None, timeout=30):
+        captured["body"] = body
+        return {"success": True, "data": {"id": 123}}
+
+    monkeypatch.setattr(dailypatrol_tool, "_send_http_request", fake_send)
+    args = dict(VALID_ARGS)
+    args["isdjrw"] = True
+    args["isyhby"] = False
+
+    result = dailypatrol_tool.execute_submit_dailypatrol_record(args)
+
+    assert result["error"] is None
+    assert captured["body"]["isdjrw"] == 1
+    assert captured["body"]["isyhby"] == 0
+
+
+def test_dtolist_numeric_fields_coerced(monkeypatch):
+    captured = {}
+
+    def fake_send(url, method, body, headers=None, timeout=30):
+        captured["body"] = body
+        return {"success": True, "data": {"id": 123}}
+
+    monkeypatch.setattr(dailypatrol_tool, "_send_http_request", fake_send)
+    args = dict(VALID_ARGS)
+    args["dtoList"] = [
+        {"id": "10", "relmainid": "20", "jczbid": "30", "testingitemid": "T1"}
+    ]
+
+    result = dailypatrol_tool.execute_submit_dailypatrol_record(args)
+
+    assert result["error"] is None
+    dto = captured["body"]["dtoList"][0]
+    assert dto["id"] == 10
+    assert dto["relmainid"] == 20
+    assert dto["jczbid"] == 30

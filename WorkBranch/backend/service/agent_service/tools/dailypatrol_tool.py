@@ -50,6 +50,29 @@ DEFAULT_TIMEOUT = 30  # 超时时间（秒）
 # Agent 认证密钥
 AGENT_SECRET_KEY = "daily-patrol-agent"
 
+# 接口文档中声明为数值型的字段（按文档对齐为数字；无法转换的纯字符串降级保留原值）
+_NUMERIC_FIELDS = (
+    "userId", "xcdate", "typeid", "nameid", "xcunitid", "isyhby",
+    "status", "dq", "isdjrw", "source", "dzdtisvalid", "reveal",
+    "videoModel", "xcbegintime", "xcendtime", "checktodate",
+)
+_NUMERIC_DETAIL_FIELDS = ("id", "relmainid", "jczbid")
+
+
+def _coerce_numeric(value):
+    """按接口文档将数值型字段转为 int；无法转换的纯字符串降级保留原值。"""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        try:
+            return int(stripped)
+        except ValueError:
+            return value
+    return value
+
 
 def _send_http_request(
     url: str,
@@ -211,6 +234,16 @@ def execute_submit_dailypatrol_record(
             processed_dto_list.append(processed_dto)
 
         request_body["dtoList"] = processed_dto_list
+
+    # 按接口文档对齐数值型字段类型（无法转换的纯字符串降级保留原值）
+    for field in _NUMERIC_FIELDS:
+        if field in request_body and request_body[field] is not None:
+            request_body[field] = _coerce_numeric(request_body[field])
+
+    for dto in request_body.get("dtoList", []):
+        for field in _NUMERIC_DETAIL_FIELDS:
+            if field in dto and dto[field] is not None:
+                dto[field] = _coerce_numeric(dto[field])
 
     # ========== 获取 API 地址（settings_service配置 > 硬编码默认值）==========
     api_url = DEFAULT_API_URL
