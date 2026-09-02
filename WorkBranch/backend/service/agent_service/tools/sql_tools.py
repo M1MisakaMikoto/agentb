@@ -88,6 +88,21 @@ class SQLToolsConfig:
 
     def get_config(self, database: str = None) -> tuple[str, DatabaseConfig]:
         """获取数据库配置"""
+        # 兼容模型/旧调用方把“默认库”写成字面量 default 的情况。
+        # 只有在没有名为 default 的显式配置时才回退，避免影响真正存在的 default 配置。
+        if isinstance(database, str):
+            database = database.strip()
+            if not database:
+                database = None
+
+        if database and database.casefold() == "default" and database not in self._configs:
+            if self._default_database in self._configs:
+                logger.info(
+                    "[SQL配置] 调用参数 database=default，已使用配置的默认数据库: %s",
+                    self._default_database,
+                )
+                return self._default_database, self._configs[self._default_database]
+
         if database:
             if database in self._configs:
                 return database, self._configs[database]
@@ -120,8 +135,20 @@ DANGEROUS_KEYWORDS = [
 ]
 
 SELECT_PATTERN = re.compile(r"^\s*SELECT\s", re.IGNORECASE)
+SELECT_TOP_PATTERN = re.compile(r"\bSELECT\s+TOP\s*\(?\s*(\d+)\s*\)?\s+", re.IGNORECASE)
 SHOW_DATABASES_PATTERN = re.compile(r"^\s*SHOW\s+DATABASES\s*$", re.IGNORECASE)
-SHOW_TABLES_PATTERN = re.compile(r"^\s*SHOW\s+TABLES(\s+FROM\s+\S+)?\s*$", re.IGNORECASE)
+SHOW_TABLES_PATTERN = re.compile(
+    r"^\s*SHOW\s+(?:FULL\s+)?TABLES"
+    r"(?:\s+(?:FROM|IN)\s+`?[A-Za-z_][A-Za-z0-9_]*`?)?"
+    r"(?:\s+LIKE\s+(?:'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"))?\s*;?\s*$",
+    re.IGNORECASE,
+)
+SHOW_TABLES_QUERY_PATTERN = re.compile(
+    r"^\s*SHOW\s+(?:FULL\s+)?TABLES"
+    r"(?:\s+(?:FROM|IN)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?)?"
+    r"(?:\s+LIKE\s+(?:'((?:''|[^'])*)'|\"((?:\"\"|[^\"])*)\"))?\s*;?\s*$",
+    re.IGNORECASE,
+)
 DESCRIBE_PATTERN = re.compile(r"^\s*(DESCRIBE|DESC)\s+\S+\s*$", re.IGNORECASE)
 SHOW_CREATE_TABLE_PATTERN = re.compile(r"^\s*SHOW\s+CREATE\s+TABLE\s+\S+\s*$", re.IGNORECASE)
 SAFE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -486,6 +513,165 @@ def validate_sql(query: str, mode: QueryMode = "query") -> tuple[bool, str]:
             return False, f"SQL语句包含危险关键字: {keyword}"
 
     return True, ""
+
+
+def _iter_sql_chars(sql: str, start: int = 0):
+    """Yield SQL characters while tracking quotes so rewrites avoid string literals."""
+    quote: str | None = None
+    i = start
+    while i < len(sql):
+        ch = sql[i]
+        if quote:
+            yield i, ch, quote
+            if ch == "\\" and i + 1 < len(sql):
+                i += 2
+                continue
+            if ch == quote:
+                if quote == "'" and i + 1 < len(sql) and sql[i + 1] == "'":
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+
+        if ch in {"'", '"', "`"}:
+            quote = ch
+            yield i, ch, quote
+            i += 1
+            continue
+
+        yield i, ch, None
+        i += 1
+
+
+def _sql_nesting_depth(sql: str, end: int) -> int:
+    depth = 0
+    for _, ch, quote in _iter_sql_chars(sql[:end]):
+        if quote:
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")" and depth > 0:
+            depth -= 1
+    return depth
+
+
+def _find_select_scope_end(sql: str, start: int, depth: int) -> int:
+    current_depth = depth
+    for idx, ch, quote in _iter_sql_chars(sql, start):
+        if quote:
+            continue
+        if ch == "(":
+            current_depth += 1
+        elif ch == ")":
+            if current_depth == depth:
+                return idx
+            current_depth -= 1
+        elif ch == ";" and current_depth == depth:
+            return idx
+    return len(sql)
+
+
+def _has_limit_in_scope(sql: str, start: int, end: int, depth: int) -> bool:
+    current_depth = depth
+    token = []
+    for idx, ch, quote in _iter_sql_chars(sql, start):
+        if idx >= end:
+            break
+        if quote:
+            continue
+        if ch == "(":
+            current_depth += 1
+        elif ch == ")":
+            current_depth -= 1
+
+        if current_depth == depth and (ch.isalnum() or ch == "_"):
+            token.append(ch)
+            continue
+
+        if token:
+            if "".join(token).upper() == "LIMIT":
+                return True
+            token = []
+
+    return bool(token and "".join(token).upper() == "LIMIT")
+
+
+def _is_inside_sql_quote(sql: str, index: int) -> bool:
+    quote: str | None = None
+    i = 0
+    while i < index:
+        ch = sql[i]
+        if quote:
+            if ch == "\\" and i + 1 < index:
+                i += 2
+                continue
+            if ch == quote:
+                if quote == "'" and i + 1 < index and sql[i + 1] == "'":
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+
+        if ch in {"'", '"', "`"}:
+            quote = ch
+        i += 1
+    return quote is not None
+
+
+def _find_select_top_match(sql: str, start: int = 0) -> re.Match[str] | None:
+    for match in SELECT_TOP_PATTERN.finditer(sql, start):
+        if not _is_inside_sql_quote(sql, match.start()):
+            return match
+    return None
+
+
+def normalize_mysql_query(query: str) -> str:
+    """Convert common read-only SQL Server TOP syntax to MySQL LIMIT syntax."""
+    normalized = query
+    search_start = 0
+
+    while True:
+        match = _find_select_top_match(normalized, search_start)
+        if not match:
+            return normalized
+
+        depth = _sql_nesting_depth(normalized, match.start())
+        row_limit = match.group(1)
+        replacement = "SELECT "
+        normalized = normalized[: match.start()] + replacement + normalized[match.end() :]
+
+        scope_start = match.start() + len(replacement)
+        scope_end = _find_select_scope_end(normalized, scope_start, depth)
+        if not _has_limit_in_scope(normalized, scope_start, scope_end, depth):
+            insert_at = scope_end
+            while insert_at > scope_start and normalized[insert_at - 1].isspace():
+                insert_at -= 1
+            normalized = normalized[:insert_at] + f" LIMIT {row_limit}" + normalized[insert_at:]
+            search_start = insert_at + len(f" LIMIT {row_limit}")
+        else:
+            search_start = scope_start
+
+
+def _parse_show_tables_query(query: str) -> tuple[str | None, str | None] | None:
+    match = SHOW_TABLES_QUERY_PATTERN.match(query or "")
+    if not match:
+        return None
+
+    database = match.group(1)
+    pattern = match.group(2) if match.group(2) is not None else match.group(3)
+    if pattern is not None:
+        pattern = pattern.replace("''", "'").replace('""', '"')
+    return database, pattern
+
+
+def _get_show_tables_pattern(tool_args: dict) -> str | None:
+    for key in ("table_pattern", "pattern", "table_name"):
+        value = tool_args.get(key)
+        if value:
+            return str(value)
+    return None
 
 
 def _parse_limit(limit_value: Any) -> int:
@@ -921,22 +1107,30 @@ async def _execute_show_tables_async(
     database: str,
     db_config: DatabaseConfig,
     timeout: int,
+    table_pattern: str | None = None,
+    limit: int = 100,
 ) -> dict:
     """执行 SHOW TABLES"""
 
     async def operation(cursor: Any) -> dict:
-        await asyncio.wait_for(cursor.execute("SHOW TABLES"), timeout=timeout)
+        if table_pattern:
+            await asyncio.wait_for(cursor.execute("SHOW TABLES LIKE %s", (table_pattern,)), timeout=timeout)
+        else:
+            await asyncio.wait_for(cursor.execute("SHOW TABLES"), timeout=timeout)
         rows = await asyncio.wait_for(cursor.fetchall(), timeout=timeout)
 
         if not rows:
-            return {"result": f"数据库 [{database}] 中未找到任何表。", "error": None}
+            pattern_note = f"（LIKE {table_pattern}）" if table_pattern else ""
+            return {"result": f"数据库 [{database}] 中未找到任何表{pattern_note}。", "error": None}
 
-        result_lines = [f"数据库 [{database}] 表列表：", "-" * 40]
+        rows = rows[:limit]
+        pattern_note = f"，过滤: LIKE {table_pattern}" if table_pattern else ""
+        result_lines = [f"数据库 [{database}] 表列表{pattern_note}：", "-" * 40]
         for i, row in enumerate(rows, 1):
             result_lines.append(f"{i}. {_extract_first_value(row)}")
 
         result_lines.append("")
-        result_lines.append(f"--- 共 {len(rows)} 个表 ---")
+        result_lines.append(f"--- 返回 {len(rows)} 个表 ---")
         return {"result": "\n".join(result_lines), "error": None}
 
     return await _execute_with_connection(db_config, timeout, operation, database=database)
@@ -1029,12 +1223,22 @@ async def execute_sql_query_async(
     config_manager = SQLToolsConfig()
     tool_args = tool_args or {}
 
+    show_tables_from_query = _parse_show_tables_query(query) if query else None
+    if mode == "query" and show_tables_from_query:
+        mode = "show_tables"
+        query_database, table_pattern = show_tables_from_query
+        if query_database:
+            database = query_database
+        if table_pattern:
+            tool_args = {**tool_args, "table_pattern": table_pattern}
+
     try:
         db_name, db_config = config_manager.get_config(database)
     except KeyError as e:
         return {"result": None, "error": str(e)}
 
     if mode == "query":
+        query = normalize_mysql_query(query)
         is_valid, error_msg = validate_sql(query, mode)
         if not is_valid:
             return {"result": None, "error": error_msg}
@@ -1053,7 +1257,8 @@ async def execute_sql_query_async(
         return await _execute_show_databases_async(db_config, timeout)
 
     if mode == "show_tables":
-        return await _execute_show_tables_async(db_name, db_config, timeout)
+        table_pattern = _get_show_tables_pattern(tool_args)
+        return await _execute_show_tables_async(db_name, db_config, timeout, table_pattern, limit)
 
     if mode == "describe":
         if not table:
@@ -1150,8 +1355,19 @@ def execute_sql_query(
     if mode not in MODE_SET:
         return {"result": None, "error": f"无效的 mode 参数: {mode}，有效值: {', '.join(sorted(MODE_SET))}"}
 
+    show_tables_from_query = _parse_show_tables_query(query) if query else None
+    if mode == "query" and show_tables_from_query:
+        mode = "show_tables"
+        query_database, table_pattern = show_tables_from_query
+        if query_database:
+            database = query_database
+        if table_pattern:
+            tool_args = {**tool_args, "table_pattern": table_pattern}
+
     if mode == "query" and not query:
         return {"result": None, "error": "query模式需要 query 参数"}
+    if mode == "query":
+        query = normalize_mysql_query(query)
 
     # ==================== 权限校验 ====================
     perm_result: Optional[PermissionResult] = None
@@ -1206,8 +1422,8 @@ def register_sql_tools() -> None:
     ToolRegistry.register(
         ToolDefinition(
             name="sql_query",
-            description="执行只读 SQL 查询或结构探查；支持 query(SELECT)、show_databases、show_tables、describe、show_create，以及面向桥梁设施表（t_Bridge/t_Footbridge）索引查询的 facility_trend/ facility_report",
-            params='sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create|facility_trend|facility_report，必填)","query":"(query 模式必填；不同设施表的字段映射: 桥梁表t_Bridge/mc=名称, id=ID；道路表t_Road/mc=名称；人行桥表t_Footbridge/mc=名称)","database":"(数据库名称，可选)","table":"(describe/show_create 模式必填；query/facility_* 模式可用于指定设施表)","table_name":"(facility_* 模式可选，指定设施表名如 t_Bridge、t_Road、t_Footbridge；不指定则自动发现)","start_time":"(facility_* 可选，例 2026-05-01 00:00:00)","end_time":"(facility_* 可选，建议与start_time一起传)","device_type_name":"(facility_* 可选，设施类型如桥梁/道路/人行桥，用于自动表发现)","device_id":"(facility_* 可选，等值过滤)","content_keyword":"(facility_* 可选，LIKE过滤)","group_by":"(facility_trend 可选: hour|day|device_type|device)","limit":"(query/facility_* 生效，最大1000)"}',
+            description="执行只读 MySQL 查询或结构探查；query 模式请使用 MySQL 语法（限制行数用 LIMIT，不用 TOP）；支持 query(SELECT)、show_databases、show_tables、describe、show_create，以及面向桥梁设施表（t_Bridge/t_Footbridge）索引查询的 facility_trend/ facility_report",
+            params='sql_query:{"mode":"(query|show_databases|show_tables|describe|show_create|facility_trend|facility_report，必填)","query":"(query 模式必填；使用 MySQL SELECT 语法，限制行数用 LIMIT，不用 TOP；查表名请用 mode=show_tables 和 table_pattern，不要把 SHOW TABLES 放在 query；不同设施表的字段映射: 桥梁表t_Bridge/mc=名称, id=ID；道路表t_Road/mc=名称；人行桥表t_Footbridge/mc=名称)","database":"(数据库名称，可选)","table":"(describe/show_create 模式必填；query/facility_* 模式可用于指定设施表)","table_pattern":"(show_tables 模式可选，表名 LIKE 过滤，如 %User%)","table_name":"(facility_* 模式可选，指定设施表名如 t_Bridge、t_Road、t_Footbridge；不指定则自动发现)","start_time":"(facility_* 可选，例 2026-05-01 00:00:00)","end_time":"(facility_* 可选，建议与start_time一起传)","device_type_name":"(facility_* 可选，设施类型如桥梁/道路/人行桥，用于自动表发现)","device_id":"(facility_* 可选，等值过滤)","content_keyword":"(facility_* 可选，LIKE过滤)","group_by":"(facility_trend 可选: hour|day|device_type|device)","limit":"(query/show_tables/facility_* 生效，最大1000)"}',
             category="sql",
             executor=execute_sql_query,
         )
