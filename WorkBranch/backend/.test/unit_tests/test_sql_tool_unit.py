@@ -14,6 +14,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BACKEND_DIR))
 
 import unittest
+from unittest.mock import AsyncMock, patch
 from service.agent_service.tools.sql_tools import (
     validate_sql,
     _validate_identifier,
@@ -22,9 +23,12 @@ from service.agent_service.tools.sql_tools import (
     _build_region_filter,
     _escape_like,
     _safe_value,
+    _discover_facility_table,
     SQLToolsConfig,
     PermissionResult,
+    DatabaseConfig,
     DANGEROUS_KEYWORDS,
+    FACILITY_REPORT_REQUIRED_COLUMNS,
 )
 
 
@@ -220,6 +224,37 @@ class TestSafeValue(unittest.TestCase):
         result = _safe_value(data, max_length=100)
         self.assertIn("key", result)
         self.assertIn("value", result)
+
+
+class TestFacilityTableDiscovery(unittest.IsolatedAsyncioTestCase):
+    """facility_report/trend 表自动发现回归测试"""
+
+    async def test_discovery_accepts_dict_result_from_connection_wrapper(self):
+        async def fake_execute_with_connection(db_config, timeout, operation, database=None):
+            return {"result": "t_facility_report", "error": None}
+
+        with patch(
+            "service.agent_service.tools.sql_tools._execute_with_connection",
+            new=AsyncMock(side_effect=fake_execute_with_connection),
+        ):
+            table = await _discover_facility_table(
+                "BTManager",
+                DatabaseConfig(),
+                30,
+                "桥梁",
+                required_columns=FACILITY_REPORT_REQUIRED_COLUMNS,
+            )
+
+        self.assertEqual(table, "t_facility_report")
+
+    async def test_discovery_keeps_legacy_string_result_compatible(self):
+        with patch(
+            "service.agent_service.tools.sql_tools._execute_with_connection",
+            new=AsyncMock(return_value="t_Bridge"),
+        ):
+            table = await _discover_facility_table("BTManager", DatabaseConfig(), 30, "桥梁")
+
+        self.assertEqual(table, "t_Bridge")
 
 
 class TestConfigSingleton(unittest.TestCase):

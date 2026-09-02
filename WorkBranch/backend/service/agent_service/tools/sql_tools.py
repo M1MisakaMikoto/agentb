@@ -18,6 +18,8 @@ MODE_SET = {"query", "show_databases", "show_tables", "describe", "show_create",
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
 GROUP_BY_SET = {"hour", "day", "device_type", "device"}
+FACILITY_TREND_REQUIRED_COLUMNS = {"add_time", "device_type_name", "device_id"}
+FACILITY_REPORT_REQUIRED_COLUMNS = FACILITY_TREND_REQUIRED_COLUMNS | {"content"}
 
 
 # 设施类型与表名的模糊匹配规则（用于动态表发现）
@@ -619,6 +621,34 @@ async def _execute_with_connection(
             conn.close()
 
 
+async def _validate_facility_table_columns_async(
+    table: str,
+    db_config: DatabaseConfig,
+    database: str,
+    timeout: int,
+    required_columns: set[str],
+    mode: str,
+) -> dict:
+    """Validate that a facility report/trend table exposes the columns used by the mode."""
+
+    async def operation(cursor: Any) -> dict:
+        await asyncio.wait_for(cursor.execute(f"SHOW COLUMNS FROM `{table}`"), timeout=timeout)
+        rows = await asyncio.wait_for(cursor.fetchall(), timeout=timeout)
+        fields = {str(row.get("Field", "")).lower() for row in rows}
+        missing = sorted(col for col in required_columns if col.lower() not in fields)
+        if missing:
+            return {
+                "result": None,
+                "error": (
+                    f"表 [{table}] 不支持 {mode} 模式，缺少字段: {', '.join(missing)}。"
+                    "如需查询桥梁设施清单，请使用 query 模式查询 t_Bridge 的 mc/id/adminAreaName 字段。"
+                ),
+            }
+        return {"result": "ok", "error": None}
+
+    return await _execute_with_connection(db_config, timeout, operation, database=database)
+
+
 async def _execute_query_async(
     query: str,
     database: str,
@@ -763,40 +793,79 @@ async def _discover_facility_table(
     timeout: int,
     device_type_name: str = "",
     facility_keyword: str = "",
+    required_columns: Optional[set[str]] = None,
 ) -> str:
     """
     动态发现设施相关的表名。
 
     策略：
     1. 根据设备类型名称（如"桥梁"、"道路"）匹配表名
-    2. 查询数据库表结构，查找包含 facility_name 或 mc 字段的表
-    3. 返回最佳匹配的表名
+    2. 查询数据库表结构，优先选择包含 required_columns 的表
+    3. 未指定 required_columns 时，兼容旧逻辑查找包含 mc 字段的设施主表
+    4. 返回最佳匹配的表名
     """
 
-    async def operation(cursor: Any) -> str:
+    async def operation(cursor: Any) -> dict:
         # 获取所有表名
         await asyncio.wait_for(cursor.execute("SHOW TABLES"), timeout=timeout)
         rows = await asyncio.wait_for(cursor.fetchall(), timeout=timeout)
 
         if not rows:
-            return ""
+            return {"result": "", "error": None}
 
         all_tables = [(_extract_first_value(row), _extract_first_value(row).lower()) for row in rows]
+        required = {col.lower() for col in (required_columns or set())}
+
+        async def table_has_required_columns(table_name: str) -> bool:
+            if not required:
+                return True
+            await asyncio.wait_for(cursor.execute(f"SHOW COLUMNS FROM `{table_name}`"), timeout=timeout)
+            column_rows = await asyncio.wait_for(cursor.fetchall(), timeout=timeout)
+            fields = {str(row.get("Field", "")).lower() for row in column_rows}
+            return required.issubset(fields)
+
+        async def first_matching_table(candidates: list[str]) -> str:
+            seen: set[str] = set()
+            for table_name in candidates:
+                if table_name in seen:
+                    continue
+                seen.add(table_name)
+                try:
+                    if await table_has_required_columns(table_name):
+                        return table_name
+                except Exception:
+                    continue
+            return ""
 
         # 策略1：根据设施类型名称匹配表名（最精确）
         if device_type_name:
             patterns = FACILITY_TABLE_PATTERNS.get(device_type_name.lower(), [])
-            for pattern in patterns:
-                for original_name, lower_name in all_tables:
-                    if pattern in lower_name:
-                        return original_name
+            candidates = [
+                original_name
+                for pattern in patterns
+                for original_name, lower_name in all_tables
+                if pattern in lower_name
+            ]
+            matched = await first_matching_table(candidates)
+            if matched:
+                return {"result": matched, "error": None}
 
         # 策略2：查找名称中包含设施关键词的表
         facility_keywords = ["bridge", "road", "tunnel", "footbridge", "facility"]
-        for original_name, lower_name in all_tables:
-            for keyword in facility_keywords:
-                if keyword in lower_name:
-                    return original_name
+        candidates = [
+            original_name
+            for original_name, lower_name in all_tables
+            for keyword in facility_keywords
+            if keyword in lower_name
+        ]
+        matched = await first_matching_table(candidates)
+        if matched:
+            return {"result": matched, "error": None}
+
+        # facility_report/trend 需要固定字段；若表名不含设施关键词，仍尝试按字段发现。
+        if required:
+            matched = await first_matching_table([original_name for original_name, _ in all_tables])
+            return {"result": matched, "error": None}
 
         # 策略3：在设施相关表中查找包含 mc 字段的表
         # 先筛选出可能的设施表（以 t_ 开头且名称长度合理）
@@ -814,14 +883,16 @@ async def _discover_facility_table(
                 )
                 columns = await asyncio.wait_for(cursor.fetchall(), timeout=timeout)
                 if columns:
-                    return table_name
+                    return {"result": table_name, "error": None}
             except Exception:
                 # 跳过无法查询的表
                 continue
 
-        return ""
+        return {"result": "", "error": None}
 
     result = await _execute_with_connection(db_config, timeout, operation, database=db_name)
+    if not isinstance(result, dict):
+        return str(result or "")
     return result.get("result", "") if result.get("error") is None else ""
 
 
@@ -1001,6 +1072,11 @@ async def execute_sql_query_async(
         return await _execute_show_create_async(table, db_name, db_config, timeout)
 
     if mode in {"facility_trend", "facility_report"}:
+        required_columns = (
+            FACILITY_REPORT_REQUIRED_COLUMNS
+            if mode == "facility_report"
+            else FACILITY_TREND_REQUIRED_COLUMNS
+        )
         table_name = table  # 兼容现有 table 入参优先
         if not table_name:
             # 从 table_name 参数获取
@@ -1011,17 +1087,30 @@ async def execute_sql_query_async(
             device_type_name = tool_args.get("device_type_name", "")
             content_keyword = tool_args.get("content_keyword", "")
             table_name = await _discover_facility_table(
-                db_name, db_config, timeout, device_type_name, content_keyword
+                db_name,
+                db_config,
+                timeout,
+                device_type_name,
+                content_keyword,
+                required_columns=required_columns,
             )
             if not table_name:
                 return {
                     "result": None,
-                    "error": "无法自动发现设施表；请通过 table/table_name 参数指定表名（如 t_Bridge、t_Road、t_Footbridge），或通过 device_type_name 参数指定设施类型（如 桥梁、道路、人行桥）"
+                    "error": (
+                        "无法自动发现报告/趋势表；请通过 table/table_name 参数指定包含 "
+                        f"{'、'.join(sorted(required_columns))} 字段的表名"
+                    )
                 }
 
         is_valid, error_msg = _validate_identifier(table_name, "table_name")
         if not is_valid:
             return {"result": None, "error": error_msg}
+        column_check = await _validate_facility_table_columns_async(
+            table_name, db_config, db_name, timeout, required_columns, mode
+        )
+        if column_check.get("error"):
+            return column_check
         if mode == "facility_trend":
             return await _execute_facility_trend_async(table_name, db_config, db_name, timeout, tool_args, perm_result)
         return await _execute_facility_report_async(table_name, db_config, db_name, timeout, tool_args, perm_result)
