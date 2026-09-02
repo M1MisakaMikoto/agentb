@@ -49,7 +49,14 @@ V4_DOCUMENT_READING_PROMPT = """## 文档读取规则
 
 
 V4_DIRECTOR_EXECUTION_PROMPT = """## Director 执行规则
-1. 禁止调用 thinking 及除 call_prediction_agent 外的 call_*_agent 子代理工具；桥梁预测/BCI/趋势分析任务应委托 call_prediction_agent，其余任务直接使用业务工具完成。"""
+1. 禁止调用 thinking 及除 call_prediction_agent 外的 call_*_agent 子代理工具；桥梁预测/BCI/趋势分析任务应委托 call_prediction_agent，其余任务直接使用业务工具完成。
+
+## 数据库地区字段规则
+1. 多数业务表（如 t_Bridge、t_Road、t_Footbridge 等）中的 dq 字段存储的是地区编码（对应 TB_Market.Id），不是地区名称；部分表该字段名为 region_id，值同样对应 TB_Market.Id。
+2. 用户按地区名称查询或统计（如“大渡口区”）时，必须先通过 TB_Market 把地区名称解析为地区编码，例如：
+   SELECT Id, AdminAreaName FROM TB_Market WHERE AdminAreaName LIKE '%大渡口%'
+   确认返回的 AdminAreaName 与用户表述的地区一致后，再使用 Id（地区编码）作为过滤条件，如 WHERE dq = '<Id>'。
+3. 禁止直接用地区名称与 dq/region_id 字段做等值匹配（如 dq = '大渡口区'），否则会得到数量为 0 等错误结果。"""
 
 
 _CURRENT_TASK_DEFAULT = (

@@ -88,6 +88,21 @@ class SQLToolsConfig:
 
     def get_config(self, database: str = None) -> tuple[str, DatabaseConfig]:
         """获取数据库配置"""
+        # 兼容模型/旧调用方把“默认库”写成字面量 default 的情况。
+        # 只有在没有名为 default 的显式配置时才回退，避免影响真正存在的 default 配置。
+        if isinstance(database, str):
+            database = database.strip()
+            if not database:
+                database = None
+
+        if database and database.casefold() == "default" and database not in self._configs:
+            if self._default_database in self._configs:
+                logger.info(
+                    "[SQL配置] 调用参数 database=default，已使用配置的默认数据库: %s",
+                    self._default_database,
+                )
+                return self._default_database, self._configs[self._default_database]
+
         if database:
             if database in self._configs:
                 return database, self._configs[database]

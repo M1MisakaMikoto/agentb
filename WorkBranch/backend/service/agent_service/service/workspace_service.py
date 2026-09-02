@@ -84,17 +84,24 @@ class WorkspaceService:
     def get_workspace_dir(self, workspace_id: str) -> Optional[str]:
         """
         获取工作区目录路径
-        
+
         Args:
             workspace_id: 工作区ID
-            
+
         Returns:
             工作区目录的绝对路径，不存在返回 None
         """
         info = self._workspaces.get(workspace_id)
-        if not info:
-            return None
-        return self.get_workspace_path(info["session_id"], workspace_id)
+        if info:
+            return self.get_workspace_path(info["session_id"], workspace_id)
+
+        # 内存中找不到时，从磁盘搜索
+        import glob as _glob
+        pattern = os.path.join(self._base_dir, "*", workspace_id)
+        matches = _glob.glob(pattern)
+        if matches:
+            return matches[0]
+        return None
 
     def exists(self, workspace_id: str) -> bool:
         """检查工作区是否已注册"""

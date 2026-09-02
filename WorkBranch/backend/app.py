@@ -50,6 +50,29 @@ async def lifespan(app: FastAPI):
     await db.init_tables()
     await get_runtime_state().start()
 
+    # 启动时自动注册已存在的workspace目录
+    try:
+        from singleton import get_workspace_service
+        ws_service = get_workspace_service()
+        import os, glob as _glob
+        base = ws_service.base_dir
+        if os.path.isdir(base):
+            for session_dir in os.listdir(base):
+                session_path = os.path.join(base, session_dir)
+                if os.path.isdir(session_path):
+                    for ws_dir in os.listdir(session_path):
+                        ws_path = os.path.join(session_path, ws_dir)
+                        if os.path.isdir(ws_path) and ws_dir not in ws_service._workspaces:
+                            ws_service._workspaces[ws_dir] = {
+                                "id": ws_dir,
+                                "session_id": session_dir,
+                                "status": "active",
+                                "created_at": None,
+                            }
+                            print(f"[Workspace] auto-registered: {ws_dir} (session={session_dir})")
+    except Exception as e:
+        print(f"[Workspace] auto-registration failed: {e}")
+
     runtime = get_logging_runtime()
     app_logger = runtime.get_logger("app")
     runtime.start()

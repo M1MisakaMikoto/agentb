@@ -50,6 +50,29 @@ DEFAULT_TIMEOUT = 30  # 超时时间（秒）
 # Agent 认证密钥
 AGENT_SECRET_KEY = "daily-patrol-agent"
 
+# 接口文档中声明为数值型的字段（按文档对齐为数字；无法转换的纯字符串降级保留原值）
+_NUMERIC_FIELDS = (
+    "userId", "xcdate", "typeid", "nameid", "xcunitid", "isyhby",
+    "status", "dq", "isdjrw", "source", "dzdtisvalid", "reveal",
+    "videoModel", "xcbegintime", "xcendtime", "checktodate",
+)
+_NUMERIC_DETAIL_FIELDS = ("id", "relmainid", "jczbid")
+
+
+def _coerce_numeric(value):
+    """按接口文档将数值型字段转为 int；无法转换的纯字符串降级保留原值。"""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        try:
+            return int(stripped)
+        except ValueError:
+            return value
+    return value
+
 
 def _send_http_request(
     url: str,
@@ -212,6 +235,16 @@ def execute_submit_dailypatrol_record(
 
         request_body["dtoList"] = processed_dto_list
 
+    # 按接口文档对齐数值型字段类型（无法转换的纯字符串降级保留原值）
+    for field in _NUMERIC_FIELDS:
+        if field in request_body and request_body[field] is not None:
+            request_body[field] = _coerce_numeric(request_body[field])
+
+    for dto in request_body.get("dtoList", []):
+        for field in _NUMERIC_DETAIL_FIELDS:
+            if field in dto and dto[field] is not None:
+                dto[field] = _coerce_numeric(dto[field])
+
     # ========== 获取 API 地址（settings_service配置 > 硬编码默认值）==========
     api_url = DEFAULT_API_URL
     config_source = "硬编码默认值"
@@ -242,6 +275,15 @@ def execute_submit_dailypatrol_record(
     logger.info(f"[日常巡查记录] POST {full_url}")
 
     response = _send_http_request(full_url, "POST", request_body, headers=request_headers)
+
+    if not isinstance(response, dict):
+        raw = str(response)
+        error_msg = (
+            f"接口返回格式异常：期望 JSON 对象，实际为 {type(response).__name__}"
+            f"；响应内容: {raw[:200]}"
+        )
+        logger.error(f"[日常巡查记录] 提交失败: {error_msg}")
+        return {"result": None, "error": f"提交日常巡查记录失败: {error_msg}"}
 
     # 兼容 cowservice 裸 ID 返回 {"id":123}（无 success/data 包装）
     response_ok = response.get("success") is True or (
