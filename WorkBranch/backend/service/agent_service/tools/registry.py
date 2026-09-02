@@ -189,13 +189,13 @@ ALL_TOOLS = {
     "submit_ai_judgment_issue": {
         "name": "submit_ai_judgment_issue",
         "description": "提交 AI 研判问题 - 将设施问题提交到 AI 研判系统，等待 AI 分析并返回研判结果",
-        "params": 'submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","regionId":"(区域ID，必填，从元数据中获取)"}'
+        "params": 'submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","regionId":"(区域ID，必填)"}'
     },
     # --- 设施研判报告工具 ---
     "submit_facility_report": {
         "name": "submit_facility_report",
         "description": "生成设施研判报告 - 将检测报告(DOCX)上传后自动生成研判报告。注意：若尚无DOCX文件，先用 document w 工具生成DOCX（file_path 必须用 .docx 结尾，传入Markdown内容即可自动转换为DOCX），再传 reportFile 给本工具。",
-        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告DOCX文件本地路径，必填)","regionId":"(区域ID，必填，从元数据中获取)"}'
+        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告DOCX文件本地路径，必填)","regionId":"(区域ID，必填)"}'
     },
     "submit_facility_forecast": {
         "name": "submit_facility_forecast",

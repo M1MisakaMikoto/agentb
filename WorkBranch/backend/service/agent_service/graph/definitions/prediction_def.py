@@ -45,6 +45,7 @@ class PredictionDefinition(AgentDefinition):
                     "document",
                     "list_workspace_files",
                     "get_workspace_info",
+                    "sql_query",
                     "search_files",
                     "analyze_image",
                     "read_file",
