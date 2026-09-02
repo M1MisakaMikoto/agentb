@@ -16,6 +16,10 @@ PUBLIC_PATHS = {
     "/openapi.json",
     "/frontend",
 }
+# 文件下载端点不需要认证（匹配 /workspaces/{id}/files/{filename}）
+PUBLIC_PATH_PREFIXES = {
+    "/workspaces/",
+}
 RAG_UI_PUBLIC_PATHS = {
     "/rag",
     "/rag/",
@@ -57,6 +61,7 @@ class AuthMiddleware:
             or path.startswith("/docs")
             or path.startswith("/openapi")
             or path.startswith("/frontend")
+            or any(path.startswith(prefix) for prefix in PUBLIC_PATH_PREFIXES)
         ):
             await self.app(scope, receive, send)
             return
