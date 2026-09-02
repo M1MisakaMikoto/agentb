@@ -87,6 +87,7 @@ DEFAULT_SETTINGS = {
         "closuring_enabled": True,
         "closure_max_rounds": 8,
         "ask_user_auto_approve": False,
+        "ask_user_question_enabled": True,
         "awaiting_timeout_seconds": 600,
         "tool_timeout_seconds": 1200,
         "special_tool_timeout_seconds": 1200,

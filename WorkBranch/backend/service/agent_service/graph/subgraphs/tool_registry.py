@@ -41,6 +41,19 @@ SPECIAL_TOOLS = {
 }
 
 
+def ask_user_question_enabled(settings_service=None) -> bool:
+    """ask_user_question（中断式询问）是否启用。默认启用。
+
+    关闭后工具不会出现在协议中，模型只能通过 type=text 输出问题或阻塞说明。
+    """
+    if settings_service is None:
+        return True
+    try:
+        return bool(settings_service.get("agent:ask_user_question_enabled"))
+    except Exception:
+        return True
+
+
 def _summarize_text(value: Any, limit: int = 160) -> str:
     if value is None:
         raw = ""
@@ -114,7 +127,10 @@ def get_allowed_tools(agent_type: str, settings_service=None, use_settings_overr
             permissions = settings_service.get("tool_permissions")
             if agent_type in permissions:
                 console.info(f"[tool_registry] 使用 settings_service 覆盖 {agent_type} 的工具权限")
-                return permissions[agent_type].get("allowed", [])
+                allowed = permissions[agent_type].get("allowed", [])
+                if not ask_user_question_enabled(settings_service):
+                    allowed = [tool for tool in allowed if tool != "ask_user_question"]
+                return allowed
         except KeyError:
             pass
 
@@ -139,6 +155,8 @@ def get_allowed_tools(agent_type: str, settings_service=None, use_settings_overr
 
     # V4：chat 工具已退役，不暴露给模型（旧版 v2/v3 已弃用，不再保留 chat 终止工具）
     tools = [tool for tool in tools if tool != "chat"]
+    if not ask_user_question_enabled(settings_service):
+        tools = [tool for tool in tools if tool != "ask_user_question"]
     return tools
 
 

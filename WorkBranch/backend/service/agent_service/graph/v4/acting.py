@@ -21,6 +21,7 @@ from typing import Any, Callable, Optional
 from ...state import AgentState
 from core.logging import console
 from singleton import get_workspace_service
+from ..subgraphs.tool_registry import ask_user_question_enabled
 
 
 SUBAGENT_TOOLS = {
@@ -108,6 +109,14 @@ def _execute_single_call(
         }
 
     if tool_name in INTERACTIVE_TOOLS:
+        if not ask_user_question_enabled(settings_service):
+            return {
+                **base_record,
+                "status": "failed",
+                "error": "ask_user_question 已停用（agent.ask_user_question_enabled=false），请改用 type=text 输出问题或阻塞说明",
+                "duration_ms": 0,
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
         if _auto_approve(settings_service):
             return {
                 **base_record,
