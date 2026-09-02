@@ -53,6 +53,11 @@ def test_director_prompt_keeps_prediction_and_guides_document_reading(
     assert prompt.V4_DIRECTOR_EXECUTION_PROMPT in system_prompt
     assert prompt.V4_DOCUMENT_READING_PROMPT in system_prompt
     assert "call_prediction_agent" in prompt.V4_DIRECTOR_EXECUTION_PROMPT
+
+    assert "TB_Market" in prompt.V4_DIRECTOR_EXECUTION_PROMPT
+    assert "dq" in prompt.V4_DIRECTOR_EXECUTION_PROMPT
+    assert "地区编码" in prompt.V4_DIRECTOR_EXECUTION_PROMPT
+    assert "禁止直接用地区名称" in prompt.V4_DIRECTOR_EXECUTION_PROMPT
     assert "根据文件大小" in system_prompt
     assert "阅读文档时先读开头" in system_prompt
     assert "必要时再读末尾（开头更重要）" in system_prompt
