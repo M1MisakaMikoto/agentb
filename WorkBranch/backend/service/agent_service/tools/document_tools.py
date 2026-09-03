@@ -298,6 +298,15 @@ def _pdf_update(file_path: str, target: str, content: Optional[str] = None,
 # DOCX / DOC 操作 (r/w/a/u)
 # ============================================================
 
+def _doc_convert_timeout_seconds(default: int = 300) -> int:
+    """LibreOffice 将 .doc 转为 .docx 的超时秒数，默认 300，可用 agent_tools.doc_convert_timeout_seconds 配置。"""
+    try:
+        value = get_settings_service().get("agent_tools:doc_convert_timeout_seconds")
+        return max(1, int(value or default))
+    except Exception:
+        return default
+
+
 def _convert_doc_to_docx(file_path: str) -> Optional[str]:
     """Convert .doc to .docx using multiple methods with retry logic."""
     max_retries = 3
@@ -346,15 +355,17 @@ def _convert_doc_to_docx(file_path: str) -> Optional[str]:
                 docx2python(file_path, temp_docx)
                 if os.path.exists(temp_docx):
                     return temp_docx
-            except ImportError:
-                pass
+            except Exception as e:
+                # 安装或调用失败都继续走 Method 3（LibreOffice），避免异常跳过转换链
+                print(f"[DOC-CONVERT] docx2python error: {e}", flush=True)
             
             # Method 3: LibreOffice command line
+            convert_timeout = _doc_convert_timeout_seconds()
             try:
                 result = subprocess.run(
                     ["libreoffice", "--headless", "--convert-to", "docx", "--outdir",
                      os.path.dirname(temp_docx), file_path],
-                    capture_output=True, timeout=30
+                    capture_output=True, timeout=convert_timeout
                 )
                 if result.returncode == 0:
                     output_dir = os.path.dirname(temp_docx)
@@ -363,8 +374,12 @@ def _convert_doc_to_docx(file_path: str) -> Optional[str]:
                     if os.path.exists(converted):
                         shutil.move(converted, temp_docx)
                         return temp_docx
+                else:
+                    print(f"[DOC-CONVERT] LibreOffice 转换失败 rc={result.returncode}", flush=True)
             except FileNotFoundError:
                 pass
+            except subprocess.TimeoutExpired:
+                print(f"[DOC-CONVERT] LibreOffice 转换超时（{convert_timeout}s）", flush=True)
             
             break
             

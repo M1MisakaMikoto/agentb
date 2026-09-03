@@ -100,6 +100,7 @@ DEFAULT_SETTINGS = {
         }
     },
     "agent_tools": {
+        "doc_convert_timeout_seconds": 300,
         "facility_report_api_url": "http://localhost:8001",
         "dailypatrol_api_url": "http://localhost:8002",
         "ai_judgment_api_url": "http://localhost:8080"
