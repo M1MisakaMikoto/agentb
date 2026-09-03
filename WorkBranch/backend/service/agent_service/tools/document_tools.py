@@ -361,9 +361,13 @@ def _convert_doc_to_docx(file_path: str) -> Optional[str]:
             
             # Method 3: LibreOffice command line
             convert_timeout = _doc_convert_timeout_seconds()
+            # 独立 user profile，避免并行调用 LibreOffice 互锁
+            profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
             try:
                 result = subprocess.run(
-                    ["libreoffice", "--headless", "--convert-to", "docx", "--outdir",
+                    ["libreoffice", "--headless",
+                     "-env:UserInstallation=file://" + profile_dir.replace("\\", "/"),
+                     "--convert-to", "docx", "--outdir",
                      os.path.dirname(temp_docx), file_path],
                     capture_output=True, timeout=convert_timeout
                 )
@@ -380,6 +384,8 @@ def _convert_doc_to_docx(file_path: str) -> Optional[str]:
                 pass
             except subprocess.TimeoutExpired:
                 print(f"[DOC-CONVERT] LibreOffice 转换超时（{convert_timeout}s）", flush=True)
+            finally:
+                shutil.rmtree(profile_dir, ignore_errors=True)
             
             break
             
@@ -640,15 +646,14 @@ def _docx_read_via_pandoc(
         actual_path = file_path
         cleanup = False
 
-        # 处理 .doc 格式
+        # 处理 .doc 格式：pandoc 不支持 .doc，必须先转为 .docx
         if _get_ext(file_path) == ".doc":
             converted = _convert_doc_to_docx(file_path)
             if not converted:
-                print("[DOCX-READ] ⚠️ .doc 格式转换失败，尝试使用 pandoc 直接读取")
-                # pandoc 可以直接读取 .doc，不需要转换
-            else:
-                actual_path = converted
-                cleanup = True
+                print("[DOCX-READ] ⚠️ .doc 转换失败（pandoc 不支持 .doc），交 python-docx 兜底")
+                return None
+            actual_path = converted
+            cleanup = True
 
         # 使用 pandoc 转换为 Markdown
         cmd = [
