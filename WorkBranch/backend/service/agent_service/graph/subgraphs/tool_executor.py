@@ -442,7 +442,9 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             print(f"[DEBUG-PREDICTION] 🔢 calculate_bci CALLED! Args: {tool_args}")
             from service.agent_service.tools.prediction_tools import calculate_bci
             try:
-                result = calculate_bci(**tool_args)
+                calculate_args = dict(tool_args)
+                calculate_args.setdefault("workspace_id", workspace_id)
+                result = calculate_bci(**calculate_args)
                 tool_result = {"result": result, "error": None}
                 success_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✓ BCI计算成功: {str(result)}\n"
                 with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:

@@ -213,8 +213,8 @@ PREDICTION_AGENT_PROMPT = """你是桥梁技术状况评估与预测专家，基
 
 3. **退化趋势预测**
    - 使用 predict_trend 基于历史 BCI 数据预测未来退化趋势
-   - **推荐使用保守预测(conservative)或集成预测(ensemble)方法**，这些方法考虑了测量误差和不确定性
-   - 支持的方法：linear_regression(线性回归)、conservative(保守预测)、ensemble(集成预测)、degradation_rate(退化速率外推)
+   - 默认调用 predict_trend 的 auto 方法，由代码根据数据量、跳变状态和滚动回测自动选择模型
+   - 支持的方法：auto(自动选择)、anchored_trend(最新值锚定趋势)、linear_regression(线性回归)、polynomial(多项式)、exponential(指数)、conservative(保守预测)、ensemble(集成预测)、degradation_rate(退化速率外推)
    - 分析预测结果，识别潜在风险点
 
 4. **报告生成与汇报**
@@ -250,7 +250,7 @@ PREDICTION_AGENT_PROMPT = """你是桥梁技术状况评估与预测专家，基
 ```
 1. 接收任务 → 理解需求（需要分析哪些报告、预测到哪一年）
 2. 数据收集 → bridge_report_parser 批量解析历史报告
-3. 数据分析 → calculate_bci 计算当前BCI + predict_trend 预测趋势
+3. 数据分析 → calculate_bci 计算当前BCI + predict_trend(method=auto) 预测趋势；如有维修/加固记录，作为 maintenance_events 传入
 4. 生成报告 → document(w) 写入 .docx 报告文件到工作区
 5. 结果汇报 → chat 工具输出**专业分析报告**（必须包含标题、基础信息、整体状况、分部位病害统计表格、建议）
 ```
@@ -259,13 +259,13 @@ PREDICTION_AGENT_PROMPT = """你是桥梁技术状况评估与预测专家，基
 
 | 方法 | 适用场景 | 特点 |
 |------|---------|------|
-| conservative | **推荐首选** | 考虑不确定性，提供95%置信区间下界，适合安全关键预测 |
-| ensemble | 高精度要求 | 多模型集成，根据退化趋势自适应权重 |
+| auto | **默认首选** | 依据数据质量、跳变状态和滚动回测自动选择 |
+| ensemble | 回测通过时使用 | 多模型集成，但不能覆盖最新值基线 |
 | degradation_rate | 退化分析 | 考虑加速/减速趋势 |
 | linear_regression | 数据充足稳定 | 简单线性外推 |
 
 **重要提示**：
-- 优先使用 conservative 或 ensemble 方法进行预测
+- 不要由对话模型自行替换代码返回的 selected_method；报告必须展示 baseline_bci、jump_status、review_required 和 backtest_metrics
 - 桥梁退化受多种因素影响（荷载、环境、维护），存在较大不确定性
 - 保守预测会给出更低的 BCI 估计，确保安全裕度
 

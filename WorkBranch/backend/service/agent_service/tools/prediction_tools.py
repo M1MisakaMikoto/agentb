@@ -12,7 +12,7 @@ import logging
 import math
 import os
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Optional, Tuple
 
 from .registry import ToolDefinition
 
@@ -89,6 +89,7 @@ def calculate_bci(
     target_year: int = 2024,
     standard: str = "CJJ 99-2017",
     previous_results: Optional[Dict] = None,
+    workspace_id: Optional[str] = None,
 ) -> Dict:
     """
     计算桥梁技术状况指数 (BCI - Bridge Condition Index)
@@ -114,49 +115,56 @@ def calculate_bci(
     Returns:
         Dict: 包含各年度BCI、部件评分明细、预测结果等
     """
-    # 【Bug修复】防御性类型转换：确保 target_year 是整数
     if isinstance(target_year, str):
         try:
             target_year = int(target_year)
-        except (ValueError, TypeError):
-            target_year = 2024
+        except (ValueError, TypeError) as exc:
+            return {"success": False, "error": "target_year 必须是整数", "cause": str(exc)}
     elif not isinstance(target_year, int):
-        target_year = 2024
+        return {"success": False, "error": "target_year 必须是整数"}
+
+
+    try:
+        historical_reports = _load_historical_reports(historical_reports, workspace_id)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc), "standard": standard}
 
     parsed_data = _parse_inspection_data(historical_reports)
-    
+    if not parsed_data:
+        reported_history = _parse_reported_bci_data(historical_reports)
+        if reported_history:
+            return _build_reported_bci_result(reported_history, target_year, standard)
+        return {
+            "success": False,
+            "error": "未能从历史报告中提取有效部件评分数据",
+            "standard": standard,
+            "formula": "BCI = 100 - Σ(DPi × Wi)",
+        }
+
     bci_history = []
     for year_data in parsed_data:
         year = year_data.get("year")
         components = year_data.get("components", {})
         
+        missing_components = sorted(set(COMPONENT_WEIGHTS) - set(components))
+        if missing_components:
+            reported_history = _parse_reported_bci_data(historical_reports)
+            if reported_history:
+                return _build_reported_bci_result(reported_history, target_year, standard)
+            return {
+                "success": False,
+                "error": "第{}年缺少部件评分: {}".format(year, ", ".join(missing_components)),
+            }
+
         total_deduction = 0
         component_details = []
-        
+
         for comp_name, weight in COMPONENT_WEIGHTS.items():
-            score = components.get(comp_name, 100)
-            # 确保 weight 和 score 都是数字类型
-            if isinstance(weight, str):
-                try:
-                    weight = float(weight)
-                except (ValueError, TypeError):
-                    weight = 100
-            if isinstance(weight, (int, float)) and isinstance(score, (int, float)):
-                # 正常情况
-                pass
-            else:
-                # 【防御性】处理异常类型
-                logger.warning(f"[calculate_bci] 类型异常 - comp_name={comp_name}, weight={weight}({type(weight)}), score={score}({type(score)})")
-                if isinstance(score, str):
-                    try:
-                        score = float(score)
-                    except (ValueError, TypeError):
-                        score = 100
-                if isinstance(weight, (int, float)):
-                    pass
-                else:
-                    weight = 100
-            score = max(0, min(100, score))  # 约束在 [0, 100]
+            score = components[comp_name]
+            if not isinstance(score, (int, float)) or not math.isfinite(float(score)):
+                return {"success": False, "error": f"第{year}年部件 {comp_name} 评分不是有效数值"}
+            if not 0 <= score <= 100:
+                return {"success": False, "error": f"第{year}年部件 {comp_name} 评分必须在0到100之间"}
             deduction = (100 - score) * (weight / 100)
             total_deduction += deduction
             
@@ -213,43 +221,132 @@ def _determine_grade(bci: float) -> Tuple[str, str]:
 
 
 def _parse_inspection_data(reports: List[str]) -> List[Dict]:
-    """解析历史报告文本，提取部件评分数据
+    """从报告文本提取年份和五大部件评分，不使用演示数据兜底。"""
+    import re
 
-    实际应用中应使用NLP模型解析，这里提供示例数据用于演示。
-    返回格式：[{year: int, components: {name: score}}]
-    """
-    # 空列表也返回默认数据，确保 calculate_bci 总是有数据可用
     if not reports:
-        return [
-            {"year": 2018, "components": {"桥面系": 85, "上部结构": 78, "下部结构": 82, "支座": 88, "基础": 90}},
-            {"year": 2020, "components": {"桥面系": 82, "上部结构": 74, "下部结构": 79, "支座": 85, "基础": 88}},
-            {"year": 2022, "components": {"桥面系": 78, "上部结构": 70, "下部结构": 75, "支座": 82, "基础": 86}},
-        ]
+        return []
 
+    component_patterns = {
+        "桥面系": (r"桥面系[：:]?\s*(?:评分)?[：:]?\s*(\d+(?:\.\d+)?)",),
+        "上部结构": (r"上部结构[：:]?\s*(?:评分)?[：:]?\s*(\d+(?:\.\d+)?)",),
+        "下部结构": (r"下部结构[：:]?\s*(?:评分)?[：:]?\s*(\d+(?:\.\d+)?)",),
+        "支座": (r"支座[：:]?\s*(?:评分)?[：:]?\s*(\d+(?:\.\d+)?)",),
+        "基础": (r"基础[：:]?\s*(?:评分)?[：:]?\s*(\d+(?:\.\d+)?)",),
+    }
     result = []
     for report in reports:
-        if isinstance(report, str):
-            if "2018" in report or "2018" in str(report):
-                result.append({
-                    "year": 2018,
-                    "components": {"桥面系": 85, "上部结构": 78, "下部结构": 82, "支座": 88, "基础": 90},
-                })
-            elif "2020" in report or "2020" in str(report):
-                result.append({
-                    "year": 2020,
-                    "components": {"桥面系": 82, "上部结构": 74, "下部结构": 79, "支座": 85, "基础": 88},
-                })
-            elif "2022" in report or "2022" in str(report):
-                result.append({
-                    "year": 2022,
-                    "components": {"桥面系": 78, "上部结构": 70, "下部结构": 75, "支座": 82, "基础": 86},
-                })
+        text = report if isinstance(report, str) else str(report)
+        year_match = re.search(r"20[12]\d", text)
+        if not year_match:
+            continue
+        components = {}
+        for name, patterns in component_patterns.items():
+            for pattern in patterns:
+                match = re.search(pattern, text)
+                if match:
+                    score = float(match.group(1))
+                    if 0 <= score <= 100:
+                        components[name] = score
+                        break
+        if components:
+            result.append({"year": int(year_match.group()), "components": components})
+    return result
 
-    return result if result else [
-        {"year": 2018, "components": {"桥面系": 85, "上部结构": 78, "下部结构": 82, "支座": 88, "基础": 90}},
-        {"year": 2020, "components": {"桥面系": 82, "上部结构": 74, "下部结构": 79, "支座": 85, "基础": 88}},
-        {"year": 2022, "components": {"桥面系": 78, "上部结构": 70, "下部结构": 75, "支座": 82, "基础": 86}},
-    ]
+
+def _load_historical_reports(reports: List[str], workspace_id: Optional[str] = None) -> List[str]:
+    """读取文本或工作区中的 doc/docx，保留无法解析的文本让上层给出明确错误。"""
+    if not isinstance(reports, list):
+        raise ValueError("historical_reports 必须是列表")
+
+    resolved_reports = []
+    for report in reports:
+        if not isinstance(report, str):
+            resolved_reports.append(report)
+            continue
+        path = report
+        if workspace_id and not os.path.isabs(path):
+            try:
+                from singleton import get_workspace_service
+                workspace_service = get_workspace_service()
+                allowed, resolved = workspace_service.resolve_path(workspace_id, path)
+                if allowed and resolved:
+                    path = resolved
+            except Exception:
+                pass
+        if not os.path.isfile(path):
+            resolved_reports.append(report)
+            continue
+        try:
+            if path.lower().endswith(".docx"):
+                from .document_tools import _docx_read
+                result = _docx_read(path, max_length=80000, include_metadata=True)
+                content = result.get("result", {}).get("content", "")
+            elif path.lower().endswith(".doc"):
+                from .document_tools import _convert_doc_to_docx, _docx_read
+                converted = _convert_doc_to_docx(path)
+                if not converted:
+                    raise ValueError(f"无法转换报告文件: {report}")
+                try:
+                    result = _docx_read(converted, max_length=80000, include_metadata=True)
+                    content = result.get("result", {}).get("content", "")
+                finally:
+                    if os.path.exists(converted):
+                        os.unlink(converted)
+            else:
+                with open(path, "r", encoding="utf-8") as handle:
+                    content = handle.read()
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"无法读取历史报告 {report}: {exc}") from exc
+        if not content:
+            raise ValueError(f"历史报告为空或无法解析: {report}")
+        resolved_reports.append(content)
+    return resolved_reports
+
+
+def _parse_reported_bci_data(reports: List[str]) -> List[Dict]:
+    """提取报告明确给出的整体 BCI，不推导缺失部件评分。"""
+    reported = []
+    for report in reports:
+        if not isinstance(report, str):
+            continue
+        data = _extract_bci_from_text(report)
+        if data and data.get("year") is not None:
+            reported.append({
+                "year": int(data["year"]),
+                "bci": float(data["bci"]),
+                "grade": data.get("grade") or _determine_grade(float(data["bci"]))[0],
+                "grade_description": _determine_grade(float(data["bci"]))[1],
+                "components": [],
+                "source": "reported_bci",
+            })
+    reported.sort(key=lambda item: item["year"])
+    return reported
+
+
+def _build_reported_bci_result(history: List[Dict], target_year: int, standard: str) -> Dict:
+    predicted_bci = _predict_bci_conservative(history, target_year)
+    predicted_grade, predicted_desc = _determine_grade(predicted_bci)
+    return {
+        "success": True,
+        "standard": standard,
+        "standard_name": STANDARD_KNOWLEDGE_BASE.get(standard, {}).get("name", standard),
+        "formula": "报告明确BCI（未进行五大部件加权重算）",
+        "bci_history": history,
+        "predicted": {
+            "year": target_year,
+            "bci": predicted_bci,
+            "grade": predicted_grade,
+            "grade_description": predicted_desc,
+        },
+        "calculation_summary": {
+            "method": "reported_bci",
+            "source": "历史报告明确给出的整体BCI",
+            "component_weights": dict(COMPONENT_WEIGHTS),
+            "data_points": len(history),
+            "prediction_method": "conservative",
+        },
+    }
 
 
 def _predict_bci_linear(history: List[Dict], target_year: int) -> float:
@@ -276,7 +373,7 @@ def _predict_bci_linear(history: List[Dict], target_year: int) -> float:
     a = (n * sum_xy - sum_x * sum_y) / denominator
     b = (sum_y - a * sum_x) / n
     
-    predicted = a * target_year + b
+    predicted = history[-1]["bci"] + a * (target_year - years[-1])
     return round(max(0, min(100, predicted)), 1)
 
 
@@ -318,7 +415,7 @@ def _predict_bci_conservative(history: List[Dict], target_year: int) -> float:
     a = (n * sum_xy - sum_x * sum_y) / denominator
     b = (sum_y - a * sum_x) / n
 
-    baseline = a * target_year + b
+    baseline = bcis[-1] + a * (target_year - years[-1])
 
     # ============================================================
     # 关键修正：检测退化趋势
@@ -375,72 +472,275 @@ def _predict_bci_conservative(history: List[Dict], target_year: int) -> float:
     return round(max(0, min(100, conservative_bci)), 1)
 
 
+FORECAST_METHODS = {
+    "auto",
+    "anchored_trend",
+    "linear_regression",
+    "polynomial",
+    "exponential",
+    "conservative",
+    "ensemble",
+    "degradation_rate",
+}
+
+
+def _normalize_historical_bci(historical_bci: List[Dict]) -> List[Dict]:
+    if not isinstance(historical_bci, list) or not historical_bci:
+        raise ValueError("historical_bci 必须是非空列表")
+
+
+    normalized = []
+    for index, item in enumerate(historical_bci):
+        if not isinstance(item, dict):
+            raise ValueError(f"第{index + 1}条历史数据必须是对象")
+        if "year" not in item or "bci" not in item:
+            raise ValueError(f"第{index + 1}条历史数据缺少 year 或 bci")
+        try:
+            year = int(item["year"])
+            bci = float(item["bci"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"第{index + 1}条历史数据不是有效数值") from exc
+        if not math.isfinite(bci) or not 0 <= bci <= 100:
+            raise ValueError(f"第{index + 1}条 BCI 必须在 0 到 100 之间")
+        record = dict(item)
+        record["year"] = year
+        record["bci"] = bci
+        normalized.append(record)
+
+    normalized.sort(key=lambda item: item["year"])
+    deduplicated = []
+    for record in normalized:
+        if deduplicated and record["year"] == deduplicated[-1]["year"]:
+            if abs(record["bci"] - deduplicated[-1]["bci"]) > 1e-9:
+                raise ValueError(f"年份 {record['year']} 存在冲突的 BCI 数据")
+            continue
+        deduplicated.append(record)
+    return deduplicated
+
+
+def _median(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def _rate_series(years: List[float], bcis: List[float]) -> List[float]:
+    rates = []
+    for index in range(1, len(years)):
+        elapsed = years[index] - years[index - 1]
+        if elapsed <= 0:
+            raise ValueError("历史年份必须严格递增")
+        rates.append((bcis[index] - bcis[index - 1]) / elapsed)
+    return rates
+
+
+def _collect_maintenance_events(records: List[Dict], events: Optional[List[Dict]] = None) -> List[Dict]:
+    collected = list(events or [])
+    for record in records:
+        record_events = record.get("maintenance_events", record.get("events", []))
+        if isinstance(record_events, str):
+            record_events = [record_events]
+        if isinstance(record_events, list):
+            for event in record_events:
+                if isinstance(event, dict):
+                    collected.append(dict(event))
+                elif isinstance(event, str) and event.strip():
+                    collected.append({"year": record["year"], "description": event.strip()})
+    return collected
+
+
+def _detect_change_point(
+    years: List[float],
+    bcis: List[float],
+    maintenance_events: Optional[List[Dict]] = None,
+) -> Dict[str, Any]:
+    rates = _rate_series(years, bcis)
+    result = {
+        "status": "insufficient_data" if len(rates) < 2 else "normal",
+        "latest_rate": round(rates[-1], 3) if rates else 0.0,
+        "reference_rate": round(_median(rates[:-1]), 3) if len(rates) >= 2 else None,
+        "jump_magnitude": 0.0,
+        "maintenance_event_detected": bool(maintenance_events),
+    }
+    if len(rates) < 2:
+        return result
+
+    reference_rate = _median(rates[:-1])
+    deviations = [abs(rate - reference_rate) for rate in rates[:-1]]
+    mad = _median(deviations)
+    threshold = max(2.0, 3.0 * 1.4826 * mad)
+    jump_magnitude = rates[-1] - reference_rate
+    result["jump_magnitude"] = round(jump_magnitude, 3)
+    if abs(jump_magnitude) > threshold:
+        result["status"] = "maintenance_change" if maintenance_events else "possible_jump"
+    return result
+
+
+def _predict_anchored(years: List[float], bcis: List[float], future_years: Optional[List[int]] = None) -> List[Dict]:
+    if future_years is None:
+        future_years = [int(years[-1]) + offset for offset in range(1, 6)]
+    rate = _median(_rate_series(years, bcis))
+    last_year = years[-1]
+    last_bci = bcis[-1]
+    predictions = []
+    for future_year in future_years:
+        predicted = last_bci + rate * (future_year - last_year)
+        predicted = round(max(0, min(100, predicted)), 1)
+        grade, desc = _determine_grade(predicted)
+        predictions.append({
+            "year": future_year,
+            "bci": predicted,
+            "grade": grade,
+            "grade_description": desc,
+            "baseline": round(last_bci, 1),
+            "rate_used": round(rate, 3),
+        })
+    return predictions
+
+
+def _forecast_by_method(
+    years: List[float],
+    bcis: List[float],
+    method: str,
+    future_years: Optional[List[int]] = None,
+) -> List[Dict]:
+    if method == "anchored_trend":
+        return _predict_anchored(years, bcis, future_years)
+    if method == "linear_regression":
+        return _predict_linear(years, bcis, future_years)
+    if method == "polynomial":
+        return _predict_polynomial(years, bcis, future_years)
+    if method == "exponential":
+        return _predict_exponential(years, bcis, future_years)
+    if method == "conservative":
+        return _predict_conservative(years, bcis, future_years)
+    if method == "ensemble":
+        return _predict_ensemble(years, bcis, future_years)
+    if method == "degradation_rate":
+        return _predict_degradation_rate(years, bcis, future_years)
+    raise ValueError(f"不支持的预测方法: {method}")
+
+
+def _backtest_methods(years: List[float], bcis: List[float]) -> Dict[str, Dict[str, float]]:
+    candidates = ["anchored_trend", "linear_regression", "conservative", "degradation_rate", "ensemble"]
+    metrics = {}
+    for method in candidates:
+        errors = []
+        optimistic_errors = []
+        for end in range(2, len(years)):
+            prediction = _forecast_by_method(
+                years[:end],
+                bcis[:end],
+                method,
+                [int(years[end])],
+            )[0]["bci"]
+            actual = bcis[end]
+            errors.append(abs(prediction - actual))
+            optimistic_errors.append(max(0.0, prediction - actual))
+        mae = sum(errors) / len(errors) if errors else float("inf")
+        optimistic_bias = sum(optimistic_errors) / len(optimistic_errors) if optimistic_errors else float("inf")
+        metrics[method] = {
+            "mae": round(mae, 3),
+            "optimistic_bias": round(optimistic_bias, 3),
+            "score": round(mae + 0.5 * optimistic_bias, 3),
+        }
+    return metrics
+
+
+def _select_forecast_method(
+    requested_method: str,
+    years: List[float],
+    bcis: List[float],
+    jump_status: str,
+) -> Tuple[str, Dict[str, Dict[str, float]], str]:
+    if requested_method not in FORECAST_METHODS:
+        raise ValueError(f"不支持的预测方法: {requested_method}")
+    if requested_method != "auto":
+        return requested_method, {}, "调用方显式指定方法"
+    if len(years) < 4:
+        return "anchored_trend", {}, "历史数据少于4个点，使用最新值锚定趋势"
+    metrics = _backtest_methods(years, bcis)
+    selected = min(metrics, key=lambda name: metrics[name]["score"])
+    if jump_status == "possible_jump" and selected in {"polynomial", "exponential"}:
+        selected = "anchored_trend"
+    return selected, metrics, "基于滚动回测和安全偏差惩罚自动选择"
+
+
 def predict_trend(
     historical_bci: List[Dict],
-    method: str = "linear_regression",
+    method: str = "auto",
     previous_results: Optional[Dict] = None,
+    maintenance_events: Optional[List[Dict]] = None,
 ) -> Dict:
     """
-    预测桥梁退化趋势
-
-    支持方法：
-    - linear_regression: 线性回归（默认，推荐）
-    - polynomial: 多项式拟合（2次）
-    - exponential: 指数衰减模型
-    - conservative: 保守预测（考虑测量误差和不确定性）
-    - ensemble: 多模型集成预测（推荐用于关键预测）
-    - degradation_rate: 基于退化速率外推
-
-    Args:
-        historical_bci: BCI历史数据列表 [{year, bci, grade}, ...]
-        method: 预测方法
-        previous_results: 可选的先前计算结果（用于集成预测）
-
-    Returns:
-        Dict: 包含预测结果、退化速率、风险预警等
+    预测桥梁退化趋势。默认使用数据驱动的 auto 模式，并始终保留最新值作为基线。
     """
-    if not historical_bci:
+    try:
+        records = _normalize_historical_bci(historical_bci)
+    except ValueError as exc:
         return {
             "success": False,
-            "error": "无历史BCI数据",
+            "error": str(exc),
             "method": method,
         }
 
-    # 防御性处理：支持两种输入格式
-    # 格式1: List[Dict] - [{year: 2018, bci: 81.8}, ...] (正确格式)
-    # 格式2: List[float] - [81.8, 78.5, 75.0, ...] (简化格式，假设从2018年开始每2年一条)
-    if historical_bci and isinstance(historical_bci[0], (int, float)):
-        # 简化格式：转换为标准格式
-        start_year = 2018
-        data_with_years = [{"year": start_year + i * 2, "bci": bci} for i, bci in enumerate(historical_bci)]
-        historical_bci = data_with_years
+    years = [record["year"] for record in records]
+    bcis = [record["bci"] for record in records]
+    if len(years) < 1:
+        return {"success": False, "error": "无有效历史BCI数据", "method": method}
 
-    years = [h.get("year", 0) for h in historical_bci]
-    bcis = [h.get("bci", 66.0) for h in historical_bci]
+    collected_events = _collect_maintenance_events(records, maintenance_events)
+    change_point = _detect_change_point(years, bcis, collected_events)
+    try:
+        selected_method, backtest_metrics, selection_reason = _select_forecast_method(
+            method,
+            years,
+            bcis,
+            change_point["status"],
+        )
+    except ValueError as exc:
+        return {"success": False, "error": str(exc), "method": method}
 
-    # 调用对应的预测方法
-    if method == "polynomial":
-        predictions = _predict_polynomial(years, bcis)
-    elif method == "exponential":
-        predictions = _predict_exponential(years, bcis)
-    elif method == "conservative":
-        predictions = _predict_conservative(years, bcis)
-    elif method == "ensemble":
-        predictions = _predict_ensemble(years, bcis)
-    elif method == "degradation_rate":
-        predictions = _predict_degradation_rate(years, bcis)
-    else:
-        predictions = _predict_linear(years, bcis)
+    future_years = [int(years[-1]) + offset for offset in range(1, 6)]
+    predictions = _forecast_by_method(years, bcis, selected_method, future_years)
+    baseline_predictions = _predict_anchored(years, bcis, future_years)
+    conservative_predictions = _predict_conservative(years, bcis, future_years)
+    degradation_rate = round(
+        (bcis[-1] - bcis[0]) / (years[-1] - years[0]), 2
+    ) if len(years) >= 2 else 0
 
-    degradation_rate = round((bcis[-1] - bcis[0]) / (years[-1] - years[0]), 2) if len(years) >= 2 else 0
+    warning = _generate_trend_warning(degradation_rate)
+    if change_point["status"] in {"possible_jump", "maintenance_change"}:
+        warning += "；检测到最新阶段存在显著变化，建议人工复核最新检测结果和维修记录"
 
     return {
         "success": True,
-        "method": method,
-        "data_points": len(historical_bci),
+        "method": selected_method,
+        "requested_method": method,
+        "selected_method": selected_method,
+        "data_points": len(records),
         "degradation_rate_per_year": degradation_rate,
-        "warning": _generate_trend_warning(degradation_rate),
+        "warning": warning,
         "predictions": predictions,
+        "scenarios": {
+            "selected": predictions,
+            "baseline": baseline_predictions,
+            "conservative": conservative_predictions,
+        },
+        "forecast_meta": {
+            "baseline_year": years[-1],
+            "baseline_bci": bcis[-1],
+            "jump_status": change_point["status"],
+            "jump_magnitude": change_point["jump_magnitude"],
+            "maintenance_events": collected_events,
+            "review_required": change_point["status"] in {"possible_jump", "maintenance_change"},
+            "selection_reason": selection_reason,
+            "backtest_metrics": backtest_metrics,
+        },
         "analysis": {
             "current_bci": bcis[-1],
             "current_grade": _determine_grade(bcis[-1])[0],
@@ -461,7 +761,7 @@ def _predict_linear(years: List[float], bcis: List[float], future_years: List[in
     slope, intercept = _linear_regression(years, bcis)
     predictions = []
     for future_year in future_years:
-        predicted = intercept + slope * future_year
+        predicted = bcis[-1] + slope * (future_year - years[-1])
         predicted = round(max(0, min(100, predicted)), 1)
         grade, desc = _determine_grade(predicted)
         predictions.append({"year": future_year, "bci": predicted, "grade": grade, "grade_description": desc})
@@ -508,7 +808,7 @@ def _predict_conservative(years: List[float], bcis: List[float], future_years: L
     predictions = []
     for i, future_year in enumerate(future_years):
         # 基准预测
-        baseline = intercept + slope * future_year
+        baseline = bcis[-1] + slope * (future_year - years[-1])
 
         # 添加不确定性（随时间增加）
         uncertainty = residual_std * math.sqrt(1 + 1/n + (future_year - sum_x/n)**2 / denominator) if denominator > 0 else residual_std
@@ -604,9 +904,10 @@ def _predict_polynomial(years: List[float], bcis: List[float], future_years: Lis
         return _predict_linear(years, bcis, future_years)
 
     coefficients = _polyfit(years, bcis, degree=2)
+    raw_last = sum(c * (years[-1] ** i) for i, c in enumerate(coefficients))
     predictions = []
     for future_year in future_years:
-        predicted = sum(c * (future_year ** i) for i, c in enumerate(coefficients))
+        predicted = bcis[-1] + sum(c * (future_year ** i) for i, c in enumerate(coefficients)) - raw_last
         predicted = round(max(0, min(100, predicted)), 1)
         grade, desc = _determine_grade(predicted)
         predictions.append({"year": future_year, "bci": predicted, "grade": grade, "grade_description": desc})
@@ -623,11 +924,13 @@ def _predict_exponential(years: List[float], bcis: List[float], future_years: Li
 
     log_bcis = [math.log(max(0.1, b)) for b in bcis]
     slope, intercept = _linear_regression(years, log_bcis)
+    raw_last = math.exp(intercept + slope * years[-1])
 
     predictions = []
     for future_year in future_years:
         log_predicted = intercept + slope * future_year
-        predicted = math.exp(log_predicted) if log_predicted > -10 else 0
+        raw_future = math.exp(log_predicted) if log_predicted > -10 else 0
+        predicted = bcis[-1] * (raw_future / raw_last) if raw_last > 0 else bcis[-1]
         predicted = round(max(0, min(100, predicted)), 1)
         grade, desc = _determine_grade(predicted)
         predictions.append({"year": future_year, "bci": predicted, "grade": grade, "grade_description": desc})
@@ -962,10 +1265,11 @@ PREDICTION_TOOLS_META = {
         "params": (
             'predict_trend('
             'historical_bci: List[Dict[year:int, bci:float, grade:str]], '
-            'method: str = "linear_regression"'
+            'method: str = "auto", '
+            'maintenance_events: Optional[List[Dict]] = None'
             ')'
         ),
-        "description": "预测桥梁退化趋势。支持6种方法：linear_regression（线性回归）、polynomial（多项式）、exponential（指数）、conservative（保守预测）、ensemble（集成预测）、degradation_rate（退化速率外推）。推荐使用保守预测或集成预测以获得更准确的估计。",
+        "description": "预测桥梁退化趋势。默认由auto根据数据量、跳变状态和滚动回测选择模型；支持显式指定模型，并可传入维修事件辅助识别跳变。",
         "returns": "Dict包含退化速率、未来预测、风险等级",
     },
     "query_standard": {
@@ -1108,32 +1412,18 @@ def parse_bridge_report(
         if bci_data:
             bci_history.append(bci_data)
 
-    # 如果正则提取失败，使用硬编码兜底数据（仅用于演示）
     if not bci_history:
-        bci_history = [
-            {"year": 2018, "bci": 83.5, "grade": "B", "source": "default_2018"},
-            {"year": 2020, "bci": 79.2, "grade": "B", "source": "default_2020"},
-            {"year": 2022, "bci": 74.8, "grade": "C", "source": "default_2022"},
-        ]
-        parsing_errors.append("警告: 正则提取BCI失败，使用默认数据")
+        parsing_errors.append("未从报告中提取到 BCI")
 
     # --- 提取部件评分 ---
     component_scores = _extract_component_scores(all_content)
 
-    # 兜底：如果提取为空
-    if not component_scores or all(v == 0 for v in component_scores.values()):
-        # 从已有的 BCI 历史反推部件评分（简化逻辑）
-        latest_year = max((b["year"] for b in bci_history), default=2022)
-        if latest_year == 2018:
-            component_scores = {"桥面系": 85, "上部结构": 78, "下部结构": 82, "支座": 88, "基础": 90}
-        elif latest_year == 2020:
-            component_scores = {"桥面系": 82, "上部结构": 74, "下部结构": 79, "支座": 85, "基础": 88}
-        else:
-            component_scores = {"桥面系": 78, "上部结构": 70, "下部结构": 75, "支座": 82, "基础": 86}
-        parsing_errors.append("警告: 部件评分提取失败，使用默认数据")
+    if not component_scores:
+        parsing_errors.append("未从报告中提取到部件评分")
 
     # --- 提取病害描述 ---
     defects = _extract_defects(all_content)
+    maintenance_events = _extract_maintenance_events(all_content)
 
     # --- 提取报告格式模板 ---
     format_template = ""
@@ -1146,6 +1436,7 @@ def parse_bridge_report(
             "bci_history": bci_history,
             "component_scores": component_scores,
             "defects": defects,
+            "maintenance_events": maintenance_events,
         },
         "format_template": format_template,
         "data_source": [r["file"] for r in all_content],
@@ -1155,6 +1446,7 @@ def parse_bridge_report(
             "bci_extracted": len(bci_history),
             "components_extracted": len([v for v in component_scores.values() if v > 0]),
             "defects_extracted": len(defects),
+            "maintenance_events_extracted": len(maintenance_events),
         },
     }
 
@@ -1179,7 +1471,8 @@ def _extract_bci_from_text(text: str, file_path: str = "") -> Optional[Dict]:
     match_source = ""
     last_match = None
     for pattern, source in bci_patterns:
-        match = re.search(pattern, text)
+        matches = list(re.finditer(pattern, text))
+        match = matches[-1] if matches else None
         if match:
             potential_bci = float(match.group(1))
             # 验证 BCI 值是否合理（应该在 0-100 之间，且通常是两位数）
@@ -1243,16 +1536,19 @@ def _extract_component_scores(content: List[Dict]) -> Dict:
     # 部件评分提取模式（中文桥梁报告常见格式）
     component_patterns = {
         "桥面系": [
+            r"桥面系(?:及附属设施)?[\s\S]{0,300}?BCI(?:m|~m~)?\s*[=：:]\s*(\d+\.?\d*)",
             r"桥面系[：:]\s*(\d+\.?\d*)",
             r"桥面.*?评分[：:]\s*(\d+\.?\d*)",
             r"桥面状况[：:]\s*(\d+\.?\d*)",
         ],
         "上部结构": [
+            r"上部结构[\s\S]{0,300}?BCI(?:~k~|k)?\s*[=：:]\s*(\d+\.?\d*)",
             r"上部结构[：:]\s*(\d+\.?\d*)",
             r"上部.*?评分[：:]\s*(\d+\.?\d*)",
             r"上部状况[：:]\s*(\d+\.?\d*)",
         ],
         "下部结构": [
+            r"下部结构[\s\S]{0,300}?BCI(?:x|~x~)\s*[=：:]\s*(\d+\.?\d*)",
             r"下部结构[：:]\s*(\d+\.?\d*)",
             r"下部.*?评分[：:]\s*(\d+\.?\d*)",
             r"下部状况[：:]\s*(\d+\.?\d*)",
@@ -1270,19 +1566,22 @@ def _extract_component_scores(content: List[Dict]) -> Dict:
     results = {}
 
     for comp_name, patterns in component_patterns.items():
-        for pattern in patterns:
-            for report in content:
-                text = report.get("content", "")
-                match = re.search(pattern, text)
-                if match:
-                    score = float(match.group(1))
-                    if 0 <= score <= 100:
-                        results[comp_name] = score
-                        break
-            if comp_name in results:
-                break
+        for report in reversed(content):
+            text = report.get("content", "")
+            match = None
+            for pattern in patterns:
+                matches = list(re.finditer(pattern, text))
+                if matches:
+                    match = matches[-1]
+                    break
+            if match:
+                score = float(match.group(1))
+                if 0 <= score <= 100:
+                    results[comp_name] = score
+                    break
 
     return results
+
 
 
 def _extract_defects(content: List[Dict]) -> List[Dict]:
@@ -1328,6 +1627,36 @@ def _extract_defects(content: List[Dict]) -> List[Dict]:
             unique_defects.append(d)
 
     return unique_defects[:20]  # 限制数量
+
+def _extract_maintenance_events(content: List[Dict]) -> List[Dict]:
+    """从报告文本提取维修、加固和病害修复事件，保留原文供复核。"""
+    keywords = ("维修", "加固", "改造", "修复", "更换", "养护后", "维修后", "加固后")
+    events = []
+    for report in content:
+        text = report.get("content", "")
+        file_name = report.get("file", "")
+        year_match = __import__("re").search(r"20[12]\d", file_name)
+        report_year = int(year_match.group()) if year_match else None
+        for paragraph in text.split("\n"):
+            paragraph = paragraph.strip()
+            if len(paragraph) < 6 or len(paragraph) > 500:
+                continue
+            matched = next((keyword for keyword in keywords if keyword in paragraph), None)
+            if matched:
+                events.append({
+                    "year": report_year,
+                    "type": matched,
+                    "description": paragraph[:300],
+                    "source_file": file_name,
+                })
+    unique = []
+    seen = set()
+    for event in events:
+        key = (event["source_file"], event["description"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(event)
+    return unique[:50]
 
 
 def _extract_format_template(content: List[Dict]) -> str:
@@ -1505,6 +1834,6 @@ BRIDGE_REPORT_PARSER_META = {
         'bridge_report_parser:{"file_paths":"(必填)历史报告文件路径列表，如[\"报告2018.docx\",\"报告2020.docx\"]",'
         '"include_format_template":"(可选)是否包含原报告格式，默认true"}'
     ),
-    "description": "桥梁检测报告解析 - 从历史报告(.docx/.doc)提取BCI数据、部件评分、病害描述，同时保留原报告格式供生成预测报告参考",
+    "description": "桥梁检测报告解析 - 从历史报告(.docx/.doc)提取BCI数据、部件评分、病害描述和维修/加固/修复事件，同时保留原报告格式供生成预测报告参考",
     "category": "prediction",
 }

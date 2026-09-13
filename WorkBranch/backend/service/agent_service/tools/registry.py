@@ -172,8 +172,8 @@ ALL_TOOLS = {
     },
     "predict_trend": {
         "name": "predict_trend",
-        "description": "预测桥梁退化趋势，支持线性回归/多项式/指数三种模型",
-        "params": 'predict_trend:{"historical_bci":"(BCI历史数据列表，格式示例：[{\"year\":2018,\"bci\":81.8},{\"year\":2020,\"bci\":78.5}]，必填)","method":"(预测方法：linear_regression/polynomial/exponential，默认linear_regression)"}'
+        "description": "预测桥梁退化趋势，默认使用数据驱动的auto模型选择，并支持线性回归/多项式/指数/保守/集成/退化速率模型",
+        "params": 'predict_trend:{"historical_bci":"(BCI历史数据列表，格式示例：[{\"year\":2018,\"bci\":81.8},{\"year\":2020,\"bci\":78.5}]，必填)","method":"(预测方法：auto/anchored_trend/linear_regression/polynomial/exponential/conservative/ensemble/degradation_rate，默认auto)","maintenance_events":"(可选，维修/加固/修复事件列表)"}'
     },
     "query_standard": {
         "name": "query_standard",
