@@ -49,6 +49,7 @@ class PredictionDefinition(AgentDefinition):
                     "search_files",
                     "analyze_image",
                     "read_file",
+                    "skill",
                     "submit_facility_report",
                     "submit_facility_forecast",
                 ],

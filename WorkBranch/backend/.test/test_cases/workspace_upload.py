@@ -20,6 +20,7 @@ from .base import (
     print_success,
     print_error,
     print_dim,
+    print_warning,
     collect_stream_output,
     wait_for_conversation_state,
     extract_response_text,

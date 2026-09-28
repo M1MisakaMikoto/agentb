@@ -48,17 +48,38 @@ V4_DOCUMENT_READING_PROMPT = """## 文档读取规则
 4. 根据用户要求判断信息是否足够，不以命中数、返回数或文本长度作为依据。若缺失信息会影响结论则继续查，否则立即推进工作。"""
 
 
-V4_DATABASE_REGION_PROMPT = """## 数据库地区字段规则（TB_Market 为通用地区表）
-1. TB_Market 是通用的地区表：地区编码为 TB_Market.Id（如大渡口区、江北区等）；业务表（t_Bridge、t_Road、t_Footbridge 等）的 dq/region_id 字段与 submit_* 工具的 regionId 参数都使用同一套地区编码。
-2. 需要地区编码时（按地区查询/统计、submit_facility_report / submit_facility_forecast 等工具需要 regionId 等），直接查询 TB_Market 获取即可，例如：
-   SELECT Id, AdminAreaName FROM TB_Market WHERE AdminAreaName LIKE '%大渡口%'
-   确认返回的 AdminAreaName 与目标地区一致后，使用返回的 Id。
-3. 禁止直接用地区名称与 dq/region_id 字段或 regionId 参数做等值匹配（如 dq = '大渡口区'），否则会得到数量为 0 或参数错误等结果。"""
+V4_REPORT_PROVENANCE_PROMPT = """## 报告数据来源与工作流程说明
+1. 只要本任务产出了报告（写入工作区的报告文件，或作为最终交付内容的报告文本），报告末尾必须包含「## 数据来源与工作流程」小节；普通问答等非报告输出不需要该小节。
+2. 该小节用 3-6 条要点说明：本次使用了哪些数据源及其范围（如工作区文件名、数据库表、知识库、模型知识）、按什么顺序处理这些数据、结论依据什么得出。
+3. 只写实际发生的过程：未使用的数据源不得写入，无法确认的环节不得编造，不罗列工具名、参数与调用链。"""
+
+
+V4_KNOWLEDGE_SOURCE_PROMPT = """## 结论依据说明（标准等专业信息的来源口径）
+1. 报告涉及标准、规范等专业信息时，必须在报告末尾包含「## 结论依据说明」小节，用 1-3 句说明这些信息的来源，措辞按以下情形择一：
+   - 知识库检索工具返回错误：写「标准等信息基于模型知识」。
+   - 知识库检索成功但结果为空（回执为「知识库中未找到相关内容」）：写「标准等信息综合模型知识和知识库」。
+   - 知识库检索成功且有命中内容：写「标准等信息基于知识库」。
+2. 同一任务内出现混合情形时，以是否成功检索到内容为准：只要成功检索到内容就写「标准等信息基于知识库」；若始终没有检索到内容，出现过检索错误则按第 1 条第一项，只有空结果则按第 1 条第二项。
+3. 本任务完全没有使用知识库检索时，按「标准等信息基于模型知识」表述。
+4. 数据库的报错行为保持不变：数据库工具失败时如实说明失败原因，不得用知识库或模型知识替代数据库结论。
+5. 如实反映知识库回执的实际结果，不得改写或隐瞒检索失败与空结果。"""
+
+
+V4_SKILL_USAGE_PROMPT = """## 技能（skill）使用规则
+1. 任务开始前先调用 skill 工具的 list 操作，查看本部署有哪些技能（返回技能名与用途）。
+2. 技能承载本部署的非通用约定，例如「地区数据库规则」「报告格式模板」。若某技能的用途与当前任务相关，必须先调用 skill 的 read 操作读取其内容，再按技能要求执行；技能内容与模型自有知识冲突时，以技能为准。
+3. 技能未覆盖的部分按通用规则处理；与当前任务无关的技能不要读取，也不要为了展示而读取。
+4. 技能或用户要求中提到的工具，如果在当前工具协议里不存在，不要臆造工具名、也不要用其他工具冒充：这通常说明该工具对应的服务（例如上游工具 MCP 服务）当前不可用，应向用户说明该功能暂不可用，并继续完成其余可做的工作。"""
+
+
+V4_TOOL_DENIAL_PROMPT = """## 工具被安全拦截时的处理
+1. 工具因安全/只读限制被拒绝时（例如 sql_query 仅支持 SELECT 等只读查询、写操作被拦截、参数校验失败）：直接用 type=text 说明该操作不被允许及工具给出的原因，不要反复重试同一操作，也不要改写语句或参数去绕过限制。
+2. 用户明确要求执行被禁止的操作（如删除/清空数据、修改表结构）时，直接说明限制与可行的替代做法（改为只读查询、提供查询语句让用户自行执行等），不要先向用户索要确认再重试同一操作。
+3. 同一被拒操作连续重试会被判为失败循环并终止任务，最终用户只能看到失败终止提示，无法得到有效结论。"""
 
 
 V4_DIRECTOR_EXECUTION_PROMPT = """## Director 执行规则
-1. 禁止调用 thinking 及除 call_prediction_agent 外的 call_*_agent 子代理工具；桥梁预测/BCI/趋势分析任务应委托 call_prediction_agent，其余任务直接使用业务工具完成。
-""" + "\n\n" + V4_DATABASE_REGION_PROMPT
+1. 禁止调用 thinking 及除 call_prediction_agent 外的 call_*_agent 子代理工具；桥梁预测/BCI/趋势分析任务应委托 call_prediction_agent，其余任务直接使用业务工具完成。"""
 
 
 _CURRENT_TASK_DEFAULT = (
@@ -289,6 +310,24 @@ def format_todo_block(todos: list[str], current_todo_index: int) -> str:
     return "\n".join(lines)
 
 
+def build_service_alert_block() -> str:
+    """上游工具 MCP 服务不可用时的运行期提示（放在易变区，不破坏稳定前缀缓存）。"""
+    from ...tools.mcp_health import alert_message
+
+    text = alert_message()
+    if not text:
+        return ""
+    return (
+        f"{text}\n"
+        "因此工具协议中可能缺少 submit_facility_report / submit_facility_forecast / "
+        "submit_dailypatrol_record / submit_ai_judgment_issue 等工具：\n"
+        "1. 不要调用协议里不存在的工具，也不要臆造工具名或参数；\n"
+        "2. 如果技能内容或用户要求提到这些工具/功能，向用户说明该功能依赖的上游工具服务"
+        "当前不可用；\n"
+        "3. 其余不依赖该服务的工作照常完成。"
+    )
+
+
 def build_tagged_prompt(
     *,
     agent_type: str,
@@ -312,12 +351,16 @@ def build_tagged_prompt(
     """组装 V4 标签化提示词，返回 (system_prompt, user_message)。"""
     tool_schema = build_agent_tool_schema(agent_type, settings_service)
     system_prompt = build_v4_system_prompt(tool_schema)
+    system_prompt = system_prompt + "\n\n" + V4_SKILL_USAGE_PROMPT
     if agent_type == "director_agent":
         system_prompt = system_prompt + "\n\n" + V4_DIRECTOR_EXECUTION_PROMPT
         system_prompt = system_prompt + "\n\n" + V4_DOCUMENT_READING_PROMPT
     elif agent_type == "prediction_agent":
-        system_prompt = system_prompt + "\n\n" + V4_DATABASE_REGION_PROMPT
         system_prompt = system_prompt + "\n\n" + V4_DOCUMENT_READING_PROMPT
+    if agent_type in {"director_agent", "prediction_agent"}:
+        system_prompt = system_prompt + "\n\n" + V4_REPORT_PROVENANCE_PROMPT
+        system_prompt = system_prompt + "\n\n" + V4_KNOWLEDGE_SOURCE_PROMPT
+        system_prompt = system_prompt + "\n\n" + V4_TOOL_DENIAL_PROMPT
     if system_prompt_override:
         system_prompt = system_prompt + "\n\n" + system_prompt_override
 
@@ -344,6 +387,9 @@ def build_tagged_prompt(
     if plan_block:
         sections.append(f"<plan>\n{plan_block}\n</plan>")
     sections.append(f"<tool_records>\n{records}\n</tool_records>")
+    service_alert = build_service_alert_block()
+    if service_alert:
+        sections.append(f"<service_alert>\n{service_alert}\n</service_alert>")
     if parse_error:
         sections.append(f"<parse_error>\n{parse_error}\n</parse_error>")
     if closur_feedback:
@@ -376,9 +422,18 @@ def fixed_iteration_limit_text(max_iterations: int, recent_results: list[str]) -
     return f"已达最大轮次 {max_iterations}，任务未完成。当前已确认进展: {summary}"
 
 
-def fixed_tool_loop_text(tool_name: str, repeat: int, recent_results: list[str]) -> str:
+def fixed_tool_loop_text(
+    tool_name: str,
+    repeat: int,
+    recent_results: list[str],
+    recent_errors: Optional[list[str]] = None,
+) -> str:
     summary = "；".join(_clip(r, 300) for r in recent_results[-3:] if r) or "无"
+    error_text = "；".join(
+        _clip(e, 300) for e in (recent_errors or [])[-3:] if e
+    ) or "无"
     return (
-        f"检测到工具连续失败循环（{tool_name} 连续失败 {repeat} 次），已终止。"
+        f"检测到工具连续失败循环（{tool_name} 连续失败 {repeat} 次），已终止。\n"
+        f"最近失败原因: {error_text}\n"
         f"当前已确认进展: {summary}"
     )

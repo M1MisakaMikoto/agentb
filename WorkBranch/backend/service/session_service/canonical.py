@@ -26,6 +26,7 @@ class SegmentType(Enum):
     TOOL_CALL = "tool_call"
     TOOL_RES = "tool_res"
     ERROR = "error"
+    SYSTEM_ALERT = "system_alert"
     CANCELLED = "cancelled"
     DONE = "done"
     USER_INPUT_REQUEST = "user_input_request"

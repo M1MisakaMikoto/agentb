@@ -54,10 +54,15 @@ def test_director_prompt_keeps_prediction_and_guides_document_reading(
     assert prompt.V4_DOCUMENT_READING_PROMPT in system_prompt
     assert "call_prediction_agent" in prompt.V4_DIRECTOR_EXECUTION_PROMPT
 
-    assert "TB_Market" in prompt.V4_DIRECTOR_EXECUTION_PROMPT
-    assert "dq" in prompt.V4_DIRECTOR_EXECUTION_PROMPT
-    assert "地区编码" in prompt.V4_DIRECTOR_EXECUTION_PROMPT
-    assert "禁止直接用地区名称" in prompt.V4_DIRECTOR_EXECUTION_PROMPT
+    assert prompt.V4_SKILL_USAGE_PROMPT in system_prompt
+    assert "skill 工具的 list 操作" in system_prompt
+    assert "必须先调用 skill 的 read 操作读取其内容" in system_prompt
+    assert "如果在当前工具协议里不存在" in system_prompt
+    assert "不要臆造工具名" in system_prompt
+    assert "上游工具 MCP 服务" in system_prompt
+    # 地区数据库规则已迁入技能（WorkBranch/skills/region-database-rules），不再写死在提示词里
+    assert "TB_Market" not in prompt.V4_DIRECTOR_EXECUTION_PROMPT
+    assert "TB_Market" not in prompt.V4_DOCUMENT_READING_PROMPT
     assert "根据文件大小" in system_prompt
     assert "阅读文档时先读开头" in system_prompt
     assert "必要时再读末尾（开头更重要）" in system_prompt
@@ -72,6 +77,19 @@ def test_director_prompt_keeps_prediction_and_guides_document_reading(
     assert "若缺失信息会影响结论则继续查，否则立即推进工作" in system_prompt
     assert "优先使用搜索类工具" not in system_prompt
     assert "只有片段缺少所需上下文时" not in system_prompt
+
+    assert prompt.V4_REPORT_PROVENANCE_PROMPT in system_prompt
+    assert prompt.V4_KNOWLEDGE_SOURCE_PROMPT in system_prompt
+    assert "## 数据来源与工作流程" in system_prompt
+    assert "## 结论依据说明" in system_prompt
+    assert "3-6 条要点" in system_prompt
+    assert "标准等信息基于模型知识" in system_prompt
+    assert "标准等信息综合模型知识和知识库" in system_prompt
+    assert "标准等信息基于知识库" in system_prompt
+    assert "知识库中未找到相关内容" in system_prompt
+    assert "以是否成功检索到内容为准" in system_prompt
+    assert "数据库的报错行为保持不变" in system_prompt
+    assert "不罗列工具名、参数与调用链" in system_prompt
 
 
 def test_non_director_tool_schema_is_not_filtered(monkeypatch):
@@ -122,3 +140,76 @@ def test_prediction_prompt_includes_document_reading_guidance():
     )
     assert prompt.V4_DOCUMENT_READING_PROMPT in system_prompt
     assert prompt.V4_DIRECTOR_EXECUTION_PROMPT not in system_prompt
+    assert prompt.V4_REPORT_PROVENANCE_PROMPT in system_prompt
+    assert prompt.V4_KNOWLEDGE_SOURCE_PROMPT in system_prompt
+    assert prompt.V4_SKILL_USAGE_PROMPT in system_prompt
+
+
+def test_report_provenance_guidance_is_limited_to_report_producing_agents():
+    system_prompt, _ = prompt.build_tagged_prompt(
+        agent_type="explore_agent",
+        user_message="读取检测报告",
+        workspace_id="workspace-1",
+        round_no=1,
+        max_iterations=8,
+        tool_records=[],
+        todos=[],
+        current_todo_index=0,
+        plan_content=None,
+        parent_chain_messages=[],
+        current_conversation_messages=[],
+    )
+    assert prompt.V4_REPORT_PROVENANCE_PROMPT not in system_prompt
+    assert prompt.V4_KNOWLEDGE_SOURCE_PROMPT not in system_prompt
+    assert prompt.V4_SKILL_USAGE_PROMPT in system_prompt
+
+
+def test_service_alert_block_absent_when_mcp_available(monkeypatch):
+    from service.agent_service.tools import mcp_health
+
+    mcp_health.reset()
+    mcp_health.record_success()
+
+    _, user_message = prompt.build_tagged_prompt(
+        agent_type="director_agent",
+        user_message="分析三个监测报告",
+        workspace_id="workspace-1",
+        round_no=1,
+        max_iterations=32,
+        tool_records=[],
+        todos=[],
+        current_todo_index=0,
+        plan_content=None,
+        parent_chain_messages=[],
+        current_conversation_messages=[],
+    )
+
+    assert "<service_alert>" not in user_message
+    mcp_health.reset()
+
+
+def test_service_alert_block_present_when_mcp_unavailable(monkeypatch):
+    from service.agent_service.tools import mcp_health
+
+    mcp_health.reset()
+    mcp_health.record_failure("ConnectError: All connection attempts failed")
+
+    _, user_message = prompt.build_tagged_prompt(
+        agent_type="director_agent",
+        user_message="上传研判报告",
+        workspace_id="workspace-1",
+        round_no=1,
+        max_iterations=32,
+        tool_records=[],
+        todos=[],
+        current_todo_index=0,
+        plan_content=None,
+        parent_chain_messages=[],
+        current_conversation_messages=[],
+    )
+
+    assert "<service_alert>" in user_message
+    assert "上游工具 MCP 服务" in user_message
+    assert "submit_facility_report" in user_message
+    assert "ConnectError" in user_message
+    mcp_health.reset()

@@ -43,6 +43,7 @@ class ReviewDefinition(AgentDefinition):
                     "analyze_image",
                     "read_file",
                     "sql_query",
+                    "skill",
                 ],
                 default_tools=[
                     {"tool": "thinking", "args": {"description": ""}},

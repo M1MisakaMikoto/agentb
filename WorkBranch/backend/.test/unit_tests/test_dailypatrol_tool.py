@@ -8,6 +8,23 @@ sys.path.insert(0, BACKEND_DIR)
 from service.agent_service.tools import dailypatrol_tool
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _upstream_config(monkeypatch):
+    """上游配置改由 MCP 服务自身管理，测试里注入固定配置。"""
+    monkeypatch.setattr(
+        dailypatrol_tool,
+        "upstream_tool_config",
+        lambda _name: {
+            "api_url": "http://upstream.test",
+            "timeout_seconds": 30,
+            "secret_key": "test-key",
+        },
+    )
+
+
 VALID_ARGS = {
     "title": "测试道路病害巡查",
     "xcdate": 1746057600000,

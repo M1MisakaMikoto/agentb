@@ -2,6 +2,7 @@ from .registry import ToolRegistry, ToolDefinition, ALL_TOOLS, FILE_TOOLS, EXPLO
 from .plan_tools import register_plan_tools, PLAN_TOOLS
 from .agent_tools import register_agent_tools, AGENT_TOOLS
 from .rag_tool import register_rag_tools
+from .skill_tool import register_skill_tools, SKILL_TOOLS, execute_skill
 from .document_tools import register_document_tools, DOCUMENT_TOOLS as DOC_TOOLS
 from .sql_tools import register_sql_tools, SQL_TOOLS as SQL_TOOLS_DEF
 from .prediction_tools import register_prediction_tools, PREDICTION_TOOLS_META, BRIDGE_REPORT_PARSER_META, execute_bridge_report_parser
@@ -20,6 +21,7 @@ __all__ = [
     "PLAN_TOOLS",
     "AGENT_TOOLS",
     "RAG_TOOLS",
+    "SKILL_TOOLS",
     "WORKSPACE_TOOLS",
     "DOCUMENT_TOOLS",
     "SQL_TOOLS",
@@ -33,6 +35,8 @@ __all__ = [
     "register_plan_tools",
     "register_agent_tools",
     "register_rag_tools",
+    "register_skill_tools",
+    "execute_skill",
     "register_document_tools",
     "register_sql_tools",
     "register_prediction_tools",
@@ -45,9 +49,9 @@ def register_all_tools():
     register_plan_tools()
     register_agent_tools()
     register_rag_tools()
+    register_skill_tools()
     register_document_tools()
     register_sql_tools()
     register_prediction_tools()
     register_ai_judgment_tools()
     register_dailypatrol_tools()
-

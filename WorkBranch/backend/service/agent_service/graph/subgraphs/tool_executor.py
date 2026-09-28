@@ -12,11 +12,14 @@ import os
 import shutil
 import fnmatch
 import base64
+import time
 import mimetypes
 
 from ...state import ToolExecutionState, ToolCall
 from ...tools.todo_tools import update_todo
 from ...tools.rag_tool import execute_rag_search
+from ...tools.skill_tool import execute_skill
+from ...tools.registry import MCP_TOOLS
 from ...tools.document_tools import execute_document
 from ...tools.sql_tools import execute_sql_query
 from .tool_registry import (
@@ -253,6 +256,250 @@ def deny_execution(state: ToolExecutionState, message_context: dict = None) -> d
     return {"error": error, "result": None}
 
 
+# 由 acting 层直接处理、不进入 execute_tool 的工具（交互式询问）
+EXTERNAL_EXECUTION_TOOLS = {"ask_user_question"}
+
+_PREDICTION_DEBUG_LOG = "debug_tool_execution.log"
+
+
+def _log_prediction_debug(message: str) -> None:
+    """预测类工具的调试日志（控制台 + debug_tool_execution.log）。"""
+    import datetime
+
+    line = (
+        f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] "
+        f"[DEBUG-PREDICTION] {message}\n"
+    )
+    print(f"[DEBUG-PREDICTION] {message}")
+    try:
+        with open(_PREDICTION_DEBUG_LOG, "a", encoding="utf-8") as fh:
+            fh.write(line)
+            fh.flush()
+    except OSError:
+        pass
+
+
+def _execute_calculate_bci(tool_args: dict, workspace_id: str) -> dict:
+    _log_prediction_debug(f"🔢 calculate_bci CALLED! Args: {tool_args}")
+    from service.agent_service.tools.prediction_tools import calculate_bci
+
+    try:
+        calculate_args = dict(tool_args)
+        calculate_args.setdefault("workspace_id", workspace_id)
+        result = calculate_bci(**calculate_args)
+        _log_prediction_debug(f"✓ BCI计算成功: {result}")
+        return {"result": result, "error": None}
+    except Exception as e:
+        _log_prediction_debug(f"✗ BCI计算失败: {e}")
+        return {"result": None, "error": f"BCI计算失败: {str(e)}"}
+
+
+def _execute_predict_trend(tool_args: dict) -> dict:
+    _log_prediction_debug(f"📈 predict_trend CALLED! Args: {tool_args}")
+    from service.agent_service.tools.prediction_tools import predict_trend
+
+    try:
+        result = predict_trend(**tool_args)
+        _log_prediction_debug(f"✓ 趋势预测成功: {result}")
+        return {"result": result, "error": None}
+    except Exception as e:
+        _log_prediction_debug(f"✗ 趋势预测失败: {e}")
+        return {"result": None, "error": f"趋势预测失败: {str(e)}"}
+
+
+def _execute_query_standard(tool_args: dict) -> dict:
+    _log_prediction_debug(f"📚 query_standard CALLED! Args: {tool_args}")
+    from service.agent_service.tools.prediction_tools import query_standard
+
+    try:
+        result = query_standard(**tool_args)
+        _log_prediction_debug(f"✓ 规范查询成功: {result}")
+        return {"result": result, "error": None}
+    except Exception as e:
+        _log_prediction_debug(f"✗ 规范查询失败: {e}")
+        return {"result": None, "error": f"规范查询失败: {str(e)}"}
+
+
+def _execute_bridge_report_parser(tool_args: dict, workspace_id: str) -> dict:
+    _log_prediction_debug(f"📄 bridge_report_parser CALLED! Args: {tool_args}")
+    from service.agent_service.tools.prediction_tools import execute_bridge_report_parser
+
+    try:
+        result = execute_bridge_report_parser(tool_args, workspace_id=workspace_id)
+    except Exception as e:
+        _log_prediction_debug(f"✗ 报告解析失败: {e}")
+        return {"result": None, "error": f"报告解析失败: {str(e)}"}
+
+    inner_result = result.get("result") if result else None
+    if inner_result and inner_result.get("success"):
+        _log_prediction_debug(
+            f"✓ 报告解析成功: {len(inner_result.get('data_source', []))} 个文件"
+        )
+    elif result and result.get("error"):
+        _log_prediction_debug(f"✗ 报告解析失败: {result.get('error')}")
+    else:
+        _log_prediction_debug("✗ 报告解析结果异常")
+    return result
+
+
+def _execute_call_prediction_agent_logged(
+    tool_args: dict, llm_service=None, token_callback=None, message_context: dict = None
+) -> dict:
+    _log_prediction_debug(f"🎯 call_prediction_agent CALLED! Args: {tool_args}")
+    _log_prediction_debug("✅ Prediction Sub-Agent is being invoked...")
+    result = _execute_call_prediction_agent(
+        tool_args, llm_service, token_callback, message_context
+    )
+    _log_prediction_debug("✓ Prediction Sub-Agent COMPLETED!")
+    return result
+
+
+def _execute_update_todo(tool_args: dict, workspace_id: str) -> dict:
+    return update_todo(
+        workspace_id=workspace_id,
+        todos=tool_args.get("todos") or [],
+        doingIdx=tool_args.get("doingIdx", 0),
+    )
+
+
+def _execute_switch_execution_mode(tool_args: dict) -> dict:
+    mode = (tool_args.get("mode") or "").upper()
+    reason = tool_args.get("reason") or "agent 决定切换执行模式"
+    if mode not in {"PLAN", "DIRECT"}:
+        return {"result": None, "error": f"无效的 mode: {mode}"}
+    return {
+        "result": f"已切换执行模式为 {mode}",
+        "error": None,
+        "execution_mode": mode,
+        "mode_reason": reason,
+    }
+
+
+def _mcp_executor_factory(tool_name: str):
+    def factory(ctx: dict):
+        return lambda args: _execute_mcp_tool(
+            tool_name, args, ctx.get("message_context")
+        )
+
+    return factory
+
+
+def _workspace_executor_factory(tool_name: str):
+    def factory(ctx: dict):
+        return lambda args: _execute_workspace_tool(
+            tool_name,
+            args,
+            ctx.get("workspace_id") or "",
+            ctx.get("workspace_service"),
+        )
+
+    return factory
+
+
+def _make_executor_factories() -> dict:
+    """工具名 -> 执行器工厂（工厂接收 ctx，返回 args -> tool_result 的执行器）。
+
+    内置工具与 MCP 上游工具使用同一套注册与分发，不再用 if/elif 链。
+    """
+    from ...tools.skill_tool import execute_skill
+
+    factories: dict = {
+        "read_file": lambda ctx: _execute_read_file,
+        "write_file": lambda ctx: _execute_write_file,
+        "delete_file": lambda ctx: _execute_delete_file,
+        "list_dir": lambda ctx: _execute_list_dir,
+        "create_dir": lambda ctx: _execute_create_dir,
+        "explore_code": lambda ctx: _execute_explore_code,
+        "explore_internet": lambda ctx: _execute_explore_internet,
+        "call_explore_agent": lambda ctx: (
+            lambda args: _execute_call_explore_agent(
+                args,
+                ctx.get("llm_service"),
+                ctx.get("token_callback"),
+                ctx.get("message_context"),
+            )
+        ),
+        "call_review_agent": lambda ctx: (
+            lambda args: _execute_call_review_agent(
+                args,
+                ctx.get("llm_service"),
+                ctx.get("token_callback"),
+                ctx.get("message_context"),
+            )
+        ),
+        "call_prediction_agent": lambda ctx: (
+            lambda args: _execute_call_prediction_agent_logged(
+                args,
+                ctx.get("llm_service"),
+                ctx.get("token_callback"),
+                ctx.get("message_context"),
+            )
+        ),
+        "call_plan_agent": lambda ctx: (
+            lambda args: _execute_call_plan_agent(
+                args,
+                ctx.get("llm_service"),
+                ctx.get("token_callback"),
+                ctx.get("message_context"),
+            )
+        ),
+        "analyze_image": lambda ctx: (
+            lambda args: _execute_analyze_image(
+                args,
+                llm_service=ctx.get("llm_service"),
+                workspace_service=ctx.get("workspace_service"),
+                workspace_id=ctx.get("workspace_id"),
+                message_context=ctx.get("message_context"),
+            )
+        ),
+        "calculate_bci": lambda ctx: (
+            lambda args: _execute_calculate_bci(args, ctx.get("workspace_id") or "")
+        ),
+        "predict_trend": lambda ctx: _execute_predict_trend,
+        "query_standard": lambda ctx: _execute_query_standard,
+        "bridge_report_parser": lambda ctx: (
+            lambda args: _execute_bridge_report_parser(
+                args, ctx.get("workspace_id") or ""
+            )
+        ),
+        "rag_search": lambda ctx: execute_rag_search,
+        "skill": lambda ctx: execute_skill,
+        "document": lambda ctx: (
+            lambda args: execute_document(
+                args,
+                conversation_id=(ctx.get("message_context") or {}).get(
+                    "conversation_id"
+                ),
+            )
+        ),
+        "sql_query": lambda ctx: (
+            lambda args: execute_sql_query(args, ctx.get("message_context"))
+        ),
+        "update_todo": lambda ctx: (
+            lambda args: _execute_update_todo(args, ctx.get("workspace_id") or "")
+        ),
+        "switch_execution_mode": lambda ctx: _execute_switch_execution_mode,
+    }
+    for name in sorted(MCP_TOOLS):
+        factories[name] = _mcp_executor_factory(name)
+    for name in sorted(WORKSPACE_TOOLS):
+        factories[name] = _workspace_executor_factory(name)
+    return factories
+
+
+_EXECUTOR_FACTORIES = _make_executor_factories()
+
+
+def build_tool_executors(ctx: dict) -> dict:
+    """构建「工具名 -> 执行器」注册表（ctx 提供工作区/LLM/消息上下文）。"""
+    return {name: factory(ctx) for name, factory in _EXECUTOR_FACTORIES.items()}
+
+
+def registered_executor_tool_names() -> frozenset:
+    """已注册执行器的工具名集合（供一致性校验与文档使用）。"""
+    return frozenset(_EXECUTOR_FACTORIES)
+
+
 def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=None, token_callback: Optional[Callable[[str], None]] = None, message_context: dict = None) -> dict:
     """执行工具"""
     console.section("ToolExec 执行工具")
@@ -389,153 +636,24 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
                 )
             return tool_result
 
-        if tool_name == "read_file":
-            tool_result = _execute_read_file(tool_args)
-        elif tool_name == "write_file":
-            tool_result = _execute_write_file(tool_args)
-        elif tool_name == "delete_file":
-            tool_result = _execute_delete_file(tool_args)
-        elif tool_name == "list_dir":
-            tool_result = _execute_list_dir(tool_args)
-        elif tool_name == "create_dir":
-            tool_result = _execute_create_dir(tool_args)
-        elif tool_name == "explore_code":
-            tool_result = _execute_explore_code(tool_args)
-        elif tool_name == "explore_internet":
-            tool_result = _execute_explore_internet(tool_args)
-        elif tool_name == "call_explore_agent":
-            tool_result = _execute_call_explore_agent(tool_args, llm_service, token_callback, message_context)
-        elif tool_name == "call_review_agent":
-            tool_result = _execute_call_review_agent(tool_args, llm_service, token_callback, message_context)
-        elif tool_name == "call_prediction_agent":
-            import datetime
-            log_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] 🎯 call_prediction_agent CALLED! Args: {tool_args}\n"
-            log_msg += f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✅ Prediction Sub-Agent is being invoked...\n"
-            with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:
-                f.write(log_msg)
-                f.flush()
-            print(f"[DEBUG-PREDICTION] 🎯 call_prediction_agent CALLED! Args: {tool_args}")
-            print(f"[DEBUG-PREDICTION] ✅ Prediction Sub-Agent is being invoked...")
-            tool_result = _execute_call_prediction_agent(tool_args, llm_service, token_callback, message_context)
-            complete_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✓ Prediction Sub-Agent COMPLETED!\n"
-            with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:
-                f.write(complete_msg)
-                f.flush()
-            print(f"[DEBUG-PREDICTION] ✓ Prediction Sub-Agent COMPLETED!")
-        elif tool_name == "call_plan_agent":
-            tool_result = _execute_call_plan_agent(tool_args, llm_service, token_callback, message_context)
-        elif tool_name == "analyze_image":
-            tool_result = _execute_analyze_image(
-                tool_args,
-                llm_service=llm_service,
-                workspace_service=workspace_service,
-                workspace_id=workspace_id,
-                message_context=message_context,
-            )
-
-        elif tool_name == "calculate_bci":
-            import datetime
-            log_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] 🔢 calculate_bci CALLED! Args: {tool_args}\n"
-            with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:
-                f.write(log_msg)
-                f.flush()
-            print(f"[DEBUG-PREDICTION] 🔢 calculate_bci CALLED! Args: {tool_args}")
-            from service.agent_service.tools.prediction_tools import calculate_bci
-            try:
-                calculate_args = dict(tool_args)
-                calculate_args.setdefault("workspace_id", workspace_id)
-                result = calculate_bci(**calculate_args)
-                tool_result = {"result": result, "error": None}
-                success_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✓ BCI计算成功: {str(result)}\n"
-                with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:
-                    f.write(success_msg)
-                    f.flush()
-                print(f"[DEBUG-PREDICTION] ✓ BCI计算成功: {str(result)}")
-            except Exception as e:
-                tool_result = {"result": None, "error": f"BCI计算失败: {str(e)}"}
-                error_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S.%f')}] [DEBUG-PREDICTION] ✗ BCI计算失败: {e}\n"
-                with open('debug_tool_execution.log', 'a', encoding='utf-8') as f:
-                    f.write(error_msg)
-                    f.flush()
-                print(f"[DEBUG-PREDICTION] ✗ BCI计算失败: {e}")
-        elif tool_name == "predict_trend":
-            print(f"[DEBUG-PREDICTION] 📈 predict_trend CALLED! Args: {tool_args}")
-            from service.agent_service.tools.prediction_tools import predict_trend
-            try:
-                result = predict_trend(**tool_args)
-                tool_result = {"result": result, "error": None}
-                print(f"[DEBUG-PREDICTION] ✓ 趋势预测成功: {str(result)}")
-            except Exception as e:
-                tool_result = {"result": None, "error": f"趋势预测失败: {str(e)}"}
-                print(f"[DEBUG-PREDICTION] ✗ 趋势预测失败: {e}")
-        elif tool_name == "query_standard":
-            print(f"[DEBUG-PREDICTION] 📚 query_standard CALLED! Args: {tool_args}")
-            from service.agent_service.tools.prediction_tools import query_standard
-            try:
-                result = query_standard(**tool_args)
-                tool_result = {"result": result, "error": None}
-                print(f"[DEBUG-PREDICTION] ✓ 规范查询成功: {str(result)}")
-            except Exception as e:
-                tool_result = {"result": None, "error": f"规范查询失败: {str(e)}"}
-                print(f"[DEBUG-PREDICTION] ✗ 规范查询失败: {e}")
-        elif tool_name == "bridge_report_parser":
-            print(f"[DEBUG-PREDICTION] 📄 bridge_report_parser CALLED! Args: {tool_args}")
-            from service.agent_service.tools.prediction_tools import execute_bridge_report_parser
-            try:
-                result = execute_bridge_report_parser(tool_args, workspace_id=workspace_id)
-                tool_result = result
-                # 安全检查：避免 NoneType.get() 错误
-                inner_result = result.get("result") if result else None
-                if inner_result and inner_result.get("success"):
-                    print(f"[DEBUG-PREDICTION] ✓ 报告解析成功: {len(inner_result.get('data_source', []))} 个文件")
-                elif result and result.get("error"):
-                    print(f"[DEBUG-PREDICTION] ✗ 报告解析失败: {result.get('error')}")
-                else:
-                    print(f"[DEBUG-PREDICTION] ✗ 报告解析结果异常")
-            except Exception as e:
-                tool_result = {"result": None, "error": f"报告解析失败: {str(e)}"}
-                print(f"[DEBUG-PREDICTION] ✗ 报告解析失败: {e}")
-        elif tool_name == "rag_search":
-            tool_result = execute_rag_search(tool_args)
-        elif tool_name == "document":
-            tool_result = execute_document(tool_args, conversation_id=conversation_id)
-        elif tool_name == "sql_query":
-            tool_result = execute_sql_query(tool_args, message_context)
-        elif tool_name == "update_todo":
-            tool_result = update_todo(
-                workspace_id=workspace_id,
-                todos=tool_args.get("todos") or [],
-                doingIdx=tool_args.get("doingIdx", 0),
-            )
-        elif tool_name == "switch_execution_mode":
-            mode = (tool_args.get("mode") or "").upper()
-            reason = tool_args.get("reason") or "agent 决定切换执行模式"
-            if mode not in {"PLAN", "DIRECT"}:
-                tool_result = {"result": None, "error": f"无效的 mode: {mode}"}
-            else:
-                tool_result = {
-                    "result": f"已切换执行模式为 {mode}",
-                    "error": None,
-                    "execution_mode": mode,
-                    "mode_reason": reason,
-                }
-        elif tool_name == "submit_ai_judgment_issue":
-            from service.agent_service.tools.ai_judgment_tool import execute_submit_ai_judgment_issue
-            tool_result = execute_submit_ai_judgment_issue(tool_args, message_context)
-        elif tool_name == "submit_facility_report":
-            from service.agent_service.tools.facility_report_tool import execute_submit_facility_report
-            tool_result = execute_submit_facility_report(tool_args, message_context)
-        elif tool_name == "submit_facility_forecast":
-            from service.agent_service.tools.facility_report_tool import execute_submit_facility_forecast_report
-            tool_result = execute_submit_facility_forecast_report(tool_args, message_context)
-        elif tool_name == "submit_dailypatrol_record":
-            from service.agent_service.tools.dailypatrol_tool import execute_submit_dailypatrol_record
-            tool_result = execute_submit_dailypatrol_record(tool_args, message_context)
-        elif tool_name in WORKSPACE_TOOLS:
-            tool_result = _execute_workspace_tool(tool_name, tool_args, workspace_id, workspace_service)
+        executors = build_tool_executors(
+            {
+                "workspace_id": workspace_id,
+                "workspace_service": workspace_service,
+                "llm_service": llm_service,
+                "token_callback": token_callback,
+                "message_context": message_context,
+            }
+        )
+        executor = executors.get(tool_name)
+        if executor is None:
+            tool_result = {
+                "result": None,
+                "error": f"工具 {tool_name} 未注册执行器（可能是版本或配置不匹配）",
+            }
+            console.error(f"[tool_executor] {tool_result['error']}")
         else:
-            tool_result = {"result": f"工具 {tool_name} 执行成功", "error": None}
-            console.success(f"结果: {tool_result['result']}")
+            tool_result = executor(tool_args)
 
         if send_message and tool_name not in SPECIAL_TOOLS:
             result_content = tool_result.get("result")
@@ -601,6 +719,65 @@ def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=
             task_description=task_description,
             tool_args=tool_args,
         )
+
+
+def _push_mcp_alert(message_context: dict, error: str) -> None:
+    """把 MCP 服务告警推送到当前会话流。
+
+    使用新增的 system_alert 段：不改动既有段内容，也不进入 done/error 终态集合，
+    因此不会影响原有输出与对话终态。
+    """
+    if not message_context:
+        return
+    conversation_id = message_context.get("conversation_id")
+    if not conversation_id:
+        return
+    try:
+        from singleton import get_message_queue
+        from service.session_service.canonical import MessageBuilder, SegmentType
+        from ...tools.mcp_health import alert_message
+
+        text = alert_message() or f"上游工具 MCP 服务调用失败：{error}"
+        message = MessageBuilder.build(
+            role="assistant",
+            message_id=f"mcp-alert-{int(time.time() * 1000)}",
+            conversation_id=conversation_id,
+            session_id=str(message_context.get("session_id") or ""),
+            workspace_id=str(message_context.get("workspace_id") or ""),
+            msg_type=SegmentType.SYSTEM_ALERT,
+            content=text,
+            metadata={
+                "source": "mcp",
+                "service": "upstream_tools",
+                "severity": "warning",
+                "error": error,
+            },
+        )
+        get_message_queue().publish_sync(message)
+    except Exception as e:
+        console.warning(f"[mcp] 告警推送失败：{e}")
+
+
+def _execute_mcp_tool(tool_name: str, tool_args: dict, message_context: dict = None) -> dict:
+    """经 MCP 客户端执行上游工具；失败时如实返回错误并重复推送告警。"""
+    from ...tools.mcp_client import execute_mcp_tool
+
+    args = dict(tool_args)
+    report_file = args.get("reportFile")
+    if report_file and not os.path.isabs(report_file) and message_context:
+        workspace_id = message_context.get("workspace_id")
+        workspace_service = message_context.get("workspace_service")
+        assert workspace_id and workspace_service, "MCP 报告工具需要工作区上下文"
+        allowed, resolved = workspace_service.resolve_path(workspace_id, report_file)
+        assert allowed, f"报告文件路径超出工作区：{report_file} → {resolved}"
+        args["reportFile"] = resolved
+
+    tool_result = execute_mcp_tool(tool_name, args)
+    if tool_result.get("mcp_service_error"):
+        # 仅 MCP 服务不可用才重复告警；上游业务错误走普通工具失败路径
+        _push_mcp_alert(message_context, tool_result["error"])
+    tool_result.pop("mcp_service_error", None)
+    return tool_result
 
 
 def _execute_special_tool(

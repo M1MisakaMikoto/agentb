@@ -101,9 +101,16 @@ DEFAULT_SETTINGS = {
     },
     "agent_tools": {
         "doc_convert_timeout_seconds": 300,
-        "facility_report_api_url": "http://localhost:8001",
-        "dailypatrol_api_url": "http://localhost:8002",
-        "ai_judgment_api_url": "http://localhost:8080"
+        "skills": {
+            "dir": "skills"
+        },
+        "mcp": {
+            "upstream_tools": {
+                "url": "http://127.0.0.1:8181/mcp",
+                "timeout_seconds": 60,
+                "probe_timeout_seconds": 5
+            }
+        }
     },
     "logging": {
         "enabled": True,
@@ -223,6 +230,10 @@ ENV_SETTING_MAPPINGS = {
     "agent_tools:sql:databases:BTManager:port": ("AGENT_SQL_BT_PORT", int),
     "agent_tools:sql:databases:BTManager:user": ("AGENT_SQL_BT_USER", str),
     "agent_tools:sql:databases:BTManager:password": ("AGENT_SQL_BT_PASSWORD", str),
+    "agent_tools:skills:dir": ("AGENTB_SKILLS_DIR", str),
+    "agent_tools:mcp:upstream_tools:url": ("AGENTB_MCP_UPSTREAM_TOOLS_URL", str),
+    "agent_tools:mcp:upstream_tools:timeout_seconds": ("AGENTB_MCP_UPSTREAM_TOOLS_TIMEOUT_SECONDS", float),
+    "agent_tools:mcp:upstream_tools:probe_timeout_seconds": ("AGENTB_MCP_UPSTREAM_TOOLS_PROBE_TIMEOUT_SECONDS", float),
 }
 
 

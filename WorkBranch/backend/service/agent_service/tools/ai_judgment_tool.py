@@ -15,7 +15,8 @@ AI 研判工具 - 用于向 AI 研判系统提交问题
 
 注意:
     - regionId 由调用方通过工具参数传入，会放入请求体中
-    - 接口地址通过配置项 ai_judgment_api_url 设置，默认 http://localhost:8080
+    - 接口地址/超时由上游工具 MCP 服务自身配置管理
+      （WorkBranch/mcp_servers/upstream_tools/config.json，可用 AGENTB_MCP_* 环境变量覆盖）
 """
 import json
 import logging
@@ -24,11 +25,10 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 from .registry import ToolDefinition, ToolRegistry
+from .upstream_config import upstream_tool_config
 
 logger = logging.getLogger(__name__)
 
-# 默认配置
-DEFAULT_API_URL = "http://localhost:8080"
 DEFAULT_TIMEOUT = 30  # 超时时间（秒）
 
 
@@ -147,18 +147,11 @@ def execute_submit_ai_judgment_issue(
     if not title:
         return {"result": None, "error": "缺少必需参数: title (问题标题)"}
 
-    # 获取 API 地址（settings_service配置 > 硬编码默认值）
-    api_url = DEFAULT_API_URL
-    config_source = "硬编码默认值"
-    settings_service = message_context.get("settings_service") if message_context else None
-    if settings_service:
-        try:
-            api_url = settings_service.get("agent_tools:ai_judgment_api_url")
-            config_source = "settings.json > agent_tools.ai_judgment_api_url"
-        except KeyError:
-            pass
-    if api_url == DEFAULT_API_URL and settings_service:
-        logger.info(f"[AI 研判] ⚠️ 使用默认地址，如需修改请在settings.json的agent_tools.ai_judgment_api_url配置")
+    # 上游配置由上游工具 MCP 服务自身管理（config.json / 环境变量）
+    upstream_cfg = upstream_tool_config("submit_ai_judgment_issue")
+    api_url = upstream_cfg["api_url"]
+    timeout = int(upstream_cfg["timeout_seconds"])
+    config_source = "upstream_tools MCP config"
 
     request_body = {
         "regionId": region_id,
@@ -179,7 +172,7 @@ def execute_submit_ai_judgment_issue(
 
     # 发送请求
     try:
-        response = _send_http_request(url, "POST", request_body)
+        response = _send_http_request(url, "POST", request_body, timeout=timeout)
 
         if response.get("success") or "id" in response:
             # 兼容两种响应：包装型 {"success":true,"data":{...}} 与 aiservice 裸 VO {"id":...,"state":...}

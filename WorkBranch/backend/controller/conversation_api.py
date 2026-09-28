@@ -27,6 +27,38 @@ STREAM_LOG_DIR = Path(__file__).resolve().parents[1] / "logs" / "stream_traces"
 STREAM_LOG_ENABLED = os.environ.get("STREAM_TRACE_LOG", "true").lower() in ("true", "1", "yes")
 
 
+def _publish_pending_mcp_alert(conversation: dict, conversation_id: str) -> None:
+    """启动期 MCP 服务不可用时，把告警作为 system_alert 段推入本次对话流。
+
+    只新增独立段，不改动既有段内容，也不影响 done/error 终态判定。
+    """
+    try:
+        from service.agent_service.tools.mcp_health import alert_message
+
+        text = alert_message()
+        if not text:
+            return
+        message = MessageBuilder.build(
+            role="assistant",
+            message_id=f"mcp-alert-{conversation_id}",
+            conversation_id=conversation_id,
+            session_id=str(conversation.get("session_id") or ""),
+            workspace_id=str(conversation.get("workspace_id") or ""),
+            msg_type=SegmentType.SYSTEM_ALERT,
+            content=text,
+            metadata={
+                "source": "mcp",
+                "service": "upstream_tools",
+                "severity": "warning",
+                "stage": "startup",
+            },
+        )
+        publisher = get_message_queue()
+        publisher.publish_sync(message)
+    except Exception as e:
+        print(f"[mcp] 启动告警推送失败: {e}")
+
+
 class StreamTraceLogger:
     """流式数据追踪日志器 - 记录所有后端发给前端的SSE事件"""
     
@@ -329,6 +361,7 @@ async def stream_conversation_message(
                     )
                     # 根据模式传递silent_mode参数
                     is_silent = (mode == "silent")
+                    _publish_pending_mcp_alert(conversation, conversation_id)
                     task = asyncio.create_task(service.send_message(conversation_id, silent_mode=is_silent))
                     def task_callback(t):
                         try:

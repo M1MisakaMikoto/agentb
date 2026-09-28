@@ -42,6 +42,7 @@ class PlanDefinition(AgentDefinition):
                     "search_files",
                     "analyze_image",
                     "read_file",
+                    "skill",
                 ],
                 default_tools=[],
                 timeout_seconds=_timeout,

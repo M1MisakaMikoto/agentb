@@ -7,12 +7,11 @@
 from __future__ import annotations
 
 import os
+import shutil
+from pathlib import Path
 from typing import Optional
 
 import markdown as md
-from weasyprint import HTML
-
-
 _CSS = """
 @page {
   size: A4;
@@ -116,21 +115,82 @@ def render_markdown_to_pdf(
     Returns:
         {"message": ..., "pdf_path": ..., "size": ...}
     """
+    from weasyprint import HTML
+
+    html = build_html(markdown_text, metadata)
+    HTML(string=html).write_pdf(pdf_path)
+    assert os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0
+    return {
+        "message": f"PDF创建成功: {pdf_path}",
+        "pdf_path": pdf_path,
+        "size": os.path.getsize(pdf_path),
+    }
+
+
+def build_html(markdown_text: str, metadata: Optional[dict] = None) -> str:
+    """Markdown → HTML（与 WeasyPrint 路径共用同一套排版 CSS）。"""
     meta = metadata or {}
     title = str(meta.get("title") or "")
     body = md.markdown(
         markdown_text,
         extensions=["tables", "fenced_code", "sane_lists"],
     )
-    html = (
+    return (
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
         f"<title>{title}</title><style>{_CSS}</style></head>"
         f"<body>{body}</body></html>"
     )
-    HTML(string=html).write_pdf(pdf_path)
+
+
+def render_markdown_to_pdf_via_libreoffice(
+    markdown_text: str,
+    pdf_path: str,
+    metadata: Optional[dict] = None,
+    soffice_path: str = "",
+    timeout_seconds: int = 300,
+) -> dict:
+    """Markdown → HTML → LibreOffice → PDF（无 GTK 运行库时可用）。"""
+    import subprocess
+    import tempfile
+
+    assert soffice_path, "缺少 LibreOffice 可执行文件路径"
+    html = build_html(markdown_text, metadata)
+
+    work_dir = tempfile.mkdtemp(prefix="pdf_lo_")
+    html_path = os.path.join(work_dir, "report.html")
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(html)
+
+    profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
+    try:
+        result = subprocess.run(
+            [
+                soffice_path,
+                "--headless",
+                "-env:UserInstallation=" + Path(profile_dir).resolve().as_uri(),
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                work_dir,
+                html_path,
+            ],
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+        assert result.returncode == 0, (
+            f"LibreOffice 转换失败 rc={result.returncode}: "
+            f"{result.stderr.decode('utf-8', errors='replace')[:300]}"
+        )
+        produced = os.path.join(work_dir, "report.pdf")
+        assert os.path.exists(produced), f"LibreOffice 未生成 PDF: {work_dir}"
+        shutil.move(produced, pdf_path)
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
     assert os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0
     return {
-        "message": f"PDF创建成功: {pdf_path}",
+        "message": f"PDF创建成功(LibreOffice): {pdf_path}",
         "pdf_path": pdf_path,
         "size": os.path.getsize(pdf_path),
     }

@@ -7,6 +7,7 @@ import tempfile
 import shutil
 import subprocess
 import gc
+from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List, Generator
 
 from .registry import ToolDefinition, ToolRegistry
@@ -51,6 +52,41 @@ def _find_pandoc() -> Optional[str]:
     if pandoc_path:
         return pandoc_path
 
+    return None
+
+
+def _find_libreoffice() -> Optional[str]:
+    """查找 LibreOffice 可执行文件（soffice）。
+
+    查找顺序：环境变量 LIBREOFFICE_PATH/SOFFICE_PATH（可指向 exe 或 program 目录）
+    → PATH 中的 soffice/libreoffice → Windows/Linux 常见安装路径。
+    """
+    for env_name in ("LIBREOFFICE_PATH", "SOFFICE_PATH"):
+        env_path = os.environ.get(env_name)
+        if not env_path:
+            continue
+        for candidate in (
+            env_path,
+            os.path.join(env_path, "soffice.exe"),
+            os.path.join(env_path, "program", "soffice.exe"),
+            os.path.join(env_path, "soffice"),
+        ):
+            if os.path.isfile(candidate):
+                return candidate
+
+    for binary in ("soffice", "soffice.exe", "libreoffice"):
+        found = shutil.which(binary)
+        if found:
+            return found
+
+    for candidate in (
+        r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+        "/usr/bin/soffice",
+        "/usr/lib/libreoffice/program/soffice",
+    ):
+        if os.path.isfile(candidate):
+            return candidate
     return None
 
 
@@ -235,7 +271,23 @@ def _pdf_read(file_path: str, start_idx: int = 0, max_length: int = 100000,
 
 
 def _pdf_write(file_path: str, content: str, metadata: Optional[dict] = None) -> dict:
-    """将 Markdown 直接渲染为 PDF（WeasyPrint：HTML/CSS 排版，支持中文）。"""
+    """Markdown → PDF：优先 LibreOffice（HTML→PDF），无 LibreOffice 时用 WeasyPrint。"""
+    soffice = _find_libreoffice()
+    if soffice:
+        try:
+            from .pdf_renderer import render_markdown_to_pdf_via_libreoffice
+
+            result = render_markdown_to_pdf_via_libreoffice(
+                content,
+                file_path,
+                metadata,
+                soffice,
+                _doc_convert_timeout_seconds(),
+            )
+            return _make_result(result)
+        except Exception as e:
+            return _make_result(error=f"PDF写入失败(LibreOffice): {e}")
+
     try:
         from .pdf_renderer import render_markdown_to_pdf
         result = render_markdown_to_pdf(content, file_path, metadata)
@@ -308,92 +360,96 @@ def _doc_convert_timeout_seconds(default: int = 300) -> int:
 
 
 def _convert_doc_to_docx(file_path: str) -> Optional[str]:
-    """Convert .doc to .docx using multiple methods with retry logic."""
+    """旧版 .doc → .docx：优先本机 Word COM，其次 LibreOffice 命令行。
+
+    没有可用转换器时返回 None，由调用方给出「需安装 LibreOffice」的明确报错。
+    """
     max_retries = 3
-    
-    for attempt in range(max_retries):
+    convert_timeout = _doc_convert_timeout_seconds()
+
+    # Method 1: Word COM（仅 Windows，且要求本机安装 MS Word）
+    if sys.platform == "win32":
         try:
+            import pythoncom
+            import win32com.client
+
             temp_docx = tempfile.mktemp(suffix=".docx")
-            
-            # Method 1: Win32 COM (Windows only, most reliable)
-            if sys.platform == "win32":
-                try:
-                    import win32com.client
-                    import pythoncom
-                    
-                    pythoncom.CoInitialize()
-                    
-                    word = win32com.client.Dispatch("Word.Application")
-                    word.Visible = False
-                    
-                    doc = word.Documents.Open(
-                        os.path.abspath(file_path),
-                        Visible=False,
-                        ConfirmConversions=False
-                    )
-                    
-                    # Save as docx (wdFormatXMLDocument = 16)
-                    doc.SaveAs2(os.path.abspath(temp_docx), FileFormat=16)
-                    doc.Close()
-                    word.Quit()
-                    
-                    pythoncom.CoUninitialize()
-                    
-                    if os.path.exists(temp_docx):
-                        return temp_docx
-                        
-                except ImportError:
-                    pass
-                except Exception as com_error:
-                    if attempt < max_retries - 1:
-                        time.sleep(2 * (attempt + 1))
-                        continue
-            
-            # Method 2: docx2python library
+            pythoncom.CoInitialize()
             try:
-                from docx2python import docx2python
-                docx2python(file_path, temp_docx)
-                if os.path.exists(temp_docx):
-                    return temp_docx
-            except Exception as e:
-                # 安装或调用失败都继续走 Method 3（LibreOffice），避免异常跳过转换链
-                print(f"[DOC-CONVERT] docx2python error: {e}", flush=True)
-            
-            # Method 3: LibreOffice command line
-            convert_timeout = _doc_convert_timeout_seconds()
-            # 独立 user profile，避免并行调用 LibreOffice 互锁
-            profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
-            try:
-                result = subprocess.run(
-                    ["libreoffice", "--headless",
-                     "-env:UserInstallation=file://" + profile_dir.replace("\\", "/"),
-                     "--convert-to", "docx", "--outdir",
-                     os.path.dirname(temp_docx), file_path],
-                    capture_output=True, timeout=convert_timeout
+                word = win32com.client.Dispatch("Word.Application")
+                word.Visible = False
+                doc = word.Documents.Open(
+                    os.path.abspath(file_path),
+                    Visible=False,
+                    ConfirmConversions=False,
                 )
-                if result.returncode == 0:
-                    output_dir = os.path.dirname(temp_docx)
-                    output_name = os.path.basename(file_path).rsplit(".", 1)[0] + ".docx"
-                    converted = os.path.join(output_dir, output_name)
-                    if os.path.exists(converted):
-                        shutil.move(converted, temp_docx)
-                        return temp_docx
-                else:
-                    print(f"[DOC-CONVERT] LibreOffice 转换失败 rc={result.returncode}", flush=True)
-            except FileNotFoundError:
-                pass
-            except subprocess.TimeoutExpired:
-                print(f"[DOC-CONVERT] LibreOffice 转换超时（{convert_timeout}s）", flush=True)
+                # wdFormatXMLDocument = 16
+                doc.SaveAs2(os.path.abspath(temp_docx), FileFormat=16)
+                doc.Close()
+                word.Quit()
             finally:
-                shutil.rmtree(profile_dir, ignore_errors=True)
-            
-            break
-            
-        except Exception:
-            if attempt < max_retries - 1:
-                time.sleep(2 * (attempt + 1))
-                continue
-    
+                pythoncom.CoUninitialize()
+            if os.path.exists(temp_docx):
+                return temp_docx
+        except ImportError:
+            pass
+        except Exception as com_error:
+            # Word 未安装时这里必然失败，记录后继续走 LibreOffice
+            print(f"[DOC-CONVERT] Word COM 不可用: {com_error}", flush=True)
+
+    # Method 2: LibreOffice 命令行（Windows 为 soffice.exe）
+    soffice = _find_libreoffice()
+    if soffice is None:
+        print(
+            "[DOC-CONVERT] 未找到 LibreOffice（soffice），无法转换 .doc；"
+            "请安装 LibreOffice 或用 LIBREOFFICE_PATH 指定可执行文件",
+            flush=True,
+        )
+        return None
+
+    for attempt in range(max_retries):
+        temp_docx = tempfile.mktemp(suffix=".docx")
+        output_dir = os.path.dirname(temp_docx)
+        # 独立 user profile，避免并行调用 LibreOffice 互锁
+        profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
+        try:
+            result = subprocess.run(
+                [
+                    soffice,
+                    "--headless",
+                    "-env:UserInstallation=" + Path(profile_dir).resolve().as_uri(),
+                    "--convert-to",
+                    "docx",
+                    "--outdir",
+                    output_dir,
+                    file_path,
+                ],
+                capture_output=True,
+                timeout=convert_timeout,
+            )
+            if result.returncode == 0:
+                output_name = os.path.basename(file_path).rsplit(".", 1)[0] + ".docx"
+                converted = os.path.join(output_dir, output_name)
+                if os.path.exists(converted):
+                    shutil.move(converted, temp_docx)
+                    return temp_docx
+                print("[DOC-CONVERT] LibreOffice 返回成功但未生成文件", flush=True)
+            else:
+                detail = result.stderr.decode("utf-8", errors="replace")[:200]
+                print(
+                    f"[DOC-CONVERT] LibreOffice 转换失败 rc={result.returncode}: {detail}",
+                    flush=True,
+                )
+        except subprocess.TimeoutExpired:
+            print(f"[DOC-CONVERT] LibreOffice 转换超时（{convert_timeout}s）", flush=True)
+        except OSError as exc:
+            print(f"[DOC-CONVERT] LibreOffice 调用失败: {exc}", flush=True)
+        finally:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+
+        if attempt < max_retries - 1:
+            time.sleep(2 * (attempt + 1))
+
     return None
 
 

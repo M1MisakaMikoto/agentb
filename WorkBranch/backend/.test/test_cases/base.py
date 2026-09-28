@@ -42,6 +42,28 @@ def get_timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+_CRASH_PATTERNS = (
+    "traceback",
+    "exception",
+    "programmingerror",
+    "operationalerror",
+    "internal server error",
+    "http 500",
+    "status 500",
+    "status code 500",
+    "500 internal",
+)
+
+
+def looks_like_crash(text: str) -> bool:
+    """粗判响应是否含服务端崩溃特征。
+
+    注意：不能把裸 “500” 当崩溃信号——真实业务数据（编码、评分、数量）里经常出现 500。
+    """
+    lowered = str(text or "").lower()
+    return any(pattern in lowered for pattern in _CRASH_PATTERNS)
+
+
 def safe_print(text: str):
     try:
         print(text)

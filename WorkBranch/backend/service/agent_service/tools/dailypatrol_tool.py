@@ -6,7 +6,8 @@
 
 API 流程:
 POST /dailypatrol/agent/add - Agent 回写巡查记录
-认证: agent-secret-key: daily-patrol-agent
+认证: agent-secret-key（由上游工具 MCP 服务自身配置管理，见
+      WorkBranch/mcp_servers/upstream_tools/config.json 的 dailypatrol.secret_key）
 
 使用方法:
     submit_dailypatrol_record(
@@ -40,15 +41,11 @@ import os
 from typing import Optional, Dict, Any, List
 
 from .registry import ToolDefinition, ToolRegistry
+from .upstream_config import upstream_tool_config
 
 logger = logging.getLogger(__name__)
 
-# 默认配置
-DEFAULT_API_URL = "http://localhost:8002"
 DEFAULT_TIMEOUT = 30  # 超时时间（秒）
-
-# Agent 认证密钥
-AGENT_SECRET_KEY = "daily-patrol-agent"
 
 # 接口文档中声明为数值型的字段（按文档对齐为数字；无法转换的纯字符串降级保留原值）
 _NUMERIC_FIELDS = (
@@ -245,22 +242,15 @@ def execute_submit_dailypatrol_record(
             if field in dto and dto[field] is not None:
                 dto[field] = _coerce_numeric(dto[field])
 
-    # ========== 获取 API 地址（settings_service配置 > 硬编码默认值）==========
-    api_url = DEFAULT_API_URL
-    config_source = "硬编码默认值"
-    settings_service = message_context.get("settings_service") if message_context else None
-    if settings_service:
-        try:
-            api_url = settings_service.get("agent_tools:dailypatrol_api_url")
-            config_source = "settings.json > agent_tools.dailypatrol_api_url"
-        except KeyError:
-            pass
-    if api_url == DEFAULT_API_URL and settings_service:
-        logger.info(f"[日常巡查记录] ⚠️ 使用默认地址，如需修改请在settings.json的agent_tools.dailypatrol_api_url配置")
+    # 上游配置由上游工具 MCP 服务自身管理（config.json / 环境变量）
+    upstream_cfg = upstream_tool_config("submit_dailypatrol_record")
+    api_url = upstream_cfg["api_url"]
+    timeout = int(upstream_cfg["timeout_seconds"])
+    config_source = "upstream_tools MCP config"
 
     # ========== 构建请求头 ==========
     request_headers = {
-        "agent-secret-key": AGENT_SECRET_KEY
+        "agent-secret-key": upstream_cfg["secret_key"]
     }
 
     logger.info(f"[日常巡查记录] 开始提交巡查记录")
@@ -274,7 +264,9 @@ def execute_submit_dailypatrol_record(
 
     logger.info(f"[日常巡查记录] POST {full_url}")
 
-    response = _send_http_request(full_url, "POST", request_body, headers=request_headers)
+    response = _send_http_request(
+        full_url, "POST", request_body, headers=request_headers, timeout=timeout
+    )
 
     if not isinstance(response, dict):
         raw = str(response)

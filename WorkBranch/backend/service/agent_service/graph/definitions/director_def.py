@@ -48,6 +48,7 @@ class DirectorDefinition(AgentDefinition):
                     "document",
                     "sql_query",
                     "rag_search",
+                    "skill",
                     "submit_ai_judgment_issue",
                     "submit_facility_report",
                     "submit_facility_forecast",

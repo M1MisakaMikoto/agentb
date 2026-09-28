@@ -10,6 +10,9 @@ x-agentb-environment: &agentb-environment
   AGENTB_STREAM_MAXLEN: ${AGENTB_STREAM_MAXLEN:-10000}
   AGENTB_STREAM_RETENTION_SECONDS: ${AGENTB_STREAM_RETENTION_SECONDS:-86400}
   AGENTB_WORKSPACE_DIR: /app/workspaces
+  AGENTB_MCP_UPSTREAM_TOOLS_URL: ${AGENTB_MCP_UPSTREAM_TOOLS_URL:-http://agentb-mcp-upstream-tools:8181/mcp}
+  AGENTB_MCP_UPSTREAM_TOOLS_TIMEOUT_SECONDS: ${AGENTB_MCP_UPSTREAM_TOOLS_TIMEOUT_SECONDS:-60}
+  AGENTB_MCP_UPSTREAM_TOOLS_PROBE_TIMEOUT_SECONDS: ${AGENTB_MCP_UPSTREAM_TOOLS_PROBE_TIMEOUT_SECONDS:-5}
   AGENTB_RAG_META_DB: /app/rag-data/file_meta.sqlite3
   AGENTB_RAG_DOCS_ROOT: /app/rag-docs
   AGENTB_EMBEDDING_DISABLED: ${AGENTB_EMBEDDING_DISABLED:-1}
@@ -90,10 +93,38 @@ services:
       - agentb-rag-docs:/app/rag-docs
       - agentb-easyocr-models:/root/.EasyOCR
     deploy:
+        resources:
+          limits:
+            cpus: ${AGENTB_RAG_CPU_LIMIT:-4.0}
+            memory: ${AGENTB_RAG_MEMORY_LIMIT:-4G}
+
+  agentb-mcp-upstream-tools:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["python", "-m", "mcp_servers.upstream_tools.server"]
+    working_dir: /app/WorkBranch
+    expose:
+      - "8181"
+    environment:
+      AGENTB_MCP_HOST: 0.0.0.0
+      AGENTB_MCP_PORT: "8181"
+      AGENTB_MCP_UPSTREAM_CONFIG: /app/mcp-config/config.json
+    volumes:
+      - ${AGENTB_MCP_UPSTREAM_CONFIG_FILE:-./WorkBranch/mcp_servers/upstream_tools/config.example.json}:/app/mcp-config/config.json:ro
+      - agentb-workspaces:/app/workspaces
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket;s=socket.create_connection(('127.0.0.1',8181),3);s.close()\" || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
       resources:
         limits:
-          cpus: ${AGENTB_RAG_CPU_LIMIT:-4.0}
-          memory: ${AGENTB_RAG_MEMORY_LIMIT:-4G}
+          cpus: ${AGENTB_MCP_CPU_LIMIT:-1.0}
+          memory: ${AGENTB_MCP_MEMORY_LIMIT:-1G}
 
 volumes:
   agentb-workspaces:

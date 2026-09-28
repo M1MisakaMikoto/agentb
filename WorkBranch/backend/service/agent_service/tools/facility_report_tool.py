@@ -26,7 +26,8 @@ API 流程（两步）:
 
 注意:
     - regionId 由调用方通过工具参数传入，会通过 X-Region-Id 请求头发送
-    - 接口地址通过配置项 facility_report_api_url 设置，默认 http://localhost:8001
+    - 接口地址/超时由上游工具 MCP 服务自身配置管理
+      （WorkBranch/mcp_servers/upstream_tools/config.json，可用 AGENTB_MCP_* 环境变量覆盖）
 """
 import os
 import json
@@ -40,11 +41,10 @@ from http.client import HTTPConnection
 import mimetypes
 
 from .registry import ToolDefinition, ToolRegistry
+from .upstream_config import upstream_tool_config
 
 logger = logging.getLogger(__name__)
 
-# 默认配置
-DEFAULT_API_URL = "http://localhost:8001"
 DEFAULT_TIMEOUT = 30  # 超时时间（秒）
 
 
@@ -436,18 +436,11 @@ def execute_submit_facility_report(
     # 构建请求头（regionId 通过 X-Region-Id 传递）
     region_headers = {"X-Region-Id": str(region_id)}
 
-    # 获取 API 地址（settings_service配置 > 硬编码默认值）
-    api_url = DEFAULT_API_URL
-    config_source = "硬编码默认值"
-    settings_service = message_context.get("settings_service") if message_context else None
-    if settings_service:
-        try:
-            api_url = settings_service.get("agent_tools:facility_report_api_url")
-            config_source = "settings.json > agent_tools.facility_report_api_url"
-        except KeyError:
-            pass
-    if api_url == DEFAULT_API_URL and settings_service:
-        logger.info(f"[设施研判报告] ⚠️ 使用默认地址，如需修改请在settings.json的agent_tools.facility_report_api_url配置")
+    # 上游配置由上游工具 MCP 服务自身管理（config.json / 环境变量）
+    upstream_cfg = upstream_tool_config("submit_facility_report")
+    api_url = upstream_cfg["api_url"]
+    timeout = int(upstream_cfg["timeout_seconds"])
+    config_source = "upstream_tools MCP config"
 
     logger.info(f"[设施研判报告] 开始处理报告: {report_name}")
     logger.info(f"[设施研判报告] 设施: {facility_name} (ID: {facility_id})")
@@ -460,7 +453,9 @@ def execute_submit_facility_report(
 
     logger.info(f"[设施研判报告] 步骤1/2 - 上传DOCX文件到: {upload_url}")
 
-    upload_response = _send_multipart_upload(upload_url, report_file, headers=region_headers)
+    upload_response = _send_multipart_upload(
+        upload_url, report_file, headers=region_headers, timeout=timeout
+    )
 
     upload_ok, upload_data = _extract_success_response(upload_response, ("fileUrl",))
     if not upload_ok:
@@ -490,7 +485,10 @@ def execute_submit_facility_report(
     logger.info(f"[设施研判报告] 步骤2/2 - 生成研判报告: {decision_url}")
 
     try:
-        decision_response = _send_http_request(decision_url, "POST", decision_request_body, headers=region_headers)
+            decision_response = _send_http_request(
+                decision_url, "POST", decision_request_body,
+                headers=region_headers, timeout=timeout,
+            )
     except Exception as e:
         error_msg = f"步骤2失败 - 生成研判报告异常: {str(e)}"
         logger.error(f"[设施研判报告] {error_msg}")
@@ -610,18 +608,11 @@ def execute_submit_facility_forecast_report(
         logger.error(f"[设施预测报告] reportFile 处理失败: {docx_err}")
         return {"result": None, "error": docx_err}
 
-    # 获取 API 地址（settings_service配置 > 硬编码默认值）
-    api_url = DEFAULT_API_URL
-    config_source = "硬编码默认值"
-    settings_service = message_context.get("settings_service") if message_context else None
-    if settings_service:
-        try:
-            api_url = settings_service.get("agent_tools:facility_report_api_url")
-            config_source = "settings.json > agent_tools.facility_report_api_url"
-        except KeyError:
-            pass
-    if api_url == DEFAULT_API_URL and settings_service:
-        logger.info(f"[设施预测报告] ⚠️ 使用默认地址，如需修改请在settings.json的agent_tools.facility_report_api_url配置")
+    # 上游配置由上游工具 MCP 服务自身管理（config.json / 环境变量）
+    upstream_cfg = upstream_tool_config("submit_facility_forecast")
+    api_url = upstream_cfg["api_url"]
+    timeout = int(upstream_cfg["timeout_seconds"])
+    config_source = "upstream_tools MCP config"
 
     logger.info(f"[设施预测报告] 开始处理预测报告")
     logger.info(f"[设施预测报告] 区域ID: {region_id}, 设施ID: {facility_id}, 年份: {predict_year}")
@@ -633,7 +624,7 @@ def execute_submit_facility_forecast_report(
 
     logger.info(f"[设施预测报告] 步骤1/2 - 上传DOCX文件到: {upload_url}")
 
-    upload_response = _send_multipart_upload(upload_url, report_file)
+    upload_response = _send_multipart_upload(upload_url, report_file, timeout=timeout)
 
     upload_ok, upload_data = _extract_success_response(upload_response, ("fileUrl",))
     if not upload_ok:
@@ -673,7 +664,7 @@ def execute_submit_facility_forecast_report(
     logger.info(f"[设施预测报告] 步骤2/2 - 提交预测数据: {forecast_url}")
 
     try:
-        response = _send_http_request(forecast_url, "POST", request_body)
+        response = _send_http_request(forecast_url, "POST", request_body, timeout=timeout)
     except Exception as e:
         error_msg = f"步骤2失败 - 提交预测报告异常: {str(e)}"
         logger.error(f"[设施预测报告] {error_msg}")

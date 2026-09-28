@@ -43,6 +43,7 @@ class ExploreDefinition(AgentDefinition):
                     "document",
                     "analyze_image",
                     "read_file",
+                    "skill",
                 ],
                 default_tools=[
                     {"tool": "thinking", "args": {"description": ""}},

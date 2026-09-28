@@ -629,7 +629,11 @@ function handleSSEFrame(card, frame, onEvent, onHeartbeat) {
   const type = payload && typeof payload === 'object' ? payload.type || 'message' : 'message';
   const seq = id || (payload && typeof payload === 'object' ? payload.seq : '');
   const pretty = typeof payload === 'object' ? JSON.stringify(payload, null, 2) : payload;
-  const cls = type === 'error' ? 'sse-error' : type === 'done' || type === 'stream_completed' ? 'sse-done' : '';
+  const cls = type === 'error' || type === 'system_alert'
+    ? 'sse-error'
+    : type === 'done' || type === 'stream_completed'
+      ? 'sse-done'
+      : '';
   sseLogLine(card, cls, `[#${seq || '?'}] type=${type}\n${pretty}`);
 }
 

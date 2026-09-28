@@ -103,6 +103,17 @@ def _recent_results(tool_records: list[dict]) -> list[str]:
     ]
 
 
+def _recent_errors(tool_records: list[dict]) -> list[str]:
+    return [
+        str(r.get("error") or "")
+        for r in tool_records
+        if isinstance(r, dict)
+        and r.get("call_seq") is not None
+        and r.get("status") == "failed"
+        and r.get("error")
+    ]
+
+
 def _write_reasoning_trace(agent_type: str, round_no: int, user_message: str, raw_response: str) -> None:
     try:
         with open_trace_log() as f:
@@ -129,7 +140,12 @@ def create_reasoning_node(llm_service=None, settings_service=None, message_conte
         loop = _detect_tool_failure_loop(tool_records)
         if loop:
             console.warning(f"[v4-reasoning] 工具失败循环: {loop}")
-            text = fixed_tool_loop_text(loop[0], loop[1], _recent_results(tool_records))
+            text = fixed_tool_loop_text(
+                loop[0],
+                loop[1],
+                _recent_results(tool_records),
+                _recent_errors(tool_records),
+            )
             return _terminal_update(text, state)
 
         # ===== 入口闸门：轮次上限 =====

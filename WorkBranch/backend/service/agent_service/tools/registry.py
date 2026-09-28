@@ -134,6 +134,11 @@ ALL_TOOLS = {
         "description": "在知识库中进行语义检索",
         "params": 'rag_search:{"query":"(查询内容)","kb_ids":"(知识库ID列表，本参数可不填)","top_k":"(返回条数，本参数可不填)","min_score":"(最低相关度，本参数可不填)"}'
     },
+    "skill": {
+        "name": "skill",
+        "description": "查看/读取本部署技能：非通用指导（地区数据库规则、报告格式模板等）都在技能里；任务开始先 list，与当前任务相关时 read",
+        "params": 'skill:{"operation":"(必填)list|read","name":"(read 必填，取自 list 返回的技能名)"}'
+    },
     "list_workspace_files": {
         "name": "list_workspace_files",
         "description": "列出当前工作区内所有文件和目录",
@@ -185,57 +190,6 @@ ALL_TOOLS = {
         "description": "桥梁检测报告解析 - 从历史报告(.docx/.doc)提取BCI数据、部件评分、病害描述，同时保留原报告格式供生成预测报告参考",
         "params": 'bridge_report_parser:{"file_paths":"(必填)历史报告文件路径列表，如[\"报告2018.docx\",\"报告2020.docx\"]","include_format_template":"(可选)是否包含原报告格式，默认true"}'
     },
-    # --- AI 研判工具 ---
-    "submit_ai_judgment_issue": {
-        "name": "submit_ai_judgment_issue",
-        "description": "提交 AI 研判问题 - 将设施问题提交到 AI 研判系统，等待 AI 分析并返回研判结果",
-        "params": 'submit_ai_judgment_issue:{"facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","title":"(问题标题，必填)","description":"(问题描述，可选)","regionId":"(区域ID，必填)"}'
-    },
-    # --- 设施研判报告工具 ---
-    "submit_facility_report": {
-        "name": "submit_facility_report",
-        "description": "生成设施研判报告 - 将检测报告(DOCX)上传后自动生成研判报告。注意：若尚无DOCX文件，先用 document w 工具生成DOCX（file_path 必须用 .docx 结尾，传入Markdown内容即可自动转换为DOCX），再传 reportFile 给本工具。",
-        "params": 'submit_facility_report:{"reportName":"(报告名称，必填)","facilityId":"(设施ID，必填)","facilityName":"(设施名称，必填)","reportFile":"(报告DOCX文件本地路径，必填)","regionId":"(区域ID，必填)"}'
-    },
-    "submit_facility_forecast": {
-        "name": "submit_facility_forecast",
-        "description": "提交设施预测报告 - 将桥梁预测分析结果(DOCX)上传到系统。调用 POST /v1/facility/forecast/report 接口。若尚无DOCX文件，先用 document w 工具生成DOCX（file_path 必须用 .docx 结尾，传入Markdown内容即可自动转换为DOCX）。",
-        "params": 'submit_facility_forecast:{"regionId":"(区域ID，必填，从元数据中获取)","facilityId":"(设施ID，必填)","predictYear":"(预测年份，必填)","reportFile":"(报告DOCX文件本地路径，必填)","facilityName":"(设施名称，可选)","predictedHealthScore":"(预测健康分数，可选)","predictedRiskLevel":"(风险等级，可选: HIGH/MEDIUM/LOW)","summary":"(预测结论摘要，可选)"}'
-    },
-    # --- 日常巡查记录工具 ---
-    "submit_dailypatrol_record": {
-        "name": "submit_dailypatrol_record",
-        "description": "提交日常巡查记录 - 将日常巡查任务记录（Agent回写版本）提交到后端系统。支持主表信息+检测指标明细(dtoList)一并提交。",
-        "params": 'submit_dailypatrol_record:{'
-                   '"title":"(巡查标题，必填，max100)",'
-                   '"xcdate":"(巡查日期-时间戳毫秒，必填)",'
-                   '"typeid":"(设施类型，必填)",'
-                   '"typename":"(设施类型名称，必填，max100)",'
-                   '"nameid":"(设施名称ID，必填)",'
-                   '"ssname":"(设施名称，必填，max100)",'
-                   '"xcunitname":"(巡查单位名称，必填，max100)",'
-                   '"dq":"(地区，必填)",'
-                   '"isdjrw":"(是否定检任务，必填)",'
-                   '"isyhby":"(是否需要养护保养，必填)",'
-                   '"xcperson":"(巡查人姓名，必填)",'
-                   '"xcphone":"(巡查人电话，必填)",'
-                   '"xcunitid":"(巡查单位ID，必填)",'
-                   '"userId":"(用户ID，可选)",'
-                   '"status":"(保养状态，可选)",'
-                   '"remark":"(说明，可选)",'
-                   '"source":"(数据来源，可选)",'
-                   '"dzdtisvalid":"(坐标是否有效距离，可选)",'
-                   '"dzdt":"(电子地图坐标，可选)",'
-                   '"xcbegintime":"(开始时间戳，可选)",'
-                   '"xcendtime":"(结束时间戳，可选)",'
-                   '"checktodate":"(截止日期时间戳，可选)",'
-                   '"photoannex":"(照片附件，可选)",'
-                   '"qrdzdt":"(二维码巡查坐标，可选)",'
-                   '"reveal":"(是否展示0/1，可选)",'
-                   '"videoModel":"(是否视频巡查1/0，可选)",'
-                   '"dtoList":"(检测指标明细列表，可选)"'
-                   '}'
-    },
     # --- 图像理解工具 ---
     "analyze_image": {
         "name": "analyze_image",
@@ -271,6 +225,7 @@ SUBAGENT_TOOLS = {
 }
 TODO_TOOLS = {"update_todo"}
 RAG_TOOLS = {"rag_search"}
+SKILL_TOOLS = {"skill"}
 WORKSPACE_TOOLS = {"list_workspace_files", "get_workspace_info", "search_files"}
 DOCUMENT_TOOLS = {"document", "read_document"}
 SQL_TOOLS = {"sql_query"}
@@ -278,3 +233,6 @@ PREDICTION_TOOLS = {"calculate_bci", "predict_trend", "query_standard", "bridge_
 AI_JUDGMENT_TOOLS = {"submit_ai_judgment_issue"}
 FACILITY_REPORT_TOOLS = {"submit_facility_report", "submit_facility_forecast"}
 DAILYPATROL_TOOLS = {"submit_dailypatrol_record"}
+
+# 由上游工具 MCP 服务提供（启动时把 inputSchema 转译为 params 写入 ALL_TOOLS）
+MCP_TOOLS = AI_JUDGMENT_TOOLS | FACILITY_REPORT_TOOLS | DAILYPATROL_TOOLS

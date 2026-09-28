@@ -50,6 +50,14 @@ async def lifespan(app: FastAPI):
     await db.init_tables()
     await get_runtime_state().start()
 
+    # 上游工具 MCP 服务探活：后台执行，不阻塞启动；失败只告警（状态见 /health）
+    import asyncio as _asyncio
+    from service.agent_service.tools.mcp_client import probe_mcp_service
+
+    app.state.mcp_probe_task = _asyncio.create_task(
+        _asyncio.to_thread(probe_mcp_service)
+    )
+
     # 启动时自动注册已存在的workspace目录
     try:
         from singleton import get_workspace_service
@@ -485,12 +493,15 @@ def health_check():
         memory_info = process.memory_info()
         
         runtime_state = get_runtime_state()
+        from service.agent_service.tools.mcp_health import snapshot as mcp_snapshot
+
         return {
             "status": "ok",
             "instance_id": runtime_state.instance_id,
             "draining": runtime_state.draining,
             "active_tasks": runtime_state.active_task_count,
             "active_sessions": runtime_state.active_session_count,
+            "mcp": mcp_snapshot(),
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "resources": {
                 "memory_mb": round(memory_info.rss / 1024 / 1024, 2),

@@ -181,6 +181,7 @@ class HybridMessageQueue:
                 "error",          # 错误信息（必须）
                 "cancelled",      # 取消终态（必须）
                 "heartbeat",      # 心跳信号（保持连接）
+                "system_alert",   # 系统级告警（如 MCP 服务不可用）
                 "conversation_handoff",  # 会话交接（可选，视业务需求）
             }
 

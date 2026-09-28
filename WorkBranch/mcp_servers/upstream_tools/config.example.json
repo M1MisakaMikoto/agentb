@@ -1,0 +1,15 @@
+{
+    "facility_report": {
+        "api_url": "http://localhost:8001",
+        "timeout_seconds": 30
+    },
+    "dailypatrol": {
+        "api_url": "http://localhost:8002",
+        "timeout_seconds": 30,
+        "secret_key": "daily-patrol-agent"
+    },
+    "ai_judgment": {
+        "api_url": "http://localhost:8080",
+        "timeout_seconds": 30
+    }
+}
