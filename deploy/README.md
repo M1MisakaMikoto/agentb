@@ -39,6 +39,47 @@ The settings file is configuration, not workspace data. Deployments should
 mount it at `/app/setting.json`; workspace persistence must remain mounted at
 `/app/workspaces`.
 
+## Upstream tools MCP service
+
+Report upload, daily-patrol record, and AI-judgment tools are no longer built
+into the API. They are served by the bundled MCP service
+`agentb-mcp-upstream-tools` (`python -m mcp_servers.upstream_tools.server`,
+streamable-http on container port 8181, reachable only inside the Compose
+network). The API instances connect to it through
+`AGENTB_MCP_UPSTREAM_TOOLS_URL` (default
+`http://agentb-mcp-upstream-tools:8181/mcp`).
+
+Two things matter when onboarding a new region:
+
+1. **Its own configuration.** The MCP service never reads the backend settings
+   service. Mount a region-specific file at `/app/mcp-config/config.json`
+   (`AGENTB_MCP_UPSTREAM_CONFIG_FILE`, default
+   `./WorkBranch/mcp_servers/upstream_tools/config.example.json`) containing the
+   upstream `api_url`, `timeout_seconds`, and the daily-patrol `secret_key`.
+   Prefer `AGENTB_MCP_FACILITY_REPORT_API_URL`,
+   `AGENTB_MCP_DAILYPATROL_API_URL` / `AGENTB_MCP_DAILYPATROL_SECRET_KEY`, and
+   `AGENTB_MCP_AI_JUDGMENT_API_URL` for secrets.
+2. **A shared workspace volume.** The service mounts `agentb-workspaces` at the
+   same path as the API containers because report files are passed as absolute
+   paths inside the workspace.
+
+Availability semantics: probing runs as a background task at API startup and
+only raises a warning (visible in `/health` under `mcp`). While unavailable the
+four upstream tools are absent from the model's tool protocol; call-time
+failures are reported and re-warned (log, conversation `tool_event`, and a
+`system_alert` stream segment). There is no local fallback and no cached tool
+list. Bare-metal deployments run the same module as a third process with
+`AGENTB_MCP_HOST` / `AGENTB_MCP_PORT` set.
+
+## Skills
+
+Region-specific guidance (database/region rules, report format) lives in
+`WorkBranch/skills/<name>/SKILL.md` and is read on demand by the agent through
+the `skill` tool (`operation=list|read`). The root directory is configurable via
+`AGENTB_SKILLS_DIR` / `agent_tools.skills.dir`, so onboarding a region means
+replacing the directory, not changing code. Details and the file format are in
+[接入报告.md](接入报告.md).
+
 ## Platform mode
 
 Set `AGENTB_REDIS_URL`, all `MYSQL_*` values, and
@@ -120,8 +161,13 @@ Useful diagnostics:
 curl.exe http://127.0.0.1:8152/router-health
 curl.exe http://127.0.0.1:8152/api/health
 docker compose -f compose.yml -f compose.standalone.yml ps
-docker compose -f compose.yml -f compose.standalone.yml logs agentb-router agentb-1 redis
+docker compose -f compose.yml -f compose.standalone.yml logs agentb-router agentb-1 redis agentb-mcp-upstream-tools
 ```
+
+`GET /api/health` includes an `mcp` object (`available`, `error`,
+`checked_at`, `failure_count`) for the upstream tools service. When onboarding
+or troubleshooting a region, use the checklist in [接入报告.md](接入报告.md)
+(section 十).
 
 ## Distributed regression suite
 

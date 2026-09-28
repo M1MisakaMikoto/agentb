@@ -7,6 +7,8 @@ AgentB 是一个多会话 AI Agent 后端服务：提供会话/对话管理（SS
 - 会话与对话：SSE 流式输出、取消、级联删除、断点续传（`last_seq` / `Last-Event-ID`）、`resume` 恢复被中断的对话。
 - 工作区 / 计划 / 设置：按 `workspace_id` 管理文件，读写计划，动态读取/局部更新配置（敏感字段自动脱敏）。
 - RAG：知识库、分类树、文档上传/检索/读取，异步入库与删除任务。
+- 技能（skill）系统：非通用指导（地区数据库规则、报告格式模板等）以 `skills/<name>/SKILL.md` 落盘，agent 通过 `skill` 工具的 list/read 主动读取；区域落地只替换目录，不改代码。
+- 上游工具 MCP 化：报告上传、巡查记录、AI 研判四类上游工具由项目内自建的 MCP 服务（`WorkBranch/mcp_servers/upstream_tools`）提供，配置由该服务自身管理；MCP 不可用时启动告警、工具不进入协议、调用失败重复告警（详见 [deploy/接入报告.md](deploy/接入报告.md)）。
 - API 演示前端：覆盖全部接口的调用演示页，部署后浏览器直接打开即可试用，零构建、由后端托管于 `/frontend`。
 - 多实例部署：Nginx 一致性哈希路由 + Redis 会话归属租约（详见 [deploy/README.md](deploy/README.md)）。
 
@@ -34,6 +36,8 @@ agentb/
 │   │   ├── frontend/       # API 演示前端（index.html / app.js / style.css）
 │   │   └── .test/          # 单元/端到端测试
 │   ├── rag/                # RAG 模块（controller/service/DAO/ingestion/ui）
+│   ├── mcp_servers/        # 项目内自建的 MCP 服务（上游工具：报告/巡查/研判）
+│   ├── skills/             # 技能目录（SKILL.md，按区域替换）
 │   ├── workspaces/         # 工作区数据（workspace.base_dir）
 │   ├── tests/              # RAG 等 pytest 用例
 │   ├── start-dev.bat       # 一键启动开发后端
@@ -60,23 +64,29 @@ flowchart LR
   subgraph 服务端
     F[FastAPI 应用 WorkBranch/backend]
     R[RAG 模块 WorkBranch/rag]
+    X[上游工具 MCP 服务 WorkBranch/mcp_servers]
   end
   subgraph 存储与外部
     M[(MySQL 会话/对话)]
     D[(Redis 可选 队列/租约)]
     S[(SQLite + sqlite-vec RAG 元数据/向量)]
     L[LLM OpenAI 兼容]
+    U[上游系统：报告/巡查/研判]
   end
   B --> F
   C --> F
   F --> M
   F --> D
   F --> R
+  F --> X
+  X --> U
   R --> S
   F --> L
 ```
 
 多实例部署时，Nginx 按一致性哈希把请求路由到多个单 worker API 实例；Redis 保存会话归属租约、心跳与可续传的对话流；MySQL 仍是会话/对话的唯一事实来源。RAG 入库仅由 `agentb-rag-worker` 执行。详见 [deploy/README.md](deploy/README.md)。
+
+上游工具（报告上传/巡查记录/AI 研判）由独立的 MCP 服务 `agentb-mcp-upstream-tools` 提供，后端作为 MCP 客户端接入；该服务与 API 实例必须共享工作区目录（报告文件路径）。完整接入步骤见 [deploy/接入报告.md](deploy/接入报告.md)。
 
 ## 快速开始（开发模式）
 
@@ -149,7 +159,7 @@ docker compose --env-file .env.compose -f compose.yml -f compose.platform.yml up
 
 ### 方式二：Linux 裸机（无 Docker）
 
-1. 安装 Python 3.12、MySQL 8.x（库/表启动时自动创建）、可选 Redis 与 LibreOffice。
+1. 安装 Python 3.12、MySQL 8.x（库/表启动时自动创建）、可选 Redis，以及 **LibreOffice**（`.doc` 读取与 PDF 生成，安装后用 `LIBREOFFICE_PATH` 或 PATH 暴露 `soffice`）。
 2. 安装依赖（`gunicorn`/`psutil` 不在 requirements.txt 中，需单独安装）：
 
 ```bash
@@ -175,7 +185,18 @@ cd WorkBranch
 ../.venv/bin/python -m rag.worker
 ```
 
-6. 生产环境建议用 systemd 托管上述两个进程（`Restart=always`），日志由 Gunicorn 输出到 stdout/stderr。
+6. 上游工具 MCP 服务（另开一个进程，提供报告上传/巡查记录/AI 研判四类工具）：
+
+```bash
+cd WorkBranch
+AGENTB_MCP_HOST=0.0.0.0 AGENTB_MCP_PORT=8181 \
+AGENTB_MCP_UPSTREAM_CONFIG=/etc/agentb/mcp_upstream_tools.json \
+../.venv/bin/python -m mcp_servers.upstream_tools.server
+```
+
+配置文件格式与字段见 [deploy/接入报告.md](deploy/接入报告.md) 第五节；该进程与 API **必须看到同一个工作区目录**（报告文件按绝对路径传递）。
+
+7. 生产环境建议用 systemd 托管上述三个进程（`Restart=always`），日志由 Gunicorn 输出到 stdout/stderr。
 
 ### 运维要点
 
@@ -212,6 +233,9 @@ cd WorkBranch
 - `mq.max_size`：内存消息队列大小。
 - `agent`：编排版本、工具并行度、超时、`ask_user_auto_approve` 等。
 - `agent_tools`：SQL 数据库连接、PDF 解析、外部 API 地址等。
+- `agent_tools.skills.dir`：技能目录（默认 `skills`，相对 `WorkBranch`），区域落地替换该目录即可。
+- `agent_tools.mcp.upstream_tools`：上游工具 MCP 服务地址与超时（`url` / `timeout_seconds` / `probe_timeout_seconds`）。
+- 上游系统地址与密钥不再放在 `setting.json`：改由 MCP 服务自身的 `config.json`（`AGENTB_MCP_UPSTREAM_CONFIG`）与 `AGENTB_MCP_*` 环境变量管理。
 
 非空环境变量（如 `LLM_*`）优先于 setting.json 中的对应值。
 
@@ -241,6 +265,7 @@ pytest WorkBranch/tests
 
 ## 相关文档
 
+- [deploy/接入报告.md](deploy/接入报告.md)：**区域平台接入报告**（服务构成、接口、部署、MCP 与技能配置、新区域适配清单、验收 checklist）
 - [deploy/README.md](deploy/README.md)：多实例部署、亲和性契约、运维
 - [deploy/FRONTEND_AFFINITY.md](deploy/FRONTEND_AFFINITY.md)：前端会话归属字段生命周期
 - [WorkBranch/rag/README.md](WorkBranch/rag/README.md)：RAG 模块说明
