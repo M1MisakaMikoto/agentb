@@ -78,6 +78,12 @@ V4_TOOL_DENIAL_PROMPT = """## 工具被安全拦截时的处理
 3. 同一被拒操作连续重试会被判为失败循环并终止任务，最终用户只能看到失败终止提示，无法得到有效结论。"""
 
 
+V4_BRIDGE_ONLY_SCOPE_PROMPT = """## 能力范围（桥梁，暂不支持隧道）
+1. 本部署的评估与预测能力**只覆盖桥梁**：BCI 计算、趋势预测、规范查询都基于城市桥梁/公路桥涵规范（CJJ 99-2017、CJJ/T 233-2015、JTG H11-2004）。
+2. **暂不支持隧道**（含隧道结构、隧道监测数据的评估与预测）：遇到隧道任务时，直接向用户说明"当前版本暂不支持隧道"，不要按桥梁规范或桥梁口径套算，也不要臆造隧道评分标准或分级。
+3. 若用户坚持，可提供不越界的替代支持（例如仅做文档内容提取、信息汇总），但**不得给出隧道技术状况评分、等级或退化预测结论**。"""
+
+
 V4_DIRECTOR_EXECUTION_PROMPT = """## Director 执行规则
 1. 禁止调用 thinking 及除 call_prediction_agent 外的 call_*_agent 子代理工具；桥梁预测/BCI/趋势分析任务应委托 call_prediction_agent，其余任务直接使用业务工具完成。"""
 
@@ -361,6 +367,7 @@ def build_tagged_prompt(
         system_prompt = system_prompt + "\n\n" + V4_REPORT_PROVENANCE_PROMPT
         system_prompt = system_prompt + "\n\n" + V4_KNOWLEDGE_SOURCE_PROMPT
         system_prompt = system_prompt + "\n\n" + V4_TOOL_DENIAL_PROMPT
+        system_prompt = system_prompt + "\n\n" + V4_BRIDGE_ONLY_SCOPE_PROMPT
     if system_prompt_override:
         system_prompt = system_prompt + "\n\n" + system_prompt_override
 

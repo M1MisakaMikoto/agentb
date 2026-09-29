@@ -111,7 +111,7 @@ ALL_TOOLS = {
     },
     "call_prediction_agent": {
         "name": "call_prediction_agent",
-        "description": "调用桥梁检测预测子代理，用于BCI计算、趋势预测和规范查询",
+        "description": "调用桥梁检测预测子代理，用于BCI计算、趋势预测和规范查询；仅支持桥梁，暂不支持隧道（隧道任务不要委托该子代理，直接向用户说明暂不支持）",
         "params": 'call_prediction_agent:{"task_description":"(交给预测子代理的任务描述，例如：基于历史检测报告计算BCI并预测未来状况)"}'
     },
     "call_plan_agent": {
@@ -172,22 +172,22 @@ ALL_TOOLS = {
     # --- Prediction Tools ---
     "calculate_bci": {
         "name": "calculate_bci",
-        "description": "计算桥梁技术状况指数(BCI)，基于CJJ 99-2017加权扣分法",
+        "description": "计算桥梁技术状况指数(BCI)，基于CJJ 99-2017加权扣分法；仅适用于桥梁，不支持隧道",
         "params": 'calculate_bci:{"historical_reports":"(历史报告列表)","target_year":"(目标年份，默认2024)","standard":"(规范标准，默认CJJ 99-2017)"}'
     },
     "predict_trend": {
         "name": "predict_trend",
-        "description": "预测桥梁退化趋势，默认使用数据驱动的auto模型选择，并支持线性回归/多项式/指数/保守/集成/退化速率模型",
+        "description": "预测桥梁退化趋势，默认使用数据驱动的auto模型选择，并支持线性回归/多项式/指数/保守/集成/退化速率模型；仅适用于桥梁 BCI 序列，不支持隧道",
         "params": 'predict_trend:{"historical_bci":"(BCI历史数据列表，格式示例：[{\"year\":2018,\"bci\":81.8},{\"year\":2020,\"bci\":78.5}]，必填)","method":"(预测方法：auto/anchored_trend/linear_regression/polynomial/exponential/conservative/ensemble/degradation_rate，默认auto)","maintenance_events":"(可选，维修/加固/修复事件列表)"}'
     },
     "query_standard": {
         "name": "query_standard",
-        "description": "查询桥梁检测行业规范(CJJ 99-2017/CJJ/T 233-2015/JTG H11-2004)",
+        "description": "查询桥梁/桥涵检测行业规范(CJJ 99-2017/CJJ/T 233-2015/JTG H11-2004)；不含隧道规范",
         "params": 'query_standard:{"bci_score":"(BCI分数，用于等级判定)","standard_version":"(规范版本)","query_type":"(查询类型：general/grade/formula/maintenance)"}'
     },
     "bridge_report_parser": {
         "name": "bridge_report_parser",
-        "description": "桥梁检测报告解析 - 从历史报告(.docx/.doc)提取BCI数据、部件评分、病害描述，同时保留原报告格式供生成预测报告参考",
+        "description": "桥梁检测报告解析 - 从历史报告(.docx/.doc)提取BCI数据、部件评分、病害描述，同时保留原报告格式供生成预测报告参考；仅适用于桥梁报告，不支持隧道",
         "params": 'bridge_report_parser:{"file_paths":"(必填)历史报告文件路径列表，如[\"报告2018.docx\",\"报告2020.docx\"]","include_format_template":"(可选)是否包含原报告格式，默认true"}'
     },
     # --- 图像理解工具 ---

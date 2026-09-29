@@ -91,6 +91,10 @@ def test_director_prompt_keeps_prediction_and_guides_document_reading(
     assert "数据库的报错行为保持不变" in system_prompt
     assert "不罗列工具名、参数与调用链" in system_prompt
 
+    assert prompt.V4_BRIDGE_ONLY_SCOPE_PROMPT in system_prompt
+    assert "暂不支持隧道" in system_prompt
+    assert "不得给出隧道技术状况评分" in system_prompt
+
 
 def test_non_director_tool_schema_is_not_filtered(monkeypatch):
     visible_tools = []
@@ -143,6 +147,15 @@ def test_prediction_prompt_includes_document_reading_guidance():
     assert prompt.V4_REPORT_PROVENANCE_PROMPT in system_prompt
     assert prompt.V4_KNOWLEDGE_SOURCE_PROMPT in system_prompt
     assert prompt.V4_SKILL_USAGE_PROMPT in system_prompt
+    assert prompt.V4_BRIDGE_ONLY_SCOPE_PROMPT in system_prompt
+    assert "暂不支持隧道" in system_prompt
+
+
+def test_prediction_agent_prompt_declares_bridge_only_scope():
+    from service.agent_service.prompts.agent_prompts import PREDICTION_AGENT_PROMPT
+
+    assert "只处理桥梁" in PREDICTION_AGENT_PROMPT
+    assert "隧道暂不支持" in PREDICTION_AGENT_PROMPT
 
 
 def test_report_provenance_guidance_is_limited_to_report_producing_agents():

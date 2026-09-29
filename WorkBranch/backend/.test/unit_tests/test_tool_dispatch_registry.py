@@ -74,6 +74,22 @@ def test_registry_builds_callable_executors_for_builtin_and_mcp_tools():
         assert required in executors, f"{required} 未注册执行器"
 
 
+def test_bridge_only_scope_is_declared_in_tool_descriptions():
+    """桥梁/隧道能力边界必须出现在工具说明里，避免模型误用。"""
+    from service.agent_service.tools.registry import ALL_TOOLS
+
+    for tool_name in (
+        "call_prediction_agent",
+        "calculate_bci",
+        "predict_trend",
+        "query_standard",
+        "bridge_report_parser",
+    ):
+        description = ALL_TOOLS[tool_name]["description"]
+        assert "隧道" in description, f"{tool_name} 的工具说明未声明不支持隧道"
+        assert "不支持" in description or "不含隧道" in description, tool_name
+
+
 def test_unknown_tool_returns_explicit_error(monkeypatch):
     """未注册工具应返回明确错误，而不是伪造成功。"""
     import service.agent_service.graph.subgraphs.tool_executor as tool_executor
