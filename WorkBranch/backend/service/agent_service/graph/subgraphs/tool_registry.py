@@ -112,28 +112,44 @@ def _write_tool_event(
     )
 
 
-def get_allowed_tools(agent_type: str, settings_service=None, use_settings_override: bool = False) -> List[str]:
-    """
-    获取 Agent 允许的工具列表。
+def _finalize_allowed_tools(allowed: List[str], settings_service=None) -> List[str]:
+    """统一收尾过滤：chat 已退役；ask_user_question 可整体关闭。"""
+    tools = [tool for tool in allowed if tool != "chat"]
+    if not ask_user_question_enabled(settings_service):
+        tools = [tool for tool in tools if tool != "ask_user_question"]
+    return tools
 
-    参数:
-        agent_type: Agent 类型
-        settings_service: 设置服务实例
-        use_settings_override: 是否使用 settings_service 的工具权限覆盖。
-                              默认 False，表示优先使用 AgentDefinition 定义。
-                              设为 True 可启用 settings_service 覆盖。
+
+def get_allowed_tools(agent_type: str, settings_service=None, use_settings_override: bool = False) -> List[str]:
+    """获取 Agent 允许的工具列表。
+
+    取值顺序（配置优先）：
+        1. settings.tool_permissions.<agent>.allowed（存在且为 list 时生效；形状不对直接报错）
+        2. AgentDefinition.allowed_tools（历史路径）
+        3. 内置 default_permissions 兜底
+    参数 use_settings_override 保留兼容（配置优先后该开关不再影响结果）。
     """
-    if use_settings_override and settings_service is not None:
+    if settings_service is not None:
         try:
             permissions = settings_service.get("tool_permissions")
-            if agent_type in permissions:
-                console.info(f"[tool_registry] 使用 settings_service 覆盖 {agent_type} 的工具权限")
-                allowed = permissions[agent_type].get("allowed", [])
-                if not ask_user_question_enabled(settings_service):
-                    allowed = [tool for tool in allowed if tool != "ask_user_question"]
-                return allowed
         except KeyError:
-            pass
+            permissions = None
+
+        if permissions is not None:
+            if not isinstance(permissions, dict):
+                raise ValueError("tool_permissions 必须是对象（agent_type -> {allowed: [...]}）")
+            entry = permissions.get(agent_type)
+            if entry is not None:
+                if not isinstance(entry, dict) or not isinstance(entry.get("allowed"), list):
+                    raise ValueError(
+                        f"tool_permissions.{agent_type}.allowed 必须是数组"
+                    )
+                console.info(
+                    f"[tool_registry] 使用配置 tool_permissions.{agent_type} 的工具权限"
+                )
+                return _finalize_allowed_tools(
+                    [str(name) for name in entry["allowed"]], settings_service
+                )
 
     try:
         from ..definitions import get_definition
@@ -155,10 +171,7 @@ def get_allowed_tools(agent_type: str, settings_service=None, use_settings_overr
         tools = default_permissions.get(agent_type, default_permissions["director_agent"])
 
     # V4：chat 工具已退役，不暴露给模型（旧版 v2/v3 已弃用，不再保留 chat 终止工具）
-    tools = [tool for tool in tools if tool != "chat"]
-    if not ask_user_question_enabled(settings_service):
-        tools = [tool for tool in tools if tool != "ask_user_question"]
-    return tools
+    return _finalize_allowed_tools(list(tools), settings_service)
 
 
 def filter_tools_by_agent_type(agent_type: str, settings_service=None, use_settings_override: bool = False) -> List[dict]:

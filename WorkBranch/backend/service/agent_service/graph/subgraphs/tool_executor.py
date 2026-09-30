@@ -480,24 +480,40 @@ def _make_executor_factories() -> dict:
         ),
         "switch_execution_mode": lambda ctx: _execute_switch_execution_mode,
     }
-    for name in sorted(MCP_TOOLS):
-        factories[name] = _mcp_executor_factory(name)
     for name in sorted(WORKSPACE_TOOLS):
         factories[name] = _workspace_executor_factory(name)
     return factories
 
 
-_EXECUTOR_FACTORIES = _make_executor_factories()
+_BUILTIN_EXECUTOR_FACTORIES = _make_executor_factories()
+
+
+def _configured_mcp_tool_names() -> list:
+    """已登记（配置清单内）的 MCP 工具名；配置读取失败时按默认集合告警降级。"""
+    from ...tools.mcp_client import configured_mcp_tools
+
+    try:
+        return sorted(configured_mcp_tools())
+    except Exception as e:
+        console.warning(
+            f"[tool_executor] 读取 MCP 工具清单失败，改用默认集合 {sorted(MCP_TOOLS)}：{e}"
+        )
+        return sorted(MCP_TOOLS)
 
 
 def build_tool_executors(ctx: dict) -> dict:
     """构建「工具名 -> 执行器」注册表（ctx 提供工作区/LLM/消息上下文）。"""
-    return {name: factory(ctx) for name, factory in _EXECUTOR_FACTORIES.items()}
+    factories = dict(_BUILTIN_EXECUTOR_FACTORIES)
+    for name in _configured_mcp_tool_names():
+        factories[name] = _mcp_executor_factory(name)
+    return {name: factory(ctx) for name, factory in factories.items()}
 
 
 def registered_executor_tool_names() -> frozenset:
     """已注册执行器的工具名集合（供一致性校验与文档使用）。"""
-    return frozenset(_EXECUTOR_FACTORIES)
+    return frozenset(_BUILTIN_EXECUTOR_FACTORIES) | frozenset(
+        _configured_mcp_tool_names()
+    )
 
 
 def execute_tool(state: ToolExecutionState, workspace_service=None, llm_service=None, token_callback: Optional[Callable[[str], None]] = None, message_context: dict = None) -> dict:
@@ -760,17 +776,21 @@ def _push_mcp_alert(message_context: dict, error: str) -> None:
 
 def _execute_mcp_tool(tool_name: str, tool_args: dict, message_context: dict = None) -> dict:
     """经 MCP 客户端执行上游工具；失败时如实返回错误并重复推送告警。"""
-    from ...tools.mcp_client import execute_mcp_tool
+    from ...tools.mcp_client import execute_mcp_tool, mcp_tool_file_args
 
     args = dict(tool_args)
-    report_file = args.get("reportFile")
-    if report_file and not os.path.isabs(report_file) and message_context:
+    # 文件类参数按配置声明（tool_options.<工具>.file_args）解析为工作区绝对路径
+    for file_arg in mcp_tool_file_args(tool_name):
+        raw_path = args.get(file_arg)
+        if not raw_path or os.path.isabs(raw_path):
+            continue
+        assert message_context, f"MCP 工具 {tool_name} 的 {file_arg} 需要工作区上下文"
         workspace_id = message_context.get("workspace_id")
         workspace_service = message_context.get("workspace_service")
-        assert workspace_id and workspace_service, "MCP 报告工具需要工作区上下文"
-        allowed, resolved = workspace_service.resolve_path(workspace_id, report_file)
-        assert allowed, f"报告文件路径超出工作区：{report_file} → {resolved}"
-        args["reportFile"] = resolved
+        assert workspace_id and workspace_service, f"MCP 工具 {tool_name} 需要工作区上下文"
+        allowed, resolved = workspace_service.resolve_path(workspace_id, raw_path)
+        assert allowed, f"文件路径超出工作区：{raw_path} → {resolved}"
+        args[file_arg] = resolved
 
     tool_result = execute_mcp_tool(tool_name, args)
     if tool_result.get("mcp_service_error"):

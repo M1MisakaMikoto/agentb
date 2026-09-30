@@ -108,9 +108,32 @@ DEFAULT_SETTINGS = {
             "upstream_tools": {
                 "url": "http://127.0.0.1:8181/mcp",
                 "timeout_seconds": 60,
-                "probe_timeout_seconds": 5
+                "probe_timeout_seconds": 5,
+                "tools": [
+                    "submit_facility_report",
+                    "submit_facility_forecast",
+                    "submit_dailypatrol_record",
+                    "submit_ai_judgment_issue"
+                ],
+                "tool_options": {
+                    "submit_facility_report": {
+                        "file_args": ["reportFile"]
+                    },
+                    "submit_facility_forecast": {
+                        "file_args": ["reportFile"]
+                    }
+                }
             }
         }
+    },
+    "tool_permissions": {
+        "director_agent": {"allowed": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "call_prediction_agent", "call_plan_agent", "ask_user_question", "list_workspace_files", "get_workspace_info", "search_files", "update_todo", "rag_search", "skill", "document", "sql_query", "submit_ai_judgment_issue", "submit_facility_report", "submit_facility_forecast", "submit_dailypatrol_record"]},
+        "sub_agent": {"allowed": ["read_file", "write_file", "list_dir", "thinking", "chat", "document", "skill", "bridge_report_parser", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "submit_ai_judgment_issue", "submit_facility_report", "submit_facility_forecast", "submit_dailypatrol_record", "rag_search"]},
+        "plan_agent": {"allowed": ["read_file", "write_file", "list_dir", "explore_code", "thinking", "rag_search", "skill", "document", "sql_query"]},
+        "review_agent": {"allowed": ["read_file", "list_dir", "explore_code", "thinking", "chat", "sql_query", "rag_search", "skill"]},
+        "explore_agent": {"allowed": ["read_file", "list_dir", "thinking", "chat", "explore_internet", "list_workspace_files", "get_workspace_info", "search_files", "sql_query", "rag_search", "skill"]},
+        "prediction_agent": {"allowed": ["document", "read_file", "thinking", "chat", "skill", "bridge_report_parser", "calculate_bci", "predict_trend", "query_standard", "list_workspace_files", "get_workspace_info", "sql_query", "update_todo", "submit_facility_report", "submit_facility_forecast", "rag_search"]},
+        "admin_agent": {"allowed": ["read_file", "write_file", "delete_file", "list_dir", "create_dir", "explore_code", "explore_internet", "thinking", "chat", "call_explore_agent", "call_review_agent", "list_workspace_files", "get_workspace_info", "search_files", "sql_query", "submit_ai_judgment_issue", "rag_search", "skill"]}
     },
     "logging": {
         "enabled": True,

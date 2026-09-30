@@ -12,9 +12,10 @@ import json
 from typing import Any, Dict, List, Optional
 
 from core.logging import console
-from .mcp_health import record_failure, record_success
+from .mcp_health import record_failure, record_inventory, record_success
 
-# 这些工具已不在 ALL_TOOLS 中静态维护，改由 MCP 服务提供
+# 默认接入的上游工具（等价于 setting.json 里 agent_tools.mcp.upstream_tools.tools 的默认值；
+# 实际以配置为准，常量仅供默认配置与测试对照）
 MCP_TOOL_NAMES = {
     "submit_facility_report",
     "submit_facility_forecast",
@@ -35,7 +36,58 @@ def _server_settings() -> Dict[str, Any]:
         "url": settings.get(f"{group}:url"),
         "timeout_seconds": float(settings.get(f"{group}:timeout_seconds")),
         "probe_timeout_seconds": float(settings.get(f"{group}:probe_timeout_seconds")),
+        "tools": settings.get(f"{group}:tools"),
+        "tool_options": settings.get(f"{group}:tool_options"),
     }
+
+
+def configured_mcp_tools() -> set:
+    """从配置读取"登记"到本系统的 MCP 工具名清单（缺失或形状不对直接报错）。"""
+    names = _server_settings()["tools"]
+    if not isinstance(names, list) or not names:
+        raise ValueError(
+            "MCP 工具清单未配置或为空：agent_tools.mcp.upstream_tools.tools"
+        )
+    cleaned = {str(name).strip() for name in names if str(name).strip()}
+    if not cleaned:
+        raise ValueError(
+            "MCP 工具清单为空：agent_tools.mcp.upstream_tools.tools"
+        )
+    return cleaned
+
+
+def _tool_option(tool_name: str, key: str, default: Any = None) -> Any:
+    options = _server_settings()["tool_options"]
+    if options is None:
+        return default
+    if not isinstance(options, dict):
+        raise ValueError(
+            "agent_tools.mcp.upstream_tools.tool_options 必须是对象（工具名 -> 选项）"
+        )
+    entry = options.get(tool_name)
+    if entry is None:
+        return default
+    if not isinstance(entry, dict):
+        raise ValueError(f"tool_options.{tool_name} 必须是对象")
+    return entry.get(key, default)
+
+
+def mcp_tool_file_args(tool_name: str) -> List[str]:
+    """该工具中需要按工作区解析为绝对路径的参数名（配置驱动，默认空）。"""
+    value = _tool_option(tool_name, "file_args", [])
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"tool_options.{tool_name}.file_args 必须是数组")
+    return [str(item) for item in value]
+
+
+def mcp_tool_timeout_seconds(tool_name: str) -> float:
+    """该工具的 MCP 调用超时（可覆盖全局值）。"""
+    value = _tool_option(tool_name, "timeout_seconds")
+    if value is None:
+        return _server_settings()["timeout_seconds"]
+    return float(value)
 
 
 def render_tool_params(tool) -> str:
@@ -87,29 +139,57 @@ def list_mcp_tools() -> list:
     return asyncio.run(_list_tools_async(settings["url"], settings["timeout_seconds"]))
 
 
+def classify_mcp_tools(advertised: list) -> Dict[str, Any]:
+    """把服务端自报工具分类：已登记（可写入工具表）/ 未登记（忽略）/ 配置登记但服务缺失。
+
+    - registered：配置清单里有、服务端也提供 → 生成 ALL_TOOLS 条目
+    - unlisted：服务端有、配置清单没有 → 告警并忽略（不暴露给 agent）
+    - missing：配置清单有、服务端没有 → 告警（该工具不可用，其余工具照常）
+    """
+    configured = configured_mcp_tools()
+    entries: Dict[str, Dict[str, Any]] = {}
+    registered: List[str] = []
+    unlisted: List[str] = []
+    for tool in advertised:
+        if tool.name in configured:
+            entries[tool.name] = {
+                "name": tool.name,
+                "description": tool.description or "",
+                "params": render_tool_params(tool),
+            }
+            registered.append(tool.name)
+        else:
+            unlisted.append(tool.name)
+    missing = sorted(configured.difference(registered))
+    return {
+        "entries": entries,
+        "registered": sorted(registered),
+        "unlisted": sorted(unlisted),
+        "missing": missing,
+    }
+
+
 def register_mcp_tools() -> List[str]:
-    """把 MCP 工具写入 ALL_TOOLS；成功返回已注册的工具名列表。"""
+    """按配置登记 MCP 工具（先分类、再一次性写入工具表，避免半注册）。"""
     from .registry import ALL_TOOLS
 
-    tools = list_mcp_tools()
-    registered: List[str] = []
-    for tool in tools:
-        if tool.name not in MCP_TOOL_NAMES:
-            raise ValueError(
-                f"MCP 服务返回了未登记的上游工具：{tool.name}"
-                f"（本系统只接入 {sorted(MCP_TOOL_NAMES)}）"
-            )
-        ALL_TOOLS[tool.name] = {
-            "name": tool.name,
-            "description": tool.description or "",
-            "params": render_tool_params(tool),
-        }
-        registered.append(tool.name)
+    outcome = classify_mcp_tools(list_mcp_tools())
+    _warn_scope(outcome)
+    ALL_TOOLS.update(outcome["entries"])
+    record_inventory(outcome["registered"], outcome["unlisted"], outcome["missing"])
+    return outcome["registered"]
 
-    missing = MCP_TOOL_NAMES.difference(registered)
-    if missing:
-        raise ValueError(f"MCP 服务缺少工具：{sorted(missing)}")
-    return registered
+
+def _warn_scope(outcome: Dict[str, Any]) -> None:
+    for name in outcome["unlisted"]:
+        console.warning(
+            f"[mcp] 上游 MCP 服务返回未登记工具，已忽略且不对 agent 暴露：{name}"
+            f"（如需接入请加入 agent_tools.mcp.upstream_tools.tools）"
+        )
+    for name in outcome["missing"]:
+        console.warning(
+            f"[mcp] 配置已登记但 MCP 服务未提供该工具：{name}（该工具不可用）"
+        )
 
 
 def _error_text(call_result) -> str:
@@ -165,10 +245,11 @@ def execute_mcp_tool(tool_name: str, tool_args: dict) -> dict:
     import json
 
     settings = _server_settings()
+    timeout_seconds = mcp_tool_timeout_seconds(tool_name)
     try:
         payload = asyncio.run(
             _call_tool_async(
-                settings["url"], settings["timeout_seconds"], tool_name, tool_args
+                settings["url"], timeout_seconds, tool_name, tool_args
             )
         )
     except Exception as e:
@@ -205,30 +286,30 @@ def probe_mcp_service() -> Optional[str]:
     """启动探活：可用返回 None，不可用返回错误文本（并记录告警状态）。"""
     settings = _server_settings()
     try:
-        from .registry import ALL_TOOLS
-
         tools = asyncio.run(
             _list_tools_async(settings["url"], settings["probe_timeout_seconds"])
         )
-        registered: List[str] = []
-        for tool in tools:
-            if tool.name not in MCP_TOOL_NAMES:
-                raise ValueError(f"MCP 服务返回了未登记的上游工具：{tool.name}")
-            ALL_TOOLS[tool.name] = {
-                "name": tool.name,
-                "description": tool.description or "",
-                "params": render_tool_params(tool),
-            }
-            registered.append(tool.name)
-        missing = MCP_TOOL_NAMES.difference(registered)
-        if missing:
-            raise ValueError(f"MCP 服务缺少工具：{sorted(missing)}")
+        outcome = classify_mcp_tools(tools)
     except Exception as e:
         detail = describe_exception(e)
         count = record_failure(detail)
         message = f"上游工具 MCP 服务探活失败（{detail}），累计失败 {count} 次"
         console.error(f"[mcp] {message}")
         return message
+
+    from .registry import ALL_TOOLS
+
+    ALL_TOOLS.update(outcome["entries"])
+    _warn_scope(outcome)
+    record_inventory(outcome["registered"], outcome["unlisted"], outcome["missing"])
     record_success()
-    console.info("[mcp] 上游工具 MCP 服务探活成功，工具已注册")
+    console.info(
+        f"[mcp] 上游工具 MCP 服务探活成功，已登记 {len(outcome['registered'])} 个工具"
+        + (
+            f"，忽略未登记 {len(outcome['unlisted'])} 个"
+            if outcome["unlisted"]
+            else ""
+        )
+        + (f"，服务缺失 {len(outcome['missing'])} 个" if outcome["missing"] else "")
+    )
     return None

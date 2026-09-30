@@ -21,6 +21,9 @@ _state: Dict[str, Any] = {
     "error": None,
     "checked_at": None,
     "failure_count": 0,
+    "registered": [],
+    "unlisted": [],
+    "missing": [],
 }
 
 
@@ -29,6 +32,14 @@ def record_success() -> None:
         _state["available"] = True
         _state["error"] = None
         _state["checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def record_inventory(registered: list, unlisted: list, missing: list) -> None:
+    """记录本次工具登记分布：已登记 / 未登记被忽略 / 配置登记但服务缺失。"""
+    with _lock:
+        _state["registered"] = list(registered)
+        _state["unlisted"] = list(unlisted)
+        _state["missing"] = list(missing)
 
 
 def record_failure(error: str) -> int:
@@ -66,5 +77,8 @@ def reset() -> None:
                 "error": None,
                 "checked_at": None,
                 "failure_count": 0,
+                "registered": [],
+                "unlisted": [],
+                "missing": [],
             }
         )

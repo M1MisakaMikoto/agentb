@@ -234,7 +234,7 @@ async def test_mcp_server_exposes_four_tools_and_forwards_calls(monkeypatch):
         listed = await session.list_tools()
         tools = list(listed.tools)
         names = sorted(tool.name for tool in tools)
-        assert names == sorted(mcp_client.MCP_TOOL_NAMES)
+        assert names == sorted(mcp_client.configured_mcp_tools())
 
         for tool in tools:
             params = mcp_client.render_tool_params(tool)
