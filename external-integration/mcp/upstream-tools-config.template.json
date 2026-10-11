@@ -1,0 +1,15 @@
+{
+    "facility_report": {
+        "api_url": "http://<REPORT_SYSTEM_HOST>:<PORT>",
+        "timeout_seconds": 30
+    },
+    "dailypatrol": {
+        "api_url": "http://<DAILYPATROL_SYSTEM_HOST>:<PORT>",
+        "timeout_seconds": 30,
+        "secret_key": "<SET_VIA_AGENTB_MCP_DAILYPATROL_SECRET_KEY>"
+    },
+    "ai_judgment": {
+        "api_url": "http://<AI_JUDGMENT_SYSTEM_HOST>:<PORT>",
+        "timeout_seconds": 30
+    }
+}

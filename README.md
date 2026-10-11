@@ -169,34 +169,17 @@ python3 -m venv .venv
 ```
 
 3. 配置：`cp .env.example .env`，修改 `MYSQL_*` 与 `LLM_*`。
-4. 生产启动（Gunicorn + UvicornWorker，默认绑定 `0.0.0.0:8000`）：
+4. 准备上游工具 MCP 服务的区域配置（**必做**）：复制 `WorkBranch/mcp_servers/upstream_tools/config.example.json` 并替换三个上游系统地址与巡查回写密钥，例如放到 `/etc/agentb/mcp_upstream_tools.json`；配置文件格式与字段见 [deploy/接入报告.md](deploy/接入报告.md) 第五节。
+5. 一键启动三个进程（上游工具 MCP 服务 + RAG worker + API）：
 
 ```bash
-export VENV=$PWD/.venv
-export PYTHONPATH=$PWD/WorkBranch/backend:$PWD/WorkBranch
-cd WorkBranch/backend
-$VENV/bin/gunicorn app:app -c gunicorn.conf.py
-```
-
-5. RAG worker（另开一个进程执行入库任务）：
-
-```bash
-cd WorkBranch
-../.venv/bin/python -m rag.worker
-```
-
-6. 上游工具 MCP 服务（另开一个进程，提供报告上传/巡查记录/AI 研判四类工具）：
-
-```bash
-cd WorkBranch
-AGENTB_MCP_HOST=0.0.0.0 AGENTB_MCP_PORT=8181 \
 AGENTB_MCP_UPSTREAM_CONFIG=/etc/agentb/mcp_upstream_tools.json \
-../.venv/bin/python -m mcp_servers.upstream_tools.server
+    bash deploy/bare-metal/start-all.sh
 ```
 
-配置文件格式与字段见 [deploy/接入报告.md](deploy/接入报告.md) 第五节；该进程与 API **必须看到同一个工作区目录**（报告文件按绝对路径传递）。
+脚本先校验虚拟环境、MCP 配置文件与 gunicorn，再依次拉起三个进程，Ctrl+C 时统一停止；MCP 服务启动时会校验配置（缺文件/缺段/缺字段直接退出），健康检查为 `GET http://127.0.0.1:8181/healthz`。该进程与 API **必须看到同一个工作区目录**（报告文件按绝对路径传递）。
 
-7. 生产环境建议用 systemd 托管上述三个进程（`Restart=always`），日志由 Gunicorn 输出到 stdout/stderr。
+6. 生产环境建议用 systemd 托管上述三个进程（`Restart=always`），日志由 Gunicorn 输出到 stdout/stderr。
 
 ### 运维要点
 
@@ -266,6 +249,7 @@ pytest WorkBranch/tests
 ## 相关文档
 
 - [deploy/接入报告.md](deploy/接入报告.md)：**区域平台接入报告**（服务构成、接口、部署、MCP 与技能配置、新区域适配清单、验收 checklist）
+- [external-integration/](external-integration/README.md)：**对外接入文档包**（外部系统/平台对接 AgentB：接口与 SSE 协议、鉴权与亲和契约、MCP 随部署说明、curl/Python 示例、OpenAPI 快照）
 - [deploy/README.md](deploy/README.md)：多实例部署、亲和性契约、运维
 - [deploy/FRONTEND_AFFINITY.md](deploy/FRONTEND_AFFINITY.md)：前端会话归属字段生命周期
 - [WorkBranch/rag/README.md](WorkBranch/rag/README.md)：RAG 模块说明

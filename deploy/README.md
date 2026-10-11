@@ -63,13 +63,20 @@ Two things matter when onboarding a new region:
    same path as the API containers because report files are passed as absolute
    paths inside the workspace.
 
+The service validates its configuration at startup and exits on a missing file,
+section, or field, so an un-replaced region config fails the container instead of
+failing later tool calls. Its healthcheck calls `GET /healthz`, which revalidates
+the config and asserts that all four tools are registered; the endpoint returns
+503 otherwise.
+
 Availability semantics: probing runs as a background task at API startup and
 only raises a warning (visible in `/health` under `mcp`). While unavailable the
 four upstream tools are absent from the model's tool protocol; call-time
 failures are reported and re-warned (log, conversation `tool_event`, and a
 `system_alert` stream segment). There is no local fallback and no cached tool
 list. Bare-metal deployments run the same module as a third process with
-`AGENTB_MCP_HOST` / `AGENTB_MCP_PORT` set.
+`AGENTB_MCP_HOST` / `AGENTB_MCP_PORT` set, or start everything at once with
+`deploy/bare-metal/start-all.sh`.
 
 ## Skills
 
