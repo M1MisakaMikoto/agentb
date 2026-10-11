@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import sys
@@ -78,6 +79,18 @@ def test_upstream_config_requires_existing_file(monkeypatch, work_tmp_dir):
         upstream_cfg.load_config()
 
 
+def _write_valid_config(monkeypatch, work_tmp_dir) -> Path:
+    config_file = work_tmp_dir / "config.json"
+    config_file.write_text(
+        '{"facility_report": {"api_url": "http://a", "timeout_seconds": 10},'
+        ' "dailypatrol": {"api_url": "http://b", "timeout_seconds": 10, "secret_key": "k"},'
+        ' "ai_judgment": {"api_url": "http://c", "timeout_seconds": 10}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(upstream_cfg.CONFIG_FILE_ENV, str(config_file))
+    return config_file
+
+
 def test_upstream_config_rejects_missing_field(monkeypatch, work_tmp_dir):
     config_file = work_tmp_dir / "config.json"
     config_file.write_text(
@@ -109,6 +122,53 @@ def test_upstream_config_env_override(monkeypatch, work_tmp_dir):
     assert data["dailypatrol"]["secret_key"] == "override-key"
     assert data["ai_judgment"]["timeout_seconds"] == 77
     assert upstream_cfg.tool_config("submit_facility_forecast")["api_url"] == "http://a"
+
+
+def test_example_config_ships_placeholder_secret():
+    """模板不得携带看起来可用的巡查回写密钥，避免新区域直接沿用。"""
+    example_path = Path(upstream_cfg.DEFAULT_CONFIG_FILE).with_name("config.example.json")
+    example = json.loads(example_path.read_text(encoding="utf-8"))
+
+    secret = example["dailypatrol"]["secret_key"]
+    assert secret.startswith("REPLACE_ME")
+    assert "AGENTB_MCP_DAILYPATROL_SECRET_KEY" in secret
+
+
+def test_mcp_server_startup_fails_fast_without_config(monkeypatch, work_tmp_dir):
+    """配置缺失时 main() 必须直接抛错退出，不得进入 mcp.run()。"""
+    monkeypatch.setenv(upstream_cfg.CONFIG_FILE_ENV, str(work_tmp_dir / "absent.json"))
+
+    def _unexpected_run(*args, **kwargs):
+        raise AssertionError("配置缺失时不应启动 MCP 服务")
+
+    monkeypatch.setattr(upstream_server.mcp, "run", _unexpected_run)
+
+    with pytest.raises(FileNotFoundError):
+        upstream_server.main()
+
+
+@pytest.mark.asyncio
+async def test_mcp_healthz_reports_tools_when_config_is_valid(monkeypatch, work_tmp_dir):
+    _write_valid_config(monkeypatch, work_tmp_dir)
+
+    response = await upstream_server.healthz(None)
+
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    assert payload["status"] == "ok"
+    assert payload["tools"] == sorted(upstream_cfg.TOOL_SECTIONS)
+
+
+@pytest.mark.asyncio
+async def test_mcp_healthz_reports_503_when_config_is_missing(monkeypatch, work_tmp_dir):
+    monkeypatch.setenv(upstream_cfg.CONFIG_FILE_ENV, str(work_tmp_dir / "absent.json"))
+
+    response = await upstream_server.healthz(None)
+
+    assert response.status_code == 503
+    payload = json.loads(response.body)
+    assert payload["status"] == "error"
+    assert payload["reason"] == "config_invalid"
 
 
 def test_upstream_tools_are_not_builtin_anymore():

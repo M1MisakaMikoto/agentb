@@ -30,6 +30,10 @@ for _path in (_BACKEND_DIR, _WORKBRANCH_DIR):
         sys.path.insert(0, str(_path))
 
 from mcp.server.fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+from mcp_servers.upstream_tools.config import TOOL_SECTIONS, load_config
 
 from service.agent_service.tools.ai_judgment_tool import (
     execute_submit_ai_judgment_issue,
@@ -220,9 +224,43 @@ def submit_ai_judgment_issue(
     return execute_submit_ai_judgment_issue(args)
 
 
+@mcp.custom_route("/healthz", methods=["GET"])
+async def healthz(_request: Request) -> JSONResponse:
+    """协议级健康检查：配置可加载，且已注册工具与配置段一一对应。
+
+    与启动校验同语义（fail-fast，不做兜底）：任一条件不满足返回 503，
+    并由 compose healthcheck 判定容器不健康。
+    """
+    try:
+        load_config()
+    except Exception as exc:
+        return JSONResponse(
+            {"status": "error", "reason": "config_invalid", "message": str(exc)},
+            status_code=503,
+        )
+
+    tools = sorted(tool.name for tool in await mcp.list_tools())
+    missing = sorted(set(TOOL_SECTIONS) - set(tools))
+    if missing:
+        return JSONResponse(
+            {
+                "status": "error",
+                "reason": "tools_missing",
+                "missing": missing,
+                "tools": tools,
+            },
+            status_code=503,
+        )
+
+    return JSONResponse({"status": "ok", "tools": tools})
+
+
 def main() -> None:
     """以 streamable-http 传输启动 MCP 服务。"""
     settings = _server_settings()
+    # 启动即校验配置：缺文件/缺段/缺字段直接退出（fail-fast，不做兜底），
+    # 让“新区域没替换配置”在部署阶段暴露，而不是等到工具调用。
+    load_config()
     print(
         f"[upstream-tools-mcp] serving on http://{settings['host']}:{settings['port']}/mcp",
         flush=True,

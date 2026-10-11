@@ -115,7 +115,7 @@ services:
       - ${AGENTB_MCP_UPSTREAM_CONFIG_FILE:-./WorkBranch/mcp_servers/upstream_tools/config.example.json}:/app/mcp-config/config.json:ro
       - agentb-workspaces:/app/workspaces
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import socket;s=socket.create_connection(('127.0.0.1',8181),3);s.close()\" || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8181/healthz >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5

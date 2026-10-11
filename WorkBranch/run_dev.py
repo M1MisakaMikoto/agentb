@@ -11,6 +11,11 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 
+MCP_CONFIG_ENV = "AGENTB_MCP_UPSTREAM_CONFIG"
+DEFAULT_MCP_HOST = "127.0.0.1"
+DEFAULT_MCP_PORT = 8181
+
+
 def print_line(message: str, *, stream: str = "stdout") -> None:
     target = sys.stderr if stream == "stderr" else sys.stdout
     target.buffer.write((message + "\n").encode(target.encoding or "utf-8", errors="replace"))
@@ -22,6 +27,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--backend-port", type=int, default=8000)
     parser.add_argument("--no-reload", action="store_true")
+    parser.add_argument(
+        "--mcp",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="随后端一起启动上游工具 MCP 服务（默认开启，用 --no-mcp 关闭）",
+    )
+    parser.add_argument(
+        "--mcp-config",
+        default=None,
+        help=(
+            "上游工具 MCP 服务配置文件路径；默认取环境变量 "
+            f"{MCP_CONFIG_ENV} 或 WorkBranch/mcp_servers/upstream_tools/config.json"
+        ),
+    )
+    parser.add_argument("--mcp-host", default=DEFAULT_MCP_HOST)
+    parser.add_argument("--mcp-port", type=int, default=DEFAULT_MCP_PORT)
     args = parser.parse_args()
 
     return args
@@ -60,7 +81,34 @@ def ensure_backend_runtime(python_executable: str) -> None:
         )
 
 
-def start_process(name: str, command: list[str], cwd: Path) -> tuple[subprocess.Popen[str], threading.Thread]:
+def resolve_mcp_config_path(root_dir: Path, explicit: str | None) -> Path:
+    if explicit:
+        candidate = Path(explicit).expanduser()
+    else:
+        env_value = os.getenv(MCP_CONFIG_ENV)
+        candidate = (
+            Path(env_value).expanduser()
+            if env_value
+            else root_dir / "mcp_servers" / "upstream_tools" / "config.json"
+        )
+
+    if not candidate.is_file():
+        raise RuntimeError(
+            f"MCP 服务配置文件不存在：{candidate}。"
+            f"请准备区域配置（参考 mcp_servers/upstream_tools/config.example.json），"
+            f"用 --mcp-config 指定，或设置环境变量 {MCP_CONFIG_ENV}；"
+            f"确需只启后端请加 --no-mcp。"
+        )
+
+    return candidate
+
+
+def start_process(
+    name: str,
+    command: list[str],
+    cwd: Path,
+    env: dict[str, str] | None = None,
+) -> tuple[subprocess.Popen[str], threading.Thread]:
     kwargs: dict[str, object] = {
         "cwd": str(cwd),
         "stdout": subprocess.PIPE,
@@ -69,6 +117,8 @@ def start_process(name: str, command: list[str], cwd: Path) -> tuple[subprocess.
         "encoding": "utf-8",
         "errors": "replace",
     }
+    if env is not None:
+        kwargs["env"] = env
 
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -107,9 +157,7 @@ def get_health_check_host(host: str) -> str:
     return host
 
 
-def wait_for_backend_health(host: str, port: int, process: subprocess.Popen[str], timeout: float = 20.0) -> bool:
-    health_host = get_health_check_host(host)
-    url = f"http://{health_host}:{port}/health"
+def wait_for_http_health(url: str, process: subprocess.Popen[str], timeout: float = 20.0) -> bool:
     deadline = time.time() + timeout
 
     while time.time() < deadline:
@@ -128,6 +176,12 @@ def wait_for_backend_health(host: str, port: int, process: subprocess.Popen[str]
     return False
 
 
+def wait_for_backend_health(host: str, port: int, process: subprocess.Popen[str], timeout: float = 20.0) -> bool:
+    health_host = get_health_check_host(host)
+    url = f"http://{health_host}:{port}/health"
+    return wait_for_http_health(url, process, timeout)
+
+
 def main() -> int:
     args = parse_args()
     root_dir = Path(__file__).resolve().parent
@@ -139,10 +193,29 @@ def main() -> int:
 
     processes: list[tuple[str, subprocess.Popen[str], threading.Thread]] = []
     backend_process: subprocess.Popen[str] | None = None
+    mcp_process: subprocess.Popen[str] | None = None
 
     try:
         python_executable = resolve_python(workspace_root)
         ensure_backend_runtime(python_executable)
+
+        mcp_config_path: Path | None = None
+        if args.mcp:
+            mcp_config_path = resolve_mcp_config_path(root_dir, args.mcp_config)
+            mcp_env = dict(os.environ)
+            mcp_env[MCP_CONFIG_ENV] = str(mcp_config_path)
+            mcp_env["AGENTB_MCP_HOST"] = args.mcp_host
+            mcp_env["AGENTB_MCP_PORT"] = str(args.mcp_port)
+            mcp_command = [
+                python_executable,
+                "-m",
+                "mcp_servers.upstream_tools.server",
+            ]
+            print_line(f"[launcher] starting upstream tools mcp service in {root_dir}")
+            print_line(f"[launcher] mcp config: {mcp_config_path}")
+            mcp_process, mcp_thread = start_process("mcp", mcp_command, root_dir, env=mcp_env)
+            processes.append(("mcp", mcp_process, mcp_thread))
+
         backend_command = [
             python_executable,
             "-m",
@@ -165,6 +238,17 @@ def main() -> int:
             return 0
 
         print_line(f"[launcher] backend expected at http://{args.host}:{args.backend_port}")
+
+        if mcp_process is not None:
+            mcp_health_host = get_health_check_host(args.mcp_host)
+            mcp_health_url = f"http://{mcp_health_host}:{args.mcp_port}/healthz"
+            print_line(f"[launcher] checking mcp health at {mcp_health_url}")
+            if wait_for_http_health(mcp_health_url, mcp_process, timeout=30.0):
+                print_line(f"[launcher] mcp health check passed at {mcp_health_url}")
+            else:
+                print_line(
+                    f"[launcher] mcp health check did not pass within timeout at {mcp_health_url}"
+                )
 
         if backend_process is not None:
             health_host = get_health_check_host(args.host)

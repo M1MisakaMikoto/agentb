@@ -6,7 +6,7 @@
     "dailypatrol": {
         "api_url": "http://localhost:8002",
         "timeout_seconds": 30,
-        "secret_key": "daily-patrol-agent"
+        "secret_key": "REPLACE_ME_OR_SET_AGENTB_MCP_DAILYPATROL_SECRET_KEY"
     },
     "ai_judgment": {
         "api_url": "http://localhost:8080",
