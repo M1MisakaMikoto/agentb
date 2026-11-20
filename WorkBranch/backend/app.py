@@ -25,7 +25,12 @@ from controller.conversation_api import router as conversation_router
 from controller.workspace_api import router as workspace_router
 from controller.plan_api import router as plan_router
 from controller.settings_api import router as settings_router
-from core.logging import bind_ctx, get_ctx, initialize_trace_writer
+from core.logging import (
+    bind_ctx,
+    get_ctx,
+    initialize_trace_writer,
+    shutdown_trace_writer,
+)
 from singleton import clear_all_singletons_async, get_logging_runtime, get_settings_service, get_user_service
 from middleware.auth import AuthMiddleware
 from middleware.affinity import AffinityMiddleware
@@ -109,7 +114,10 @@ async def lifespan(app: FastAPI):
                 msg="logging runtime flush timed out",
                 extra={"timeout_seconds": 3.0},
             )
-        await clear_all_singletons_async()
+        try:
+            await clear_all_singletons_async()
+        finally:
+            shutdown_trace_writer()
 
 
 app = FastAPI(
