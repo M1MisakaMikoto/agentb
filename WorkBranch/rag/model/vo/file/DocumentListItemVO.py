@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import BaseModel
 
 
@@ -13,3 +15,4 @@ class DocumentListItemVO(BaseModel):
     status: str
     updated_at: str
     created_at: str
+    tenant_id: Optional[int] = None

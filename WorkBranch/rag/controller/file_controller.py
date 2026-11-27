@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import mimetypes
@@ -74,6 +74,42 @@ FILE_RESPONSE_ASSEMBLER = FileResponseAssembler()
 INGEST_JOB_ASSEMBLER = IngestJobAssembler()
 KNOWLEDGE_BASE_ASSEMBLER = KnowledgeBaseAssembler()
 LOGGER = get_logger(__name__)
+
+
+# 未知租户的哨兵值：必须是永远匹配不到真实数据的值（-1）。
+# 不能用 1 —— tenant_id=1 代表市级，用它做“未知”会导致 fail-open。
+_UNKNOWN_TENANT = -1
+
+
+def _tenant_scope(request: Request) -> tuple[int, bool]:
+    """返回 (tenant_id, is_city)。
+
+    - 请求带了合法 X-Tenant-Id：按该值；1 = 市级（可读全部）
+    - 没带 / 非法 / <=0：返回哨兵值（负数），SQL 等值匹配不到任何行 —— “什么都看不到”。
+      注意：**不能返回 1**，因为 1 正好是市级租户，那会变成 fail-open。
+    """
+    user = getattr(request.state, "user", None) or {}
+    raw = user.get("tenant_id")
+    if raw is None:
+        return _UNKNOWN_TENANT, False
+    try:
+        tenant = int(raw)
+    except (TypeError, ValueError):
+        return _UNKNOWN_TENANT, False
+    if tenant <= 0:
+        return _UNKNOWN_TENANT, False
+    return tenant, tenant == 1
+
+
+def _tenant_scope_for_write(request: Request) -> tuple[int, bool]:
+    """写操作必须有明确身份；拿不到租户就拒绝，避免落到 tenant=1（公共）上。"""
+    user = getattr(request.state, "user", None) or {}
+    if user.get("tenant_id") is None:
+        raise HTTPException(
+            status_code=403,
+            detail="无法确定账号所属区域，已拒绝写操作，请重新登录或重试",
+        )
+    return _tenant_scope(request)
 
 # --- IngestionService / Queue 单例模式 ---
 _INGESTION_SERVICE: Optional[IngestionService] = None
@@ -192,16 +228,20 @@ def delete_knowledge_base(kb_id: int) -> dict:
 # Categories (virtual directory)
 # ------------------------
 @router.get("/api/categories/tree")
-def categories_tree() -> dict:
-    rows = FILE_META_DAO.list_categories()
+def categories_tree(request: Request) -> dict:
+    tenant, is_city = _tenant_scope(request)
+    rows = FILE_META_DAO.list_categories(tenant, is_city)
     vo = CATEGORY_TREE_ASSEMBLER.to_tree_response(rows)
     return vo.model_dump()
 
 
 @router.post("/api/categories")
-def create_category(payload: CategoryCreateRequestDTO) -> dict:
+def create_category(payload: CategoryCreateRequestDTO, request: Request) -> dict:
+    tenant, is_city = _tenant_scope_for_write(request)
     try:
-        category_id = FILE_META_DAO.create_category(payload.name, payload.parent_id)
+        category_id = FILE_META_DAO.create_category(payload.name, payload.parent_id, tenant, is_city)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
@@ -210,9 +250,12 @@ def create_category(payload: CategoryCreateRequestDTO) -> dict:
 
 
 @router.put("/api/categories/{category_id}")
-def update_category(category_id: int, payload: CategoryUpdateRequestDTO) -> dict:
+def update_category(category_id: int, payload: CategoryUpdateRequestDTO, request: Request) -> dict:
+    tenant, is_city = _tenant_scope_for_write(request)
     try:
-        FILE_META_DAO.update_category(category_id, payload.name, payload.parent_id)
+        FILE_META_DAO.update_category(category_id, payload.name, payload.parent_id, tenant, is_city)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
@@ -225,12 +268,16 @@ def update_category(category_id: int, payload: CategoryUpdateRequestDTO) -> dict
 @router.delete("/api/categories/{category_id}")
 def delete_category(
     category_id: int,
+    request: Request,
     mode: Literal["keep_docs", "unbind_docs", "recursive"] = Query(default="keep_docs"),
 ) -> dict:
+    tenant, is_city = _tenant_scope_for_write(request)
     try:
-        result_do = FILE_META_DAO.delete_category(category_id, mode)
+        result_do = FILE_META_DAO.delete_category(category_id, mode, tenant, is_city)
         result_vo: DeleteCategoryResultVO = DELETE_CATEGORY_RESULT_ASSEMBLER.to_vo(result_do)
         return result_vo.model_dump()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
@@ -242,10 +289,12 @@ def delete_category(
 # ------------------------
 @router.post("/api/documents/upload")
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     category_id: Optional[int] = Form(default=None),
     kb_id: Optional[int] = Form(default=None),
 ) -> dict:
+    tenant, _is_city = _tenant_scope_for_write(request)
     content = await file.read(MAX_UPLOAD_SIZE + 1)
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="File too large (max 100 MB)")
@@ -306,9 +355,12 @@ async def upload_document(
             hash_sha=hash_sha,
             category_id=category_id,
             kb_id=kb_id,
+            tenant=tenant,
         )
         doc_id = document_create.id
         storage_key = document_create.storage_key
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -354,11 +406,13 @@ async def upload_document(
 
 @router.get("/api/documents")
 def list_documents(
+    request: Request,
     category_id: Optional[int] = None,
     keyword: str = "",
     page: int = 1,
     size: int = 20,
 ) -> dict:
+    tenant, is_city = _tenant_scope(request)
     page = max(1, page)
     size = min(100, max(1, size))
     page_do = FILE_META_DAO.list_documents(
@@ -366,14 +420,17 @@ def list_documents(
         keyword=keyword,
         page=page,
         size=size,
+        tenant=tenant,
+        is_city=is_city,
     )
     return DOCUMENT_ASSEMBLER.to_paged_vo(page_do).model_dump()
 
 
 @router.get("/api/documents/{document_id}")
-def get_document(document_id: int) -> dict:
+def get_document(document_id: int, request: Request) -> dict:
+    tenant, is_city = _tenant_scope(request)
     try:
-        detail_do = FILE_META_DAO.get_document_detail(document_id)
+        detail_do = FILE_META_DAO.get_document_detail(document_id, tenant, is_city)
         return DOCUMENT_ASSEMBLER.to_detail_vo(detail_do).model_dump()
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -407,9 +464,10 @@ def _extract_office_text(path: Path, name: str) -> str | None:
 
 
 @router.get("/api/documents/{document_id}/file")
-def get_document_file(document_id: int) -> dict:
+def get_document_file(document_id: int, request: Request) -> dict:
+    tenant, is_city = _tenant_scope(request)
     try:
-        detail_do = FILE_META_DAO.get_document_detail(document_id)
+        detail_do = FILE_META_DAO.get_document_detail(document_id, tenant, is_city)
         storage_key = detail_do.document.storage_key
         display_name = detail_do.document.display_name or Path(storage_key.replace("\\", "/")).name
         target = _storage_abs(storage_key)
@@ -447,19 +505,26 @@ def get_document_file(document_id: int) -> dict:
 
 
 @router.put("/api/documents/{document_id}")
-def update_document(document_id: int, payload: DocumentUpdateRequestDTO) -> dict:
+def update_document(document_id: int, payload: DocumentUpdateRequestDTO, request: Request) -> dict:
+    tenant, is_city = _tenant_scope_for_write(request)
     try:
-        FILE_META_DAO.update_document_name(document_id, payload.display_name)
+        FILE_META_DAO.update_document_name(document_id, payload.display_name, tenant, is_city)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return IdResultVO(ok=True, id=document_id).model_dump()
 
 
 @router.delete("/api/documents/{document_id}")
-def delete_document(document_id: int) -> dict:
+def delete_document(document_id: int, request: Request) -> dict:
     # 知识库隔离：从文档元数据中查找 kb_id 推导 collection_name
+    tenant, is_city = _tenant_scope_for_write(request)
     try:
-        detail = FILE_META_DAO.get_document_detail(document_id)
+        FILE_META_DAO.assert_document_manageable(document_id, tenant, is_city)
+        detail = FILE_META_DAO.get_document_detail(document_id, tenant, is_city)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except ValueError:
         raise HTTPException(status_code=404, detail="Document not found")
     doc_kb_id = getattr(detail.document, "kb_id", None)
@@ -500,24 +565,34 @@ def retry_delete_job(job_id: int) -> dict:
 
 
 @router.post("/api/documents/{document_id}/categories/{category_id}")
-def mount_document_category(document_id: int, category_id: int) -> dict:
+def mount_document_category(document_id: int, category_id: int, request: Request) -> dict:
+    tenant, is_city = _tenant_scope_for_write(request)
     try:
-        FILE_META_DAO.mount_document_category(document_id, category_id)
+        FILE_META_DAO.mount_document_category(document_id, category_id, tenant, is_city)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return DocumentCategoryBindVO(ok=True, document_id=document_id, category_id=category_id).model_dump()
 
 
 @router.delete("/api/documents/{document_id}/categories/{category_id}")
-def unmount_document_category(document_id: int, category_id: int) -> dict:
-    FILE_META_DAO.unmount_document_category(document_id, category_id)
+def unmount_document_category(document_id: int, category_id: int, request: Request) -> dict:
+    tenant, is_city = _tenant_scope_for_write(request)
+    try:
+        FILE_META_DAO.unmount_document_category(document_id, category_id, tenant, is_city)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     return DocumentCategoryBindVO(ok=True, document_id=document_id, category_id=category_id).model_dump()
 
 
 @router.put("/api/documents/{document_id}/primary-category/{category_id}")
-def set_primary_category(document_id: int, category_id: int) -> dict:
+def set_primary_category(document_id: int, category_id: int, request: Request) -> dict:
+    tenant, is_city = _tenant_scope_for_write(request)
     try:
-        FILE_META_DAO.set_primary_category(document_id, category_id)
+        FILE_META_DAO.set_primary_category(document_id, category_id, tenant, is_city)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return DocumentCategoryBindVO(ok=True, document_id=document_id, category_id=category_id).model_dump()

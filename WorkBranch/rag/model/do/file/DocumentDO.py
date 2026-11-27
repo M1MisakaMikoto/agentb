@@ -16,3 +16,4 @@ class DocumentDO:
     updated_at: str
     created_at: str
     kb_id: Optional[int] = field(default=None)
+    tenant_id: Optional[int] = field(default=None)

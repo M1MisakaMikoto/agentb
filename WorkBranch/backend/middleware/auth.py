@@ -49,7 +49,8 @@ class AuthMiddleware:
             scope.setdefault("state", {})
             scope["state"]["user"] = {
                 "id": 1,
-                "name": "default_user"
+                "name": "default_user",
+                "tenant_id": 1,
             }
             await self.app(scope, receive, send)
             return
@@ -88,11 +89,23 @@ class AuthMiddleware:
             await response(scope, receive, send)
             return
         
+        # 知识库分区：带头的值为显式身份（1=市级/公共）；没带或非法 => None（未知，按“仅公共”处理）
+        tenant_header = headers.get(b"x-tenant-id")
+        tenant_id = None
+        if tenant_header:
+            try:
+                parsed = int(tenant_header.decode())
+            except (ValueError, AttributeError):
+                parsed = None
+            if parsed is not None and parsed > 0:
+                tenant_id = parsed
+
         # 将用户信息存储在 scope 的 state 中
         scope.setdefault("state", {})
         scope["state"]["user"] = {
             "id": user_id,
-            "name": f"user_{user_id}"
+            "name": f"user_{user_id}",
+            "tenant_id": tenant_id,
         }
         
         await self.app(scope, receive, send)

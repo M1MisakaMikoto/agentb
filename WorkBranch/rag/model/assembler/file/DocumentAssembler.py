@@ -21,6 +21,7 @@ class DocumentAssembler:
             status=row.status,
             updated_at=row.updated_at,
             created_at=row.created_at,
+            tenant_id=row.tenant_id,
         )
 
     def to_paged_vo(self, page_data: PagedDocumentDO) -> PagedDocumentsVO:
